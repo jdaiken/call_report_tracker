@@ -1,0 +1,65 @@
+name: Daily FFIEC Call Report Monitor
+
+on:
+  schedule:
+    # 13:00 UTC ~ 8-9am US Eastern, after FFIEC's overnight batch processing.
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "small (enforcement-orders bank list) or full (all filers)"
+        type: choice
+        options: [small, full]
+        default: small
+      fake_diff:
+        description: "Send a synthetic Tier 1 test email instead of hitting the FFIEC API"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      # The *.duckdb file is gitignored (spec §9) -- state persists across daily runs
+      # via cache instead of being committed. restore-keys falls back to the most
+      # recent prior run's cache since each run's save key is unique (contains run_id).
+      - name: Restore DuckDB state
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}
+          restore-keys: |
+            duckdb-
+
+      - name: Run monitor
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: |
+          if [ "${{ inputs.fake_diff }}" = "true" ]; then
+            python run.py --fake-diff
+          else
+            python run.py --universe "${{ inputs.universe || 'small' }}"
+          fi
+
+      # Always save, even on failure, so a mid-run crash doesn't lose state already
+      # written this run.
+      - name: Save DuckDB state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}
