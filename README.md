@@ -53,6 +53,23 @@ python scripts/import_enforcement_orders.py path/to/enforcement_orders.csv
 Re-run this whenever the source system's export changes -- it's a full replace, not
 an incremental sync.
 
+## Risk-ranking reference list
+
+`data/risk-rankings.csv` is a third-party risk-score ranking (name/state/assets/
+percentile/CRITICAL-HIGH tier) -- **not** enforcement-orders data, and it has no
+RSSD ID. Load it into its own `risk_rankings` table (separate from
+`enforcement_orders`, since a risk-score tier isn't a S&S/AML/CMP order and
+doesn't by itself feed spec §4's Watch List logic):
+
+```
+python scripts/import_risk_rankings.py data/risk-rankings.csv
+```
+
+Each row needs to be resolved to an `id_rssd` (the FFIEC join key) before it can
+drive an actual pipeline run -- `db.unresolved_risk_rankings()` lists what's still
+pending. Note at least one name+state collision in the source data (two distinct
+"Farmers Savings Bank, IA" entries), so name+state alone isn't a safe resolution key.
+
 ## Running
 
 ```

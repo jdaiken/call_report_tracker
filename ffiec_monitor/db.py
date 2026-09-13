@@ -42,6 +42,26 @@ CREATE TABLE IF NOT EXISTS enforcement_orders (
     terminated_date  DATE
 );
 
+-- Third-party risk-score ranking (name/state/assets/percentile/tier) -- NOT the same
+-- thing as enforcement_orders above. This has no RSSD ID and no S&S/AML/CMP order
+-- data, so it does NOT feed the spec §4 Watch List qualification logic on its own.
+-- It exists as a reference/seed list until each row is resolved to an id_rssd (the
+-- FFIEC join key), at which point id_rssd can be backfilled here.
+CREATE SEQUENCE IF NOT EXISTS risk_ranking_id_seq START 1;
+CREATE TABLE IF NOT EXISTS risk_rankings (
+    id             BIGINT PRIMARY KEY DEFAULT nextval('risk_ranking_id_seq'),
+    rank           INTEGER,
+    bank_name      VARCHAR,
+    state          VARCHAR,
+    peer_group     VARCHAR,
+    total_assets   DOUBLE,      -- dollars, parsed from e.g. "$68.4M" / "$1.59B"
+    pctl           DOUBLE,
+    score          DOUBLE,
+    tier           VARCHAR,     -- 'CRITICAL' | 'HIGH' | ... as supplied by the source
+    id_rssd        VARCHAR,     -- NULL until resolved against FFIEC
+    loaded_at      TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS institution_meta (
     id_rssd        VARCHAR PRIMARY KEY,
     name           VARCHAR,
@@ -229,6 +249,42 @@ def get_active_order_types(conn: duckdb.DuckDBPyConnection, id_rssd: str) -> lis
         [id_rssd],
     ).fetchall()
     return [r[0] for r in rows]
+
+
+# --- risk_rankings (reference, RSSD-less until resolved) ---------------------
+
+@dataclass
+class RiskRankingRow:
+    rank: Optional[int]
+    bank_name: str
+    state: str
+    peer_group: Optional[str]
+    total_assets: Optional[float]
+    pctl: Optional[float]
+    score: Optional[float]
+    tier: str
+
+
+def replace_risk_rankings(conn: duckdb.DuckDBPyConnection, rows: list[RiskRankingRow]) -> int:
+    """Full replace, mirroring import_enforcement_orders.py's behavior -- this is a
+    re-load of the source file, not an incremental merge."""
+    conn.execute("DELETE FROM risk_rankings")
+    conn.executemany(
+        """
+        INSERT INTO risk_rankings
+            (rank, bank_name, state, peer_group, total_assets, pctl, score, tier, loaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+        """,
+        [(r.rank, r.bank_name, r.state, r.peer_group, r.total_assets, r.pctl, r.score, r.tier) for r in rows],
+    )
+    return len(rows)
+
+
+def unresolved_risk_rankings(conn: duckdb.DuckDBPyConnection) -> list[tuple[int, str, str]]:
+    """(id, bank_name, state) for every risk_rankings row not yet matched to an id_rssd."""
+    return conn.execute(
+        "SELECT id, bank_name, state FROM risk_rankings WHERE id_rssd IS NULL ORDER BY id"
+    ).fetchall()
 
 
 # --- alert_log -----------------------------------------------------------------
