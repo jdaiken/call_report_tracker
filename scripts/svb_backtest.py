@@ -43,24 +43,43 @@ BACKTEST_QUARTERS = [
 ]
 
 
+def _verify_entity(client: FFIECClient, period_end: date) -> None:
+    """RetrieveFacsimile carries no institution name -- that only exists on the
+    Panel of Reporters. Check it once, against the first backtest quarter, rather
+    than skip the entity-scoping safety check spec §10.3 explicitly calls for."""
+    panel = {str(e["ID_RSSD"]): e for e in client.retrieve_panel_of_reporters(period_end)}
+    entry = panel.get(SVB_BANK_RSSD)
+    if entry is None:
+        print(f"  WARNING: RSSD {SVB_BANK_RSSD} not found on the {period_end} panel of reporters at all -- "
+              f"double check SVB_BANK_RSSD before trusting any of this.")
+        return
+    name = str(entry.get("Name", ""))
+    if "silicon valley bank" not in name.lower():
+        print(f"  WARNING: RSSD {SVB_BANK_RSSD} resolves to {name!r}, not 'Silicon Valley Bank' -- "
+              f"check SVB_BANK_RSSD before trusting this run (this is exactly the bank-subsidiary-"
+              f"vs-holding-company mixup spec §10.3 warns about).")
+    else:
+        print(f"  Entity check OK: RSSD {SVB_BANK_RSSD} = {name!r}\n")
+
+
 def run_backtest(client: FFIECClient) -> None:
     prior_ratios: dict = {}
+    prior_period_end: date = None
     roaa_history: list = []
     prior_assets = None
 
     print(f"SVB backtest -- RSSD {SVB_BANK_RSSD} -- {BACKTEST_QUARTERS[0]} through {BACKTEST_QUARTERS[-1]}\n")
+    _verify_entity(client, BACKTEST_QUARTERS[0])
 
     for period_end in BACKTEST_QUARTERS:
         facsimile = client.retrieve_facsimile(SVB_BANK_RSSD, period_end)
-        ubpr = client.retrieve_ubpr_facsimile(SVB_BANK_RSSD, period_end)
 
-        institution_name = facsimile.get("institution", facsimile).get("institutionName", "")
-        if institution_name and "silicon valley bank" not in institution_name.lower():
-            print(f"  WARNING: resolved institution name is {institution_name!r}, "
-                  f"not 'Silicon Valley Bank' -- check SVB_BANK_RSSD before trusting this run.")
-
-        current_ratios = ratios.extract_ratios(ubpr)
+        current_ratios = ratios.extract_ratios(facsimile, period_end)
         current_assets = ratios.extract_total_assets(facsimile)
+        current_ratios["total_assets"] = current_assets
+
+        if prior_ratios:
+            ratios.compute_growth_rates(prior_ratios, current_ratios, prior_period_end, period_end)
 
         triggers = alerts.classify_new_period(
             prior_ratios, current_ratios, roaa_history, prior_assets, current_assets,
@@ -78,6 +97,7 @@ def run_backtest(client: FFIECClient) -> None:
 
         roaa_history = (roaa_history + [current_ratios.get("roaa")])[-alerts.ROAA_TIER2_CONSECUTIVE_QUARTERS:]
         prior_ratios = current_ratios
+        prior_period_end = period_end
         prior_assets = current_assets
 
     print(

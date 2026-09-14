@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS enforcement_orders (
     terminated_date  DATE
 );
 
+-- Tracks the lastUpdateDateTime cursor per reporting period for
+-- RetrieveFilersSubmissionDateTime (SIS611 §3.1's recommended usage: pass the
+-- last time you polled a period so FFIEC returns only what changed since).
+CREATE TABLE IF NOT EXISTS poll_state (
+    period_end       DATE PRIMARY KEY,
+    last_polled_at   TIMESTAMP
+);
+
 -- Third-party risk-score ranking (name/state/assets/percentile/tier) -- NOT the same
 -- thing as enforcement_orders above. This has no RSSD ID and no S&S/AML/CMP order
 -- data, so it does NOT feed the spec §4 Watch List qualification logic on its own.
@@ -295,6 +303,23 @@ def unresolved_risk_rankings_with_assets(
     return conn.execute(
         "SELECT id, bank_name, state, total_assets FROM risk_rankings WHERE id_rssd IS NULL ORDER BY id"
     ).fetchall()
+
+
+# --- poll_state ----------------------------------------------------------------
+
+def get_last_polled_at(conn: duckdb.DuckDBPyConnection, period_end: date) -> Optional[datetime]:
+    row = conn.execute("SELECT last_polled_at FROM poll_state WHERE period_end = ?", [period_end]).fetchone()
+    return row[0] if row else None
+
+
+def set_last_polled_at(conn: duckdb.DuckDBPyConnection, period_end: date, polled_at: datetime) -> None:
+    conn.execute(
+        """
+        INSERT INTO poll_state (period_end, last_polled_at) VALUES (?, ?)
+        ON CONFLICT (period_end) DO UPDATE SET last_polled_at = excluded.last_polled_at
+        """,
+        [period_end, polled_at],
+    )
 
 
 # --- alert_log -----------------------------------------------------------------

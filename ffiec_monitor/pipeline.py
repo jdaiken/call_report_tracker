@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import duckdb
 
@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 PING_PERIOD_LOOKBACK = 2
 # Prior consecutive quarters of ROAA history to pull for the sustained-low check.
 ROAA_HISTORY_QUARTERS = 2
+# First-ever poll of a period has no prior cursor -- go back far enough to see
+# every filer, not just "changed since an arbitrary recent date".
+FIRST_POLL_SENTINEL = datetime(2000, 1, 1)
 
 
 def run_daily(
@@ -47,20 +50,35 @@ def run_daily(
 
     changed: list[tuple[str, date, datetime]] = []
     for period_end in periods:
-        for status in client.retrieve_filer_statuses(period_end):
+        since = db.get_last_polled_at(conn, period_end) or FIRST_POLL_SENTINEL
+        poll_started_at = datetime.now(timezone.utc)
+        for status in client.retrieve_filer_statuses(period_end, since):
             if universe is not None and status.id_rssd not in universe:
                 continue
-            last_ts = db.get_last_seen_ts(conn, status.id_rssd)
             existing = db.get_snapshot(conn, status.id_rssd, status.period_end)
             if existing is None or existing.last_seen_ts != status.submission_ts:
                 changed.append((status.id_rssd, status.period_end, status.submission_ts))
+        # Watermark set to *before* the call, not after -- so a filing that lands
+        # mid-call is seen again next run rather than silently skipped.
+        db.set_last_polled_at(conn, period_end, poll_started_at)
 
     watch_list_changes: list[email_report.WatchListChangeEvent] = []
     tier1_events: list[email_report.Tier1Event] = []
     tier2_events: list[email_report.Tier2Event] = []
 
+    # RetrieveFacsimile carries no name/city/state/FDIC-cert fields (verified
+    # against the real API doc -- that identity data only exists in the Panel of
+    # Reporters), so fetch it once per period actually needed rather than guessing
+    # at nonexistent facsimile fields.
+    panel_by_period: dict[date, dict[str, Any]] = {}
+    for period_end in {p for _r, p, _t in changed}:
+        panel_by_period[period_end] = {
+            str(entry["ID_RSSD"]): entry for entry in client.retrieve_panel_of_reporters(period_end)
+        }
+
     for id_rssd, period_end, submission_ts in changed:
-        _process_one(conn, client, id_rssd, period_end, submission_ts, run_date,
+        panel_entry = panel_by_period.get(period_end, {}).get(id_rssd)
+        _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
                       watch_list_changes, tier1_events, tier2_events)
 
     snapshot_entries = _build_watch_list_snapshot(conn)
@@ -85,6 +103,7 @@ def _process_one(
     period_end: date,
     submission_ts: datetime,
     run_date: date,
+    panel_entry: Optional[dict[str, Any]],
     watch_list_changes: list,
     tier1_events: list,
     tier2_events: list,
@@ -97,7 +116,7 @@ def _process_one(
     new_ratios = ratios.extract_ratios(facsimile, period_end)
     new_ratios["total_assets"] = ratios.extract_total_assets(facsimile)
 
-    meta = _meta_from_facsimile(id_rssd, period_end, facsimile)
+    meta = _meta_from_panel(id_rssd, period_end, panel_entry, new_ratios["total_assets"])
     db.upsert_institution_meta(conn, meta)
 
     if is_restatement:
@@ -164,15 +183,28 @@ def _roaa_history(conn, id_rssd: str, before: date) -> list[Optional[float]]:
     return list(reversed(values))
 
 
-def _meta_from_facsimile(id_rssd: str, period_end: date, facsimile: dict) -> db.InstitutionMeta:
-    info = facsimile.get("institution", facsimile)
+def _meta_from_panel(
+    id_rssd: str, period_end: date, panel_entry: Optional[dict[str, Any]], total_assets: Optional[float],
+) -> db.InstitutionMeta:
+    """Identity fields (name/city/state/FDIC cert) come from the Panel of
+    Reporters, NOT the facsimile -- verified against the real API doc, which
+    shows RetrieveFacsimile returning only a raw report byte-stream, no identity
+    fields. `panel_entry` can be None if this RSSD wasn't in that period's panel
+    (shouldn't normally happen for something that just filed, but institution_meta
+    still needs a row rather than crashing the whole run over one lookup miss).
+    """
+    if panel_entry is None:
+        return db.InstitutionMeta(
+            id_rssd=id_rssd, name=f"RSSD {id_rssd}", city="", state="",
+            fdic_cert="", total_assets=total_assets, as_of_period=period_end,
+        )
     return db.InstitutionMeta(
         id_rssd=id_rssd,
-        name=info.get("institutionName", f"RSSD {id_rssd}"),
-        city=info.get("city", ""),
-        state=info.get("state", ""),
-        fdic_cert=info.get("fdicCertNumber", ""),
-        total_assets=ratios.extract_total_assets(facsimile),
+        name=str(panel_entry.get("Name", f"RSSD {id_rssd}")),
+        city=str(panel_entry.get("City", "")),
+        state=str(panel_entry.get("State", "")),
+        fdic_cert=str(panel_entry.get("FDICCertNumber", "")),
+        total_assets=total_assets,
         as_of_period=period_end,
     )
 

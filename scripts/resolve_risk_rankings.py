@@ -37,11 +37,7 @@ def main() -> None:
     print(f"Using panel of reporters for period {latest_period.isoformat()}")
     raw_panel = client.retrieve_panel_of_reporters(latest_period)
     panel = [
-        PanelEntry(
-            id_rssd=str(p["idRssd"]),
-            name=str(p.get("institutionName", p.get("name", ""))),
-            state=str(p.get("state", "")),
-        )
+        PanelEntry(id_rssd=str(p["ID_RSSD"]), name=str(p["Name"]), state=str(p["State"]))
         for p in raw_panel
     ]
     print(f"Panel has {len(panel)} institutions")

@@ -10,7 +10,9 @@ Watch List of already-fragile banks. Full design in
 ```
 ffiec_monitor/
   config.py        secrets/env wiring (fail loudly if missing, never a silent default)
-  ffiec_client.py  FFIEC CDR PWS REST client (OAuth2 bearer)
+  ffiec_client.py  FFIEC CDR PWS REST client (OAuth2 bearer), written against the
+                   real SIS611 API doc -- see "Known limitations" for the one
+                   remaining unverified piece (SDF facsimile layout)
   db.py            DuckDB schema + storage
   ratios.py        the 12 ratios of concern, extraction from Call Report MDRM fields,
                    diffing + materiality floor (see its module docstring for which
@@ -140,16 +142,27 @@ the database.
 - The materiality floor (5bp ratios / ~1% relative dollar figures) is a starting
   point; expect to retune `RATIO_MATERIALITY_FLOOR_PP` / `DOLLAR_MATERIALITY_RELATIVE_FLOOR`
   in `ratios.py` after a week or two of real output.
-- `ffiec_client.py`'s endpoint names/params follow FFIEC CDR PWS's long-standing
-  method names (`RetrieveFilersSubmissionDateTime`, `RetrieveFacsimile`,
-  `RetrieveReportingPeriods`, `RetrievePanelOfReporters`) but the REST envelope
-  around them (query params, JSON wrapper shape) has not been exercised against a
-  live token in this build environment. The MDRM field codes `ratios.py` reads
-  out of that envelope *have* been verified, against a real FFIEC CDR bulk Call
-  Report download -- see `ratios.py`'s module docstring for per-ratio confidence
-  (capital ratios and most balance-sheet ratios are direct reads; ROAA/NIM/
+- `ffiec_client.py` is now written against FFIEC's actual API documentation
+  ("SIS611 Retrieve Public Data via Web Service", CDR-PDD-SIS-611 v1.10), not
+  guessed -- the first live run against an earlier, guessed version failed
+  instantly with a generic Azure Application Gateway 403 HTML page (not FFIEC's
+  own JSON error shape), consistent with the request never reaching FFIEC's API
+  logic at all. Three things the guess got wrong, now fixed and covered by
+  `tests/test_ffiec_client.py`: every method parameter is a header, not a query
+  param; dates are `MM/DD/YYYY`, not ISO; and `RetrieveFacsimile` returns a raw
+  SDF byte-stream (`{"FacsimileFile": <base64>}`), not pre-parsed JSON fields --
+  `_parse_sdf()` decodes and parses it. One real caveat remains: FFIEC's own doc
+  has no actual SDF content sample, so `_parse_sdf()`'s layout (a header row of
+  MDRM codes + one data row, matching the bulk download's convention) is an
+  educated guess, not confirmed against a live single-institution pull -- if
+  that's wrong, `_parse_sdf()` is the one place to fix, not `ratios.py`'s
+  field-level mapping (which *is* verified, against a real FFIEC CDR bulk Call
+  Report download -- see `ratios.py`'s module docstring for per-ratio confidence:
+  capital ratios and most balance-sheet ratios are direct reads; ROAA/NIM/
   charge-off annualize a single period as an approximation of a true multi-quarter
   average; Net Non-Core Funding Dependence is a simplified stand-in for UBPR's
-  maturity-bucketed formula; peer-average charge-off isn't computed at all). If
-  the live API's response envelope differs from what `_get()`'s callers assume,
-  that's the one place to fix -- the field-level mapping shouldn't need to change.
+  maturity-bucketed formula; peer-average charge-off isn't computed at all).
+- `RetrieveFilersSubmissionDateTime` requires a `lastUpdateDateTime` cursor
+  (FFIEC's recommended usage, SIS611 §3.1) -- tracked per reporting period in the
+  new `poll_state` table so each run only asks for what changed since the last
+  one, rather than re-fetching every filer's status every day.

@@ -1,27 +1,30 @@
 """Client for the FFIEC CDR Public Web Service (PWS), REST/OAuth2 front end.
 
-Spec §1: base URL https://ffieccdr.azure-api.us/public/<function>, auth via a
-`UserID` header plus `Authentication: Bearer <token>` header, 90-day non-refreshing
-JWT, 2,500 req/hour ceiling, and -- critically -- an auth failure must raise loudly
-rather than be swallowed into a quiet empty run.
+Rewritten against the actual FFIEC documentation ("SIS611 Retrieve Public Data via
+Web Service", CDR-PDD-SIS-611 v1.10), not guessed. The first live run against the
+old (guessed) implementation failed instantly with a generic Azure Application
+Gateway 403 HTML page -- not FFIEC's own documented JSON error shape -- which is
+consistent with the request never reaching FFIEC's actual API logic at all. The
+real spec differs from the earlier guess in three load-bearing ways:
 
-Endpoint names/params below follow the FFIEC CDR PWS's long-standing SOAP-era method
-names (RetrieveFilersSubmissionDateTime, RetrieveFacsimile, RetrieveUBPRXBRLFacsimile,
-RetrieveReportingPeriods, RetrievePanelOfReporters) as re-exposed through the Azure
-API Management REST front end.
+  1. Every method parameter (dataSeries, reportingPeriodEndDate, fiId, etc.) is a
+     HEADER, not a query-string parameter. The old client sent them all as query
+     params.
+  2. Dates are "MM/DD/YYYY" strings, not ISO 8601.
+  3. RetrieveFacsimile/RetrieveUBPRXBRLFacsimile return a raw byte-stream file
+     (`{"FacsimileFile": <bytes>}` / `{"XBRLFile": <bytes>}`) -- SDF/XBRL/PDF --
+     not pre-parsed JSON fields keyed by MDRM code. ratios.py's field-level
+     mapping (verified against a real bulk download) is still correct; it's the
+     *shape this client hands it* that needed fixing -- see _parse_sdf below.
 
-Two different things have two different confidence levels here, worth not
-conflating: the *MDRM field codes* a facsimile contains (RCOA7204, RCONB529, etc.)
-are verified against a real FFIEC CDR bulk Call Report download and used with high
-confidence in ratios.py. The *REST envelope* this client expects around them --
-endpoint names, query params, and the exact JSON wrapper shape (`{"concepts": {...}}`
-assumed by `_get()`'s callers) -- has NOT been exercised against a live token in
-this environment, since the bulk download is a different data product (a quarterly
-flat-file export) from the live PWS API. If FFIEC's actual response shape differs,
-only `_get()`'s callers below need adjusting, not ratios.py's field mapping.
+Base URL: https://ffieccdr.azure-api.us/public/<function>. Auth is a `UserID`
+header plus `Authentication: Bearer <token>` header, a 90-day non-refreshing JWT,
+~2,500 req/hour ceiling. An auth failure must raise loudly rather than be
+swallowed into a quiet empty run (spec §1).
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
@@ -31,18 +34,29 @@ import requests
 from .config import FFIECConfig
 
 REQUEST_TIMEOUT_SECONDS = 30
+DATE_FMT = "%m/%d/%Y"
 
 
 class FFIECAuthError(RuntimeError):
-    """Raised on 401/403 from the PWS -- almost always an expired/missing 90-day token.
+    """A real auth problem: missing/invalid/expired token (401, or a 400 whose
+    body explicitly says the security token is invalid/expired -- FFIEC's own
+    error table lists "Security Token is invalid/expired" under 400, not just 401).
 
     This must propagate all the way out of the pipeline as a hard failure (spec §1),
     not be caught and treated as "no updates today".
     """
 
 
+class FFIECRateLimitError(RuntimeError):
+    """403 from the PWS -- per FFIEC's documented error table this specifically
+    means "Out of call volume quota", NOT an auth failure. Distinct from
+    FFIECAuthError so callers don't misdiagnose a quota hit as a bad token.
+    """
+
+
 class FFIECAPIError(RuntimeError):
-    """Any other non-2xx response from the PWS."""
+    """Any other non-2xx response from the PWS (400 validation errors not about
+    the token, 500s, 204 "not found")."""
 
 
 @dataclass(frozen=True)
@@ -58,108 +72,181 @@ class FFIECClient:
         self._config = config
         self._session = session or requests.Session()
 
-    def _headers(self) -> dict[str, str]:
-        return {
+    def _get(self, function: str, extra_headers: Optional[dict[str, str]] = None) -> Any:
+        url = f"{self._config.base_url}/{function}"
+        headers = {
             "UserID": self._config.user_id,
             "Authentication": f"Bearer {self._config.token}",
-            "Accept": "application/json",
+            "Content-Type": "application/json",
+            **(extra_headers or {}),
         }
+        resp = self._session.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
 
-    def _get(self, function: str, params: Optional[dict[str, Any]] = None) -> Any:
-        url = f"{self._config.base_url}/{function}"
-        resp = self._session.get(url, headers=self._headers(), params=params, timeout=REQUEST_TIMEOUT_SECONDS)
-        if resp.status_code in (401, 403):
+        if resp.ok:
+            return resp.json()
+
+        message = _extract_error_message(resp)
+        detail = f"{function} -> HTTP {resp.status_code}: {message}"
+
+        if resp.status_code == 401 or "token" in message.lower():
             raise FFIECAuthError(
-                f"FFIEC PWS auth failure ({resp.status_code}) calling {function}: {resp.text[:500]!r}. "
-                "Could be an expired FFIEC_TOKEN (90-day, no auto-refresh), but check the body above "
-                "first -- a 403 this fast (immediately, first call) is also consistent with a missing "
-                "Azure API Management subscription key header, a wrong UserID, or a malformed request "
-                "the token itself was never involved in."
+                f"FFIEC PWS auth failure ({detail}). FFIEC_TOKEN is likely missing/"
+                "invalid/expired (90-day, no auto-refresh) -- renew it and update "
+                "the GitHub Actions secret."
             )
-        if not resp.ok:
-            raise FFIECAPIError(f"FFIEC PWS error {resp.status_code} calling {function}: {resp.text[:500]}")
-        return resp.json()
+        if resp.status_code == 403:
+            raise FFIECRateLimitError(
+                f"FFIEC PWS rate limit ({detail}). Per FFIEC's docs this means "
+                "out-of-quota (~2,500 req/hour), not an auth problem -- back off "
+                "and retry later, don't treat this as a bad token."
+            )
+        raise FFIECAPIError(f"FFIEC PWS error ({detail}). Raw body: {resp.text[:500]!r}")
 
-    # --- tier 1: daily lightweight ping, all institutions -----------------
+    # --- tier 1: daily lightweight ping, institutions changed since last poll --
 
-    def retrieve_filer_statuses(self, reporting_period_end: date) -> list[FilerStatus]:
-        """Latest filed period + submission/acceptance timestamp, all filers.
-
-        Catches both new-quarter filings (period_end advances) and quiet restatements
-        (submission_ts advances on an already-seen period) -- spec §2 step 1.
+    def retrieve_filer_statuses(self, reporting_period_end: date, since: datetime) -> list[FilerStatus]:
+        """ID_RSSD + submission timestamp for filers whose report changed since
+        `since` -- catches both new-quarter filings and quiet restatements of an
+        already-seen period (spec §2 step 1). `since` should be the last time this
+        was called for this period_end (see ffiec_monitor.db poll_state), not an
+        arbitrary lookback -- FFIEC's own recommended usage (SIS611 §3.1) is to
+        track and advance this cursor across runs, which is also what keeps this
+        cheap regardless of universe size.
         """
         payload = self._get(
             "RetrieveFilersSubmissionDateTime",
-            params={"reportingPeriodEndDate": reporting_period_end.isoformat(), "dataSeries": "Call"},
+            extra_headers={
+                "dataSeries": "Call",
+                "reportingPeriodEndDate": reporting_period_end.strftime(DATE_FMT),
+                "lastUpdateDateTime": since.strftime(DATE_FMT),
+            },
         )
-        statuses = []
-        for row in payload.get("filers", payload if isinstance(payload, list) else []):
-            statuses.append(
-                FilerStatus(
-                    id_rssd=str(row["idRssd"]),
-                    period_end=_parse_date(row.get("reportingPeriodEndDate", reporting_period_end)),
-                    submission_ts=_parse_datetime(row["submissionDateTime"]),
-                )
+        return [
+            FilerStatus(
+                id_rssd=str(row["ID_RSSD"]),
+                period_end=reporting_period_end,
+                submission_ts=_parse_datetime(row["DateTime"]),
             )
-        return statuses
+            for row in payload
+        ]
 
     def retrieve_reporting_periods(self) -> list[date]:
         """All Call Report reporting period-end dates FFIEC currently has data for."""
-        payload = self._get("RetrieveReportingPeriods", params={"dataSeries": "Call"})
+        payload = self._get("RetrieveReportingPeriods", extra_headers={"dataSeries": "Call"})
         return sorted(_parse_date(p) for p in payload)
 
     def retrieve_panel_of_reporters(self, period_end: date) -> list[dict[str, Any]]:
         """Full roster of Call Report filers for a period: RSSD, name, city, state,
-        FDIC cert. Used to resolve a bank name/state (e.g. from a third-party list
-        with no RSSD) to the FFIEC join key -- not for pulling ratio data itself.
-        """
-        payload = self._get(
-            "RetrievePanelOfReporters",
-            params={"reportingPeriodEndDate": period_end.isoformat(), "dataSeries": "Call"},
-        )
-        return payload.get("reporters", payload if isinstance(payload, list) else [])
-
-    # --- tier 2: full pull for institutions whose timestamp changed -------
-
-    def retrieve_facsimile(self, id_rssd: str, period_end: date) -> dict[str, Any]:
-        """Full Call Report data for one institution/period (facsimile, JSON/SDF).
-
-        This is the sole source for the 12 ratios of concern (spec §5) --
-        ratios.extract_ratios() computes them directly from this payload's MDRM
-        fields (RCOA/RCFA/RCON/RCFD/RIAD codes), verified against a real FFIEC CDR
-        bulk Call Report download. See ratios.py's module docstring for per-ratio
-        confidence.
+        FDIC cert (real keys: ID_RSSD, Name, State, City, FDICCertNumber, ...).
+        Used to resolve a bank name/state (e.g. from a third-party list with no
+        RSSD) to the FFIEC join key -- not for pulling ratio data itself.
         """
         return self._get(
+            "RetrievePanelOfReporters",
+            extra_headers={"dataSeries": "Call", "reportingPeriodEndDate": period_end.strftime(DATE_FMT)},
+        )
+
+    # --- tier 2: full pull for institutions whose timestamp changed -----------
+
+    def retrieve_facsimile(self, id_rssd: str, period_end: date) -> dict[str, Any]:
+        """Full Call Report data for one institution/period, decoded from the raw
+        SDF byte-stream FFIEC returns into a flat MDRM-code -> value dict (the
+        shape ratios.extract_ratios() expects). See _parse_sdf's docstring for the
+        one real caveat here: the SDF layout is inferred from the bulk download's
+        convention, not confirmed against an actual single-facsimile SDF sample.
+        """
+        payload = self._get(
             "RetrieveFacsimile",
-            params={
-                "idRssd": id_rssd,
-                "reportingPeriodEndDate": period_end.isoformat(),
+            extra_headers={
+                "dataSeries": "Call",
+                "reportingPeriodEndDate": period_end.strftime(DATE_FMT),
+                "fiIdType": "ID_RSSD",
+                "fiId": str(id_rssd),
                 "facsimileFormat": "SDF",
             },
         )
+        return _parse_sdf(payload["FacsimileFile"])
 
-    def retrieve_ubpr_facsimile(self, id_rssd: str, period_end: date) -> dict[str, Any]:
-        """UBPR (peer-relative) data for one institution/period. Not used by the
-        current pipeline -- ratios.extract_ratios() computes everything from
-        retrieve_facsimile() instead, using verified Call Report MDRM codes rather
-        than the unverified UBPR concept-name mapping this used to depend on.
-        Kept in case UBPR's own peer-average figures are wired in later (e.g. for
-        peer_avg_charge_off_ratio, currently unset).
+    def retrieve_ubpr_facsimile(self, id_rssd: str, period_end: date) -> bytes:
+        """UBPR data for one institution/period, as raw XBRL bytes (FFIEC returns
+        an XBRL document here, not flat fields -- unlike retrieve_facsimile this
+        is NOT parsed, since the current pipeline doesn't use UBPR at all;
+        ratios.extract_ratios() computes everything from retrieve_facsimile()
+        using verified Call Report MDRM codes instead. Kept for a future caller
+        that wants UBPR's own peer-average figures (e.g. peer_avg_charge_off_ratio,
+        currently unset).
         """
-        return self._get(
+        payload = self._get(
             "RetrieveUBPRXBRLFacsimile",
-            params={"idRssd": id_rssd, "reportingPeriodEndDate": period_end.isoformat()},
+            extra_headers={
+                "reportingPeriodEndDate": period_end.strftime(DATE_FMT),
+                "fiIdType": "ID_RSSD",
+                "fiId": str(id_rssd),
+            },
         )
+        return _decode_byte_field(payload["XBRLFile"])
+
+
+def _extract_error_message(resp: requests.Response) -> str:
+    """FFIEC's documented error bodies are JSON {StatusCode, Message}. A gateway-
+    level rejection (WAF, Application Gateway) returns HTML instead -- surface
+    that raw text too, since "not FFIEC's JSON shape at all" is itself the
+    diagnostic signal that the request never reached FFIEC's own API logic.
+    """
+    try:
+        body = resp.json()
+        if isinstance(body, dict) and "Message" in body:
+            return str(body["Message"])
+    except ValueError:
+        pass
+    return resp.text[:300] or "(empty body)"
+
+
+def _decode_byte_field(value: Any) -> bytes:
+    """FFIEC's JSON serializes a byte[] as a base64 string (standard .NET/
+    Newtonsoft.Json behavior, matching the sample client's libraries per SIS611 §2.3.1).
+    Falls back to treating it as already-decoded text if base64 decoding fails,
+    rather than raising, since this hasn't been confirmed against a live sample."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    try:
+        return base64.b64decode(value)
+    except Exception:
+        return str(value).encode("utf-8", errors="replace")
+
+
+def _parse_sdf(raw_field: Any) -> dict[str, Any]:
+    """Decode+parse a single-institution SDF facsimile into {MDRM code: raw value}.
+
+    CAVEAT: FFIEC's SIS611 doc doesn't include an actual SDF content sample (just
+    a "[<byte stream>]" placeholder) -- this assumes the same tab-delimited,
+    quoted-header convention verified against the bulk Call Report download (a
+    header row of MDRM codes, e.g. `"IDRSSD"\\tRCON2170\\t...`, then one data row).
+    If a live pull comes back shaped differently, this is the one function to fix;
+    ratios.py's field-level mapping is unaffected either way.
+    """
+    text = _decode_byte_field(raw_field).decode("utf-8-sig", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return {}
+    codes = [c.strip().strip('"') for c in lines[0].split("\t")]
+    values = lines[1].split("\t")
+    return dict(zip(codes, values))
 
 
 def _parse_date(value: Any) -> date:
     if isinstance(value, date):
         return value
-    return datetime.fromisoformat(str(value)).date()
+    return datetime.strptime(str(value), DATE_FMT).date()
 
 
 def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
-    return datetime.fromisoformat(str(value))
+    text = str(value).strip()
+    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Unrecognized FFIEC datetime format: {text!r}")
