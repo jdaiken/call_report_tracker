@@ -21,7 +21,13 @@ permissions:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # FFIEC's PWS gateway rejects GitHub-hosted runners' cloud IPs outright (a
+    # 403 at the Azure Application Gateway/WAF layer, before FFIEC's own API
+    # logic ever sees the request) -- confirmed by the identical request
+    # succeeding when run from a personal network. This must run on a
+    # self-hosted runner (README: "Self-hosted runner setup"), which means the
+    # scheduled run only fires if that runner is online and idle at 13:00 UTC.
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 

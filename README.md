@@ -127,10 +127,32 @@ Unit tests: `python -m pytest tests/`
 ## Scheduling
 
 `.github/workflows/daily.yml` runs on a daily cron plus `workflow_dispatch` for
-manual triggering (do this once by hand after the first push, per spec §9, before
-trusting the unattended schedule). The `*.duckdb` state file is gitignored (spec §9)
-and instead persists across runs via `actions/cache` -- there is no repo commit of
-the database.
+manual triggering. The `*.duckdb` state file is gitignored (spec §9) and instead
+persists across runs via `actions/cache` -- there is no repo commit of the database.
+
+**This must run on a self-hosted runner, not GitHub's hosted `ubuntu-latest`.**
+FFIEC's PWS gateway rejects GitHub-hosted runners' cloud IPs outright -- a 403 at
+the Azure Application Gateway/WAF layer, before FFIEC's own API logic ever sees
+the request, confirmed by the identical request succeeding when run from a
+personal network. `runs-on: self-hosted` in the workflow reflects this.
+
+### Self-hosted runner setup
+
+1. Repo → **Settings → Actions → Runners → New self-hosted runner**, pick your OS,
+   and follow GitHub's generated `config.sh`/`config.cmd` commands on the machine
+   you want the job to actually run from (needs a network FFIEC's gateway accepts
+   -- i.e. not another cloud VM's datacenter IP, which is very likely to hit the
+   same block).
+2. Run it as a service (the setup script offers `svc.sh install && svc.sh start`
+   on Linux/macOS, or an equivalent on Windows) so it's listening even when no
+   one's logged in -- the scheduled run only fires if the runner is online and
+   idle at 13:00 UTC.
+3. That machine needs Python available for `actions/setup-python` to find/install
+   3.11, and needs to stay on and network-connected for the daily schedule to
+   actually execute (this is the real tradeoff of a self-hosted runner -- it
+   depends on that machine's uptime, unlike GitHub's hosted runners).
+4. Trigger a manual `workflow_dispatch` run once to confirm it picks up the
+   self-hosted runner and completes before trusting the unattended schedule.
 
 ## Known limitations (spec §11)
 
