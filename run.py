@@ -54,6 +54,11 @@ def main() -> int:
                              "time on a very large universe. Safe for real use: the poll_state cursor only "
                              "advances for periods fully covered this run, so anything left over is picked up "
                              "next run rather than lost. See run_daily's docstring for detail.")
+    parser.add_argument("--heartbeat", action="store_true",
+                         help="Temporary: send a short confirmation email even when there's nothing to "
+                              "report, so a quiet inbox isn't mistaken for a scheduled run that never fired. "
+                              "Never duplicates a real alert email. Meant to be turned off again once the "
+                              "live pipeline is trusted.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -86,7 +91,7 @@ def main() -> int:
 
     try:
         body = run_daily(conn, client, email_config, universe=universe, send=not args.no_send,
-                          max_facsimile_pulls=args.max_facsimile_pulls)
+                          max_facsimile_pulls=args.max_facsimile_pulls, heartbeat=args.heartbeat)
     except FFIECAuthError:
         # Spec §1: an expired/invalid token must surface loudly, not be swallowed.
         logging.exception("FFIEC auth failure -- token likely expired (90-day, no auto-refresh)")

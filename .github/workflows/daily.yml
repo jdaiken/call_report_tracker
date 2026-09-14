@@ -32,6 +32,10 @@ on:
         description: "Cap how many changed institutions get a full facsimile pull this run (blank = no cap). Safe to use: uncapped coverage is picked up on the next run, nothing is lost -- see run_daily's docstring. Useful to bound a single run's wall-clock time on the full universe."
         type: string
         default: ""
+      heartbeat:
+        description: "TEMPORARY (a few days): email a short confirmation even when there's nothing to report, so a quiet inbox isn't mistaken for a scheduled run that never fired. Turn off once the live pipeline is trusted."
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -119,14 +123,23 @@ jobs:
           FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          # workflow_dispatch inputs are unset on a schedule-triggered run, so
+          # fall back with bash's ${VAR:-default} rather than the `||` pattern
+          # used elsewhere -- more reliable for an explicit-false boolean input
+          # than relying on GitHub Actions' own truthiness coercion.
+          HEARTBEAT_INPUT: ${{ inputs.heartbeat }}
         run: |
+          HEARTBEAT_FLAG=""
+          if [ "${HEARTBEAT_INPUT:-true}" != "false" ]; then
+            HEARTBEAT_FLAG="--heartbeat"
+          fi
           if [ "${{ inputs.fake_diff }}" = "true" ]; then
             python run.py --fake-diff
           elif [ -n "${{ inputs.max_facsimile_pulls }}" ]; then
             python run.py --universe "${{ inputs.universe || 'full' }}" \
-              --max-facsimile-pulls "${{ inputs.max_facsimile_pulls }}"
+              --max-facsimile-pulls "${{ inputs.max_facsimile_pulls }}" $HEARTBEAT_FLAG
           else
-            python run.py --universe "${{ inputs.universe || 'full' }}"
+            python run.py --universe "${{ inputs.universe || 'full' }}" $HEARTBEAT_FLAG
           fi
 
       # Always save, even on failure, so a mid-run crash doesn't lose state already

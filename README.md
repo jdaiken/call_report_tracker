@@ -131,6 +131,11 @@ processed, so anything left over (past the cap, or an isolated per-institution
 failure) is retried on the next run rather than silently dropped -- see
 `run_daily`'s docstring in `pipeline.py`.
 
+`--heartbeat` (also the `heartbeat` workflow_dispatch input, default **on**)
+sends a short confirmation email even on an otherwise-silent "nothing to
+report" run, so a quiet inbox isn't mistaken for a scheduled run that never
+fired -- see "Heartbeat" under Scheduling below for how to turn it off.
+
 Unit tests: `python -m pytest tests/`
 
 ## Scheduling
@@ -175,6 +180,22 @@ One practical note: a multi-hour run on a private repo consumes GitHub
 Actions minutes from your account's plan (2,000 free minutes/month on GitHub
 Free) -- the one-time full backfill costs a few hundred minutes; ongoing daily
 runs should be much smaller (only institutions that actually changed).
+
+### Heartbeat (temporary)
+
+A normal "nothing to report" run is silent by design -- no email at all,
+which makes it impossible to tell "the schedule fired and found nothing" from
+"the schedule didn't fire" just by watching your inbox. `heartbeat` (workflow
+input, default **on**) sends a short confirmation email on that otherwise-
+silent path instead. It never duplicates a real alert -- if there's an actual
+Tier 1/2 event or Watch List change, that email is the confirmation, and no
+separate heartbeat goes out.
+
+This is meant to run for a few days while the full-universe rollout is being
+trusted, then get turned off. To turn it off: flip `default: true` to
+`default: false` for the `heartbeat` input in `.github/workflows/daily.yml`
+(or pass `heartbeat: false` on a one-off manual `workflow_dispatch` run
+without changing the default).
 
 ## Known limitations (spec §11)
 

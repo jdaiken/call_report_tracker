@@ -3,12 +3,15 @@ must only advance once every changed institution/period pair found for it this
 run has actually been processed, so a capped or partially-failed run never
 silently drops coverage (see pipeline.py's run_daily docstring)."""
 from datetime import date, datetime
+from unittest.mock import patch
 
 from ffiec_monitor import db
+from ffiec_monitor.config import EmailConfig
 from ffiec_monitor.ffiec_client import FilerStatus
 from ffiec_monitor.pipeline import run_daily
 
 PERIOD = date(2026, 6, 30)
+_EMAIL_CONFIG = EmailConfig(address="a@example.com", app_password="x", recipient="a@example.com")
 
 
 class FakeClient:
@@ -80,3 +83,48 @@ def test_clean_full_run_advances_cursor():
     assert db.get_last_polled_at(conn, PERIOD) is not None
     assert db.get_snapshot(conn, "1", PERIOD) is not None
     assert db.get_snapshot(conn, "2", PERIOD) is not None
+
+
+def test_nothing_to_report_stays_silent_without_heartbeat():
+    conn = db.connect(":memory:")
+    client = FakeClient([])  # nothing changed -- alert body is None
+
+    with patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
+        body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15))
+
+    assert body == "Nothing to report today."
+    mock_send.assert_not_called()
+
+
+def test_heartbeat_sends_confirmation_email_when_nothing_to_report():
+    conn = db.connect(":memory:")
+    client = FakeClient([])
+
+    with patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
+        body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15), heartbeat=True)
+
+    assert body != "Nothing to report today."
+    assert "No alerts or Watch List activity today." in body
+    mock_send.assert_called_once()
+    _config, subject, sent_body = mock_send.call_args[0]
+    assert "Heartbeat" in subject
+    assert sent_body == body
+
+
+def test_heartbeat_never_fires_when_there_is_a_real_alert():
+    """A real alert is its own confirmation the run fired -- heartbeat must not
+    also send a redundant second email."""
+    conn = db.connect(":memory:")
+    client = FakeClient(["1"])
+    # Force a real Tier 1-worthy change: first snapshot with a critical ratio,
+    # then a second period showing a qualifying capital deterioration.
+    run_daily(conn, client, None, run_date=date(2026, 7, 15), send=False)
+
+    with patch("ffiec_monitor.pipeline.email_report.build_email_body", return_value="ALERT BODY"), \
+         patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
+        body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 16), heartbeat=True)
+
+    assert body == "ALERT BODY"
+    mock_send.assert_called_once()
+    _config, subject, _sent_body = mock_send.call_args[0]
+    assert "Heartbeat" not in subject

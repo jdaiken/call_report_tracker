@@ -34,6 +34,7 @@ def run_daily(
     run_date: Optional[date] = None,
     send: bool = True,
     max_facsimile_pulls: Optional[int] = None,
+    heartbeat: bool = False,
 ) -> str:
     """Runs one full daily cycle. Returns the email body that was (or would have
     been) sent, or a short "nothing to report" message.
@@ -53,6 +54,13 @@ def run_daily(
     (past the cap, or skipped after an isolated per-institution failure) stays
     uncovered by the cursor and is picked up again on the next run -- nothing
     is silently dropped from coverage.
+
+    `heartbeat`, when true, sends a short confirmation email even when there's
+    nothing to report (normally a silent, un-emailed "Nothing to report today")
+    -- so a quiet inbox can't be mistaken for "the scheduled run didn't fire".
+    Temporary by design: meant to be turned off again once the live pipeline
+    (esp. the full-universe rollout) is trusted to actually run daily; it never
+    duplicates a real alert email, only fires on the otherwise-silent path.
     """
     run_date = run_date or date.today()
 
@@ -151,13 +159,39 @@ def run_daily(
         watch_list_changes, tier1_events, snapshot_entries, tier2_events, run_date,
     )
     if body is None:
-        return "Nothing to report today."
+        heartbeat_body = _heartbeat_body(
+            run_date, len(changed_to_process), failure_count,
+            len(universe) if universe is not None else None,
+        )
+        if heartbeat and send and email_config is not None:
+            email_report.send_email(email_config, f"[FFIEC Monitor] Heartbeat -- {run_date.isoformat()}",
+                                      heartbeat_body)
+        return heartbeat_body if heartbeat else "Nothing to report today."
 
     if send and email_config is not None:
         subject = _subject_for(watch_list_changes, tier1_events)
         email_report.send_email(email_config, subject, body)
 
     return body
+
+
+def _heartbeat_body(
+    run_date: date, processed_count: int, failure_count: int, universe_size: Optional[int],
+) -> str:
+    lines = [
+        f"FFIEC Call Report Monitor -- Daily Run: {run_date.isoformat()}",
+        "",
+        "No alerts or Watch List activity today.",
+        f"Checked {processed_count} changed institution/period pair(s)"
+        + (f" (universe: {universe_size} tracked institutions)." if universe_size is not None
+           else " (full FDIC-insured filer universe)."),
+    ]
+    if failure_count:
+        lines.append(f"{failure_count} institution/period pair(s) failed and will be retried next run.")
+    lines.append("")
+    lines.append("(Temporary heartbeat confirming the scheduled run actually fired -- "
+                  "safe to turn off once trusted.)")
+    return "\n".join(lines)
 
 
 def _process_one(
