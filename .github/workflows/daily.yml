@@ -15,6 +15,10 @@ on:
         description: "Send a synthetic Tier 1 test email instead of hitting the FFIEC API"
         type: boolean
         default: false
+      diagnose_secrets:
+        description: "One-off: print safe metadata about FFIEC_USER_ID/FFIEC_TOKEN (never the value), skip the real run"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -64,7 +68,16 @@ jobs:
       # without it, a Windows self-hosted runner defaults to PowerShell, which
       # would fail to parse `if [ ... ]; then`. Git for Windows (a checkout
       # prerequisite anyway) provides the bash GitHub Actions uses here.
+      - name: Diagnose secrets (safe metadata only, no real run)
+        if: ${{ inputs.diagnose_secrets == true }}
+        shell: bash
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+        run: python scripts/diagnose_secrets.py
+
       - name: Run monitor
+        if: ${{ inputs.diagnose_secrets != true }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
