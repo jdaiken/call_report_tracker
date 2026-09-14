@@ -8,6 +8,11 @@ needed for this kind of re-test.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from ffiec_monitor import config, db
 
 if __name__ == "__main__":
