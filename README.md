@@ -147,10 +147,13 @@ personal network. `runs-on: self-hosted` in the workflow reflects this.
    on Linux/macOS, or an equivalent on Windows) so it's listening even when no
    one's logged in -- the scheduled run only fires if the runner is online and
    idle at 13:00 UTC.
-3. That machine needs Python available for `actions/setup-python` to find/install
-   3.11, and needs to stay on and network-connected for the daily schedule to
-   actually execute (this is the real tradeoff of a self-hosted runner -- it
-   depends on that machine's uptime, unlike GitHub's hosted runners).
+3. That machine needs Python (3.9+) already installed and on `PATH` -- the
+   workflow uses it directly rather than `actions/setup-python`, since that
+   action's own Windows installer needs admin rights to write to the registry,
+   which fails on a non-elevated runner. It also needs to stay on and
+   network-connected for the daily schedule to actually execute (this is the
+   real tradeoff of a self-hosted runner -- it depends on that machine's
+   uptime, unlike GitHub's hosted runners).
 4. Trigger a manual `workflow_dispatch` run once to confirm it picks up the
    self-hosted runner and completes before trusting the unattended schedule.
 

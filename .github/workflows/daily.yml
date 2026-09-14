@@ -31,11 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # actions/setup-python's own Windows installer needs to write to HKLM to
+      # clean up a stale registry entry, which fails without admin rights on a
+      # non-elevated self-hosted runner. Since a self-hosted runner is expected
+      # to bring its own toolchain (that's the point of self-hosting), use
+      # whatever `python`/`pip` are already on this machine's PATH instead of
+      # asking setup-python to download and install a fresh copy.
       - run: pip install -r requirements.txt
+        shell: bash
 
       # The *.duckdb file is gitignored (spec §9) -- state persists across daily runs
       # via cache instead of being committed. restore-keys falls back to the most
@@ -52,11 +55,17 @@ jobs:
       # mapping every run keeps the persisted duckdb's small-universe list in sync
       # with the repo regardless of what an earlier cached run had loaded.
       - name: Load risk-ranking reference list
+        shell: bash
         run: |
           python scripts/import_risk_rankings.py data/risk-rankings.csv
           python scripts/apply_rssd_map.py
 
+      # Explicit `shell: bash` because this uses bash conditional syntax --
+      # without it, a Windows self-hosted runner defaults to PowerShell, which
+      # would fail to parse `if [ ... ]; then`. Git for Windows (a checkout
+      # prerequisite anyway) provides the bash GitHub Actions uses here.
       - name: Run monitor
+        shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
           FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
