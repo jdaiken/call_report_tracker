@@ -48,6 +48,11 @@ def main() -> int:
     parser.add_argument("--fake-diff", action="store_true",
                         help="synthesize one Tier 1 event to prove the email path works end to end (spec §10.2), "
                              "without calling the FFIEC API")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="DEBUG/SMOKE-TEST ONLY: cap how many changed institution/period pairs get the "
+                             "full facsimile pull this run, for a quick live-pipeline check without waiting on "
+                             "the whole universe. See run_daily's docstring for the coverage caveat -- never use "
+                             "this for the real daily run.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -79,7 +84,7 @@ def main() -> int:
     email_config = None if args.no_send else EmailConfig.from_env()
 
     try:
-        body = run_daily(conn, client, email_config, universe=universe, send=not args.no_send)
+        body = run_daily(conn, client, email_config, universe=universe, send=not args.no_send, limit=args.limit)
     except FFIECAuthError:
         # Spec §1: an expired/invalid token must surface loudly, not be swallowed.
         logging.exception("FFIEC auth failure -- token likely expired (90-day, no auto-refresh)")

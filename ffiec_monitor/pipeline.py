@@ -33,6 +33,7 @@ def run_daily(
     universe: Optional[set[str]] = None,
     run_date: Optional[date] = None,
     send: bool = True,
+    limit: Optional[int] = None,
 ) -> str:
     """Runs one full daily cycle. Returns the email body that was (or would have
     been) sent, or a short "nothing to report" message.
@@ -40,6 +41,18 @@ def run_daily(
     `universe`, when given, restricts which institutions get the expensive full
     pull + diff step (spec §10.1's small-list testing phase). The cheap ping
     always covers whatever the ping endpoint returns.
+
+    `limit`, when given, caps how many changed institution/period pairs actually
+    get the full facsimile pull this run -- for smoke-testing the live pipeline
+    (each full pull is its own FFIEC round-trip; on a from-scratch cursor with a
+    ~200-institution universe that's ~200-400 sequential calls, too slow for a
+    quick "does this still work end to end" check). Debug/smoke-test only, NOT
+    for normal operation: the poll_state cursor advances past *everything* the
+    ping found changed regardless of `limit` (it's set right after the ping,
+    before this truncation), so anything beyond the cap is NOT retried next
+    run -- it's silently dropped from this cycle's coverage unless it changes
+    again later. That's an acceptable cost for a one-off confirmation run, not
+    for the real daily job (which must never pass `limit`).
     """
     run_date = run_date or date.today()
 
@@ -63,6 +76,13 @@ def run_daily(
         db.set_last_polled_at(conn, period_end, poll_started_at)
 
     logger.info("Found %d changed institution/period pair(s) since last poll.", len(changed))
+    if limit is not None and len(changed) > limit:
+        logger.warning(
+            "--limit %d set: processing only the first %d of %d changed pairs "
+            "this run (debug/smoke-test only -- see run_daily's docstring).",
+            limit, limit, len(changed),
+        )
+        changed = changed[:limit]
 
     watch_list_changes: list[email_report.WatchListChangeEvent] = []
     tier1_events: list[email_report.Tier1Event] = []

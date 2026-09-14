@@ -28,6 +28,10 @@ on:
         description: "TEMPORARY: clear poll_state before running, so retrieve_filer_statuses sees every filer again instead of a cursor an earlier crashed run already advanced"
         type: boolean
         default: false
+      limit:
+        description: "TEMPORARY smoke-test knob: cap how many changed institutions get a full facsimile pull this run (blank = no cap). Coverage caveat in run_daily's docstring -- never set this for the real daily run."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -109,6 +113,8 @@ jobs:
         run: |
           if [ "${{ inputs.fake_diff }}" = "true" ]; then
             python run.py --fake-diff
+          elif [ -n "${{ inputs.limit }}" ]; then
+            python run.py --universe "${{ inputs.universe || 'small' }}" --limit "${{ inputs.limit }}"
           else
             python run.py --universe "${{ inputs.universe || 'small' }}"
           fi
