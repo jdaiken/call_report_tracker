@@ -20,24 +20,27 @@ on:
         type: boolean
         default: false
       runner_type:
-        description: "TEMPORARY test knob: ubuntu-latest to check whether the earlier 403s were really IP-based, or just the truncated token"
+        description: "TEMPORARY test knob: which runner to use for this manual run"
         type: choice
-        options: [self-hosted, ubuntu-latest]
-        default: self-hosted
+        options: [ubuntu-latest, self-hosted]
+        default: ubuntu-latest
 
 permissions:
   contents: read
 
 jobs:
   run:
-    # NOTE: the "self-hosted required" conclusion below was reached while the
-    # FFIEC_TOKEN secret was truncated -- every 403 we saw, on both hosted and
-    # self-hosted runners, happened with that same broken token. We never
-    # actually confirmed IP-blocking with a *valid* token. runner_type lets us
-    # test that now that the token is fixed; default stays self-hosted until
-    # a hosted-runner run is confirmed to work, at which point this whole
-    # self-hosted setup (and the runner_type input) can likely be removed.
-    runs-on: ${{ inputs.runner_type || 'self-hosted' }}
+    # NOTE: every 403 seen so far (on both hosted and self-hosted runners, with
+    # both token states we've tested) was a generic Azure Application Gateway
+    # HTML page, not FFIEC's documented JSON error shape -- i.e. the request was
+    # rejected at the gateway/WAF before FFIEC's API logic ran, on every runner
+    # type tried. Self-hosted was never actually confirmed necessary (an earlier
+    # claim that a personal-network request succeeded was never actually tested).
+    # ffiec_client.py just got a fix for one concrete, IP-independent candidate:
+    # it was sending requests' default User-Agent, a known WAF "bad bot" trigger.
+    # Default is now ubuntu-latest to test that fix cleanly; switch back to
+    # self-hosted here only if a hosted run still 403s with this fix in place.
+    runs-on: ${{ inputs.runner_type || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +50,7 @@ jobs:
       # for ubuntu-latest, which doesn't have that problem and isn't
       # guaranteed to have Python preinstalled the way a self-hosted runner does.
       - uses: actions/setup-python@v5
-        if: ${{ (inputs.runner_type || 'self-hosted') != 'self-hosted' }}
+        if: ${{ (inputs.runner_type || 'ubuntu-latest') != 'self-hosted' }}
         with:
           python-version: "3.11"
 

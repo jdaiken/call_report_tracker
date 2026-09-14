@@ -114,6 +114,24 @@ def test_retrieve_facsimile_decodes_base64_sdf_into_flat_dict():
     assert facsimile["RCONB529"] == "16787"
 
 
+def test_sends_a_real_user_agent_not_requests_default():
+    """requests' default UA ("python-requests/x.y.z") is a known signature Azure
+    Application Gateway's WAF (OWASP CRS "known bad UA" rules) blocks outright,
+    before APIM or FFIEC's own logic runs -- symptomatically identical to every
+    403 seen so far (generic gateway HTML, not FFIEC's JSON error shape),
+    regardless of token validity or which runner/IP made the request."""
+    session = MagicMock()
+    session.get.return_value = _fake_response([])
+    client = _client(session)
+
+    client.retrieve_reporting_periods()
+
+    _, kwargs = session.get.call_args
+    user_agent = kwargs["headers"]["User-Agent"]
+    assert "python-requests" not in user_agent.lower()
+    assert user_agent
+
+
 def test_401_raises_auth_error():
     session = MagicMock()
     session.get.return_value = _fake_response(

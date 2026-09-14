@@ -36,6 +36,16 @@ from .config import FFIECConfig
 REQUEST_TIMEOUT_SECONDS = 30
 DATE_FMT = "%m/%d/%Y"
 
+# requests' default User-Agent ("python-requests/x.y.z") is a well-known signature
+# that Azure Application Gateway WAF (OWASP Core Rule Set, e.g. rule 913101 "known
+# bad UA") blocks outright at the perimeter -- before APIM or FFIEC's own API logic
+# ever runs. That failure mode looks identical to a bad/expired token (403, generic
+# gateway HTML instead of FFIEC's documented JSON error shape) and is IP-independent,
+# which is consistent with every 403 seen so far regardless of token state or which
+# runner (hosted vs. self-hosted) made the request. Sending a real, descriptive UA
+# instead is the standard fix.
+USER_AGENT = "call-report-tracker/1.0 (+https://github.com/jdaiken/call_report_tracker)"
+
 
 class FFIECAuthError(RuntimeError):
     """A real auth problem: missing/invalid/expired token (401, or a 400 whose
@@ -78,6 +88,8 @@ class FFIECClient:
             "UserID": self._config.user_id,
             "Authentication": f"Bearer {self._config.token}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
             **(extra_headers or {}),
         }
         resp = self._session.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)

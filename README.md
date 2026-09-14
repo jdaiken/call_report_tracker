@@ -130,11 +130,26 @@ Unit tests: `python -m pytest tests/`
 manual triggering. The `*.duckdb` state file is gitignored (spec §9) and instead
 persists across runs via `actions/cache` -- there is no repo commit of the database.
 
-**This must run on a self-hosted runner, not GitHub's hosted `ubuntu-latest`.**
-FFIEC's PWS gateway rejects GitHub-hosted runners' cloud IPs outright -- a 403 at
-the Azure Application Gateway/WAF layer, before FFIEC's own API logic ever sees
-the request, confirmed by the identical request succeeding when run from a
-personal network. `runs-on: self-hosted` in the workflow reflects this.
+**Runner type is currently unresolved -- don't assume self-hosted is required.**
+Every live call so far has failed identically (a generic Azure Application
+Gateway 403 HTML page, not FFIEC's documented JSON error shape) regardless of
+runner type (GitHub-hosted vs. this repo's self-hosted Windows runner) or which
+of two token states was in the secret -- so neither "GitHub's IPs are blocked"
+nor "the token was bad" is actually confirmed; an earlier version of this README
+claimed the IP-block theory was confirmed by a personal-network test, but that
+test was never actually run, so that line was wrong and has been removed.
+
+One concrete, previously-unaddressed candidate was found and fixed: the client
+was sending `requests`' default `User-Agent` (`python-requests/x.y.z`), a
+signature Azure's WAF (OWASP Core Rule Set "known bad UA" rules) commonly blocks
+at the gateway before APIM or FFIEC's own logic ever runs -- which would produce
+exactly this symptom (generic gateway HTML 403) independent of token validity
+*and* independent of source IP, matching every failure seen on both runner types.
+`ffiec_client.py` now sends a real `User-Agent` (see `USER_AGENT` in that file)
+and an explicit `Accept: application/json`. This needs a real
+`workflow_dispatch` run to confirm before drawing any conclusion about whether
+a self-hosted runner is needed at all -- try `ubuntu-latest` first now that this
+fix is in, since it's simpler to operate if it works.
 
 ### Self-hosted runner setup
 
