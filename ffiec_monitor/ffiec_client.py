@@ -70,9 +70,11 @@ class FFIECClient:
         resp = self._session.get(url, headers=self._headers(), params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         if resp.status_code in (401, 403):
             raise FFIECAuthError(
-                f"FFIEC PWS auth failure ({resp.status_code}) calling {function}. "
-                "FFIEC_TOKEN is very likely expired (90-day, no auto-refresh) -- "
-                "renew it and update the GitHub Actions secret."
+                f"FFIEC PWS auth failure ({resp.status_code}) calling {function}: {resp.text[:500]!r}. "
+                "Could be an expired FFIEC_TOKEN (90-day, no auto-refresh), but check the body above "
+                "first -- a 403 this fast (immediately, first call) is also consistent with a missing "
+                "Azure API Management subscription key header, a wrong UserID, or a malformed request "
+                "the token itself was never involved in."
             )
         if not resp.ok:
             raise FFIECAPIError(f"FFIEC PWS error {resp.status_code} calling {function}: {resp.text[:500]}")
