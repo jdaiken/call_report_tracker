@@ -11,6 +11,12 @@ class MissingSecretError(RuntimeError):
 
 def _require(name: str) -> str:
     value = os.environ.get(name)
+    if value is not None:
+        # A trailing newline/space from copy-pasting into GitHub's secret field
+        # (or a local shell) turns into a malformed HTTP header value later --
+        # Azure's WAF can reject that outright with a generic gateway error
+        # page, before the app ever sees (or complains about) the real token.
+        value = value.strip()
     if not value:
         raise MissingSecretError(
             f"Required environment variable {name!r} is not set. "
