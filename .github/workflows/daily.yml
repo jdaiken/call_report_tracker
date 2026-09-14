@@ -19,28 +19,38 @@ on:
         description: "One-off: print safe metadata about FFIEC_USER_ID/FFIEC_TOKEN (never the value), skip the real run"
         type: boolean
         default: false
+      runner_type:
+        description: "TEMPORARY test knob: ubuntu-latest to check whether the earlier 403s were really IP-based, or just the truncated token"
+        type: choice
+        options: [self-hosted, ubuntu-latest]
+        default: self-hosted
 
 permissions:
   contents: read
 
 jobs:
   run:
-    # FFIEC's PWS gateway rejects GitHub-hosted runners' cloud IPs outright (a
-    # 403 at the Azure Application Gateway/WAF layer, before FFIEC's own API
-    # logic ever sees the request) -- confirmed by the identical request
-    # succeeding when run from a personal network. This must run on a
-    # self-hosted runner (README: "Self-hosted runner setup"), which means the
-    # scheduled run only fires if that runner is online and idle at 13:00 UTC.
-    runs-on: self-hosted
+    # NOTE: the "self-hosted required" conclusion below was reached while the
+    # FFIEC_TOKEN secret was truncated -- every 403 we saw, on both hosted and
+    # self-hosted runners, happened with that same broken token. We never
+    # actually confirmed IP-blocking with a *valid* token. runner_type lets us
+    # test that now that the token is fixed; default stays self-hosted until
+    # a hosted-runner run is confirmed to work, at which point this whole
+    # self-hosted setup (and the runner_type input) can likely be removed.
+    runs-on: ${{ inputs.runner_type || 'self-hosted' }}
     steps:
       - uses: actions/checkout@v4
 
-      # actions/setup-python's own Windows installer needs to write to HKLM to
-      # clean up a stale registry entry, which fails without admin rights on a
-      # non-elevated self-hosted runner. Since a self-hosted runner is expected
-      # to bring its own toolchain (that's the point of self-hosting), use
-      # whatever `python`/`pip` are already on this machine's PATH instead of
-      # asking setup-python to download and install a fresh copy.
+      # Skipped on self-hosted: its Windows installer needs HKLM registry
+      # access that fails without admin rights on a non-elevated runner, and a
+      # self-hosted runner is expected to bring its own toolchain anyway. Kept
+      # for ubuntu-latest, which doesn't have that problem and isn't
+      # guaranteed to have Python preinstalled the way a self-hosted runner does.
+      - uses: actions/setup-python@v5
+        if: ${{ (inputs.runner_type || 'self-hosted') != 'self-hosted' }}
+        with:
+          python-version: "3.11"
+
       - run: pip install -r requirements.txt
         shell: bash
 
