@@ -42,6 +42,14 @@ jobs:
           restore-keys: |
             duckdb-
 
+      # Idempotent: a full replace of risk_rankings from the committed source +
+      # mapping every run keeps the persisted duckdb's small-universe list in sync
+      # with the repo regardless of what an earlier cached run had loaded.
+      - name: Load risk-ranking reference list
+        run: |
+          python scripts/import_risk_rankings.py data/risk-rankings.csv
+          python scripts/apply_rssd_map.py
+
       - name: Run monitor
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
