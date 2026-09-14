@@ -12,10 +12,18 @@ real spec differs from the earlier guess in three load-bearing ways:
      params.
   2. Dates are "MM/DD/YYYY" strings, not ISO 8601.
   3. RetrieveFacsimile/RetrieveUBPRXBRLFacsimile return a raw byte-stream file
-     (`{"FacsimileFile": <bytes>}` / `{"XBRLFile": <bytes>}`) -- SDF/XBRL/PDF --
-     not pre-parsed JSON fields keyed by MDRM code. ratios.py's field-level
-     mapping (verified against a real bulk download) is still correct; it's the
-     *shape this client hands it* that needed fixing -- see _parse_sdf below.
+     (base64) -- SDF/XBRL/PDF -- not pre-parsed JSON fields keyed by MDRM code.
+     ratios.py's field-level mapping (verified against a real bulk download) is
+     still correct; it's the *shape this client hands it* that needed fixing --
+     see _parse_sdf/_unwrap_facsimile_payload below.
+
+That gateway-level 403 turned out to be unrelated to any of the above: it was
+`requests`' default User-Agent (`python-requests/x.y.z`) tripping Azure's WAF
+"known bad UA" rule, independent of headers/dates/token. Fixed by sending a
+real `User-Agent` (see USER_AGENT below). Once that was fixed, a live call
+confirmed the doc's placeholder example for point 3 was itself slightly off:
+RetrieveFacsimile returns the base64 blob as a *bare* JSON string body, not
+`{"FacsimileFile": <base64>}` -- see _unwrap_facsimile_payload.
 
 Base URL: https://ffieccdr.azure-api.us/public/<function>. Auth is a `UserID`
 header plus `Authentication: Bearer <token>` header, a 90-day non-refreshing JWT,
@@ -166,6 +174,10 @@ class FFIECClient:
         shape ratios.extract_ratios() expects). See _parse_sdf's docstring for the
         one real caveat here: the SDF layout is inferred from the bulk download's
         convention, not confirmed against an actual single-facsimile SDF sample.
+
+        A first live call (2026-09-14) showed the response body is a *bare* JSON
+        string (the base64 blob directly), not `{"FacsimileFile": <base64>}` as
+        guessed from the doc's placeholder example -- see _unwrap_facsimile_payload.
         """
         payload = self._get(
             "RetrieveFacsimile",
@@ -177,7 +189,7 @@ class FFIECClient:
                 "facsimileFormat": "SDF",
             },
         )
-        return _parse_sdf(payload["FacsimileFile"])
+        return _parse_sdf(_unwrap_facsimile_payload(payload, "FacsimileFile"))
 
     def retrieve_ubpr_facsimile(self, id_rssd: str, period_end: date) -> bytes:
         """UBPR data for one institution/period, as raw XBRL bytes (FFIEC returns
@@ -196,7 +208,27 @@ class FFIECClient:
                 "fiId": str(id_rssd),
             },
         )
-        return _decode_byte_field(payload["XBRLFile"])
+        return _decode_byte_field(_unwrap_facsimile_payload(payload, "XBRLFile"))
+
+
+def _unwrap_facsimile_payload(payload: Any, wrapper_key: str) -> Any:
+    """RetrieveFacsimile/RetrieveUBPRXBRLFacsimile were guessed (from the doc's
+    "[<byte stream>]" placeholder) to return `{wrapper_key: <base64>}`. A first
+    live call instead returned the base64 blob as a bare JSON string body. Handle
+    both rather than re-guess: if it's a dict, unwrap it as documented; if it's
+    already the raw value (str/bytes), use it directly; anything else is a real
+    shape surprise worth a clear error instead of an opaque TypeError two frames
+    down in _parse_sdf/_decode_byte_field.
+    """
+    if isinstance(payload, dict) and wrapper_key in payload:
+        return payload[wrapper_key]
+    if isinstance(payload, (str, bytes, bytearray)):
+        return payload
+    raise FFIECAPIError(
+        f"Unexpected facsimile payload shape: {type(payload).__name__} "
+        f"(expected dict with {wrapper_key!r}, or a bare string/bytes). "
+        f"Preview: {str(payload)[:200]!r}"
+    )
 
 
 def _extract_error_message(resp: requests.Response) -> str:

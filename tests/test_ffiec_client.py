@@ -114,6 +114,29 @@ def test_retrieve_facsimile_decodes_base64_sdf_into_flat_dict():
     assert facsimile["RCONB529"] == "16787"
 
 
+def test_retrieve_facsimile_handles_bare_string_payload():
+    """A real live call (2026-09-14) returned the base64 blob as a bare JSON
+    string body, not wrapped in {"FacsimileFile": ...} as the doc's placeholder
+    example implied -- the client must handle both shapes."""
+    sdf_text = '"IDRSSD"\tRCON2170\tRCONB529\n37\t85210\t16787\n'
+    encoded = base64.b64encode(sdf_text.encode()).decode()
+    session = MagicMock()
+    session.get.return_value = _fake_response(encoded)
+    client = _client(session)
+
+    facsimile = client.retrieve_facsimile("37", date(2026, 6, 30))
+
+    assert facsimile["RCON2170"] == "85210"
+    assert facsimile["RCONB529"] == "16787"
+
+
+def test_retrieve_facsimile_unexpected_shape_raises_clear_error():
+    session = MagicMock()
+    session.get.return_value = _fake_response({"UnexpectedKey": 123})
+    with pytest.raises(FFIECAPIError, match="Unexpected facsimile payload shape"):
+        _client(session).retrieve_facsimile("37", date(2026, 6, 30))
+
+
 def test_sends_a_real_user_agent_not_requests_default():
     """requests' default UA ("python-requests/x.y.z") is a known signature Azure
     Application Gateway's WAF (OWASP CRS "known bad UA" rules) blocks outright,
