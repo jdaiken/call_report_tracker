@@ -24,6 +24,10 @@ on:
         type: choice
         options: [ubuntu-latest, self-hosted]
         default: ubuntu-latest
+      reset_cursor:
+        description: "TEMPORARY: clear poll_state before running, so retrieve_filer_statuses sees every filer again instead of a cursor an earlier crashed run already advanced"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -88,6 +92,11 @@ jobs:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
           FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
         run: python scripts/diagnose_secrets.py
+
+      - name: Reset poll_state cursor (temporary re-test knob)
+        if: ${{ inputs.reset_cursor == true }}
+        shell: bash
+        run: python scripts/reset_poll_state.py
 
       - name: Run monitor
         if: ${{ inputs.diagnose_secrets != true }}

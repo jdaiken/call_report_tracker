@@ -62,6 +62,8 @@ def run_daily(
         # mid-call is seen again next run rather than silently skipped.
         db.set_last_polled_at(conn, period_end, poll_started_at)
 
+    logger.info("Found %d changed institution/period pair(s) since last poll.", len(changed))
+
     watch_list_changes: list[email_report.WatchListChangeEvent] = []
     tier1_events: list[email_report.Tier1Event] = []
     tier2_events: list[email_report.Tier2Event] = []
