@@ -30,6 +30,14 @@ class FFIECConfig:
     user_id: str
     token: str
     base_url: str = "https://ffieccdr.azure-api.us/public"
+    # FFIEC's documented ceiling is ~2,500 requests/hour. Default target stays
+    # comfortably under that (not right at it) because the ceiling is FFIEC's
+    # side of a shared quota (this UserID may see other traffic) and because
+    # request pacing measured live (~1/sec unthrottled) would blow through
+    # 2,500/hour on anything beyond a few hundred institutions -- see
+    # ffiec_client.py's rate limiter. Override via FFIEC_MAX_REQUESTS_PER_HOUR
+    # for a token known to have a different/dedicated quota.
+    max_requests_per_hour: int = 2000
 
     @classmethod
     def from_env(cls) -> "FFIECConfig":
@@ -37,6 +45,9 @@ class FFIECConfig:
             user_id=_require("FFIEC_USER_ID"),
             token=_require("FFIEC_TOKEN"),
             base_url=os.environ.get("FFIEC_BASE_URL", cls.base_url),
+            max_requests_per_hour=int(
+                os.environ.get("FFIEC_MAX_REQUESTS_PER_HOUR", cls.max_requests_per_hour)
+            ),
         )
 
 

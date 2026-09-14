@@ -5,7 +5,7 @@ RetrieveFacsimile's shape) and failed instantly against the live API as a result
 """
 import base64
 from datetime import date, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,6 +15,8 @@ from ffiec_monitor.ffiec_client import (
     FFIECAuthError,
     FFIECClient,
     FFIECRateLimitError,
+    RATE_LIMIT_MAX_RETRIES,
+    _parse_replenish_seconds,
 )
 
 
@@ -166,14 +168,62 @@ def test_401_raises_auth_error():
 
 def test_403_raises_rate_limit_error_not_auth_error():
     """Per FFIEC's own documented error table, 403 means out-of-quota, not a bad
-    token -- conflating the two was the original bug's second-order mistake."""
+    token -- conflating the two was the original bug's second-order mistake.
+    A 403 that never clears exhausts the backoff retries and still raises."""
     session = MagicMock()
     session.get.return_value = _fake_response(
         {"StatusCode": 403, "Message": "Out of call volume quota. Quota will be replenished in 12 minutes."},
         status_code=403,
     )
-    with pytest.raises(FFIECRateLimitError):
-        _client(session).retrieve_reporting_periods()
+    with patch("ffiec_monitor.ffiec_client.time.sleep") as mock_sleep:
+        with pytest.raises(FFIECRateLimitError):
+            _client(session).retrieve_reporting_periods()
+    # Proactive throttle sleep + backoff sleep on each retry, but bounded --
+    # never an unbounded/silent retry loop.
+    assert session.get.call_count == RATE_LIMIT_MAX_RETRIES + 1
+    assert mock_sleep.called
+
+
+def test_403_then_success_recovers_without_raising():
+    """A transient quota hit that clears on retry must not fail the call --
+    this is the whole point of backing off instead of crashing immediately."""
+    session = MagicMock()
+    rate_limited = _fake_response(
+        {"StatusCode": 403, "Message": "Out of call volume quota. Quota will be replenished in 1 minutes."},
+        status_code=403,
+    )
+    success = _fake_response(["12/31/2002"])
+    session.get.side_effect = [rate_limited, success]
+
+    with patch("ffiec_monitor.ffiec_client.time.sleep"):
+        periods = _client(session).retrieve_reporting_periods()
+
+    assert periods == [date(2002, 12, 31)]
+    assert session.get.call_count == 2
+
+
+def test_parse_replenish_seconds_from_documented_message():
+    assert _parse_replenish_seconds("Quota will be replenished in 12 minutes.") == 720.0
+
+
+def test_parse_replenish_seconds_falls_back_to_none_for_unmatched_text():
+    assert _parse_replenish_seconds("Some other error entirely") is None
+
+
+def test_throttle_paces_consecutive_requests():
+    """With a low max_requests_per_hour, back-to-back calls on the same client
+    must sleep between requests rather than firing as fast as the network allows
+    -- this is what keeps a large (e.g. full-universe) run under FFIEC's quota."""
+    session = MagicMock()
+    session.get.return_value = _fake_response([])
+    config = FFIECConfig(user_id="PWSUser101", token="tok123", max_requests_per_hour=3600)  # 1/sec
+    client = FFIECClient(config, session=session)
+
+    with patch("ffiec_monitor.ffiec_client.time.sleep") as mock_sleep:
+        client.retrieve_reporting_periods()
+        client.retrieve_reporting_periods()
+
+    assert mock_sleep.called  # second call had to wait for the first request's pacing window
 
 
 def test_400_with_token_message_raises_auth_error():
@@ -204,5 +254,6 @@ def test_gateway_level_403_html_body_still_raises_rate_limit_error_with_raw_body
     resp.json.side_effect = ValueError("not JSON")
     session.get.return_value = resp
 
-    with pytest.raises(FFIECRateLimitError, match="403 Forbidden"):
-        _client(session).retrieve_reporting_periods()
+    with patch("ffiec_monitor.ffiec_client.time.sleep"):
+        with pytest.raises(FFIECRateLimitError, match="403 Forbidden"):
+            _client(session).retrieve_reporting_periods()

@@ -115,17 +115,21 @@ python run.py --fake-diff
 #    entity-scoping warning in the script's docstring before trusting the output)
 python scripts/svb_backtest.py
 
-# 4. Only once the small-list run is trusted, widen to the full universe
+# 4. Full universe (every FDIC-insured Call Report filer, ~4,500 institutions) --
+#    confirmed working live 2026-09-14 (see Scheduling below) and now the default
 python run.py --universe full
 ```
 
 `--no-send` builds and prints the email body without actually emailing it, for
-dry runs. `--limit N` (also exposed as the `limit` workflow_dispatch input) caps
-how many changed institutions get the expensive full pull in one run, for a fast
-few-institution live smoke test instead of waiting on the whole universe --
-debug-only, see `run_daily`'s docstring in `pipeline.py` for the coverage
-caveat (the poll_state cursor still advances past everything skipped by the
-cap, so it's not retried next run); never use it for the real daily job.
+dry runs. `--max-facsimile-pulls N` (also exposed as the `max_facsimile_pulls`
+workflow_dispatch input) caps how many changed institutions get the expensive
+full pull in one run -- for a fast few-institution live smoke test, or to bound
+a single run's wall-clock time on the full universe. Safe for real use (unlike
+an earlier version of this flag called `--limit`): `poll_state`'s cursor only
+advances for a period once every pair found for it this run was actually
+processed, so anything left over (past the cap, or an isolated per-institution
+failure) is retried on the next run rather than silently dropped -- see
+`run_daily`'s docstring in `pipeline.py`.
 
 Unit tests: `python -m pytest tests/`
 
@@ -152,6 +156,25 @@ auth, `RetrieveFilersSubmissionDateTime`, `RetrievePanelOfReporters`, and
 and the self-hosted runner registered on `LAPTOP-1MHCNETT` are no longer
 needed and can be removed (deregister it from **Settings → Actions → Runners**
 whenever convenient -- an idle registered runner isn't harmful, just unused).
+
+**Full universe (~4,500 institutions), confirmed live 2026-09-14.** A 200-bank
+small-universe run measured a natural (unthrottled) request pace of roughly
+1/sec (~3,600/hour) -- comfortably over FFIEC's ~2,500/hour ceiling on
+anything past a few hundred institutions. `FFIECClient` now paces itself
+(`FFIECConfig.max_requests_per_hour`, default 2,000, override via
+`FFIEC_MAX_REQUESTS_PER_HOUR`) and backs off-and-retries a 403 instead of
+crashing the whole run over one quota hit. The workflow now defaults
+`universe: full` and sets `timeout-minutes: 340`, since the first-ever full
+run is ~8,000+ throttled facsimile pulls -- potentially several hours. That's
+fine to let run long: `run_daily` only advances `poll_state`'s cursor for a
+period once every pair found for it *this run* was actually processed (fixed
+alongside this -- see `--max-facsimile-pulls` in the Running section above),
+so a run that hits the timeout, or fails on one institution, just resumes
+where it left off on the next scheduled fire rather than losing coverage.
+One practical note: a multi-hour run on a private repo consumes GitHub
+Actions minutes from your account's plan (2,000 free minutes/month on GitHub
+Free) -- the one-time full backfill costs a few hundred minutes; ongoing daily
+runs should be much smaller (only institutions that actually changed).
 
 ## Known limitations (spec §11)
 

@@ -12,7 +12,7 @@ import duckdb
 
 from . import alerts, db, email_report, ratios, watch_list
 from .config import EmailConfig
-from .ffiec_client import FFIECAuthError, FFIECClient
+from .ffiec_client import FFIECAuthError, FFIECClient, FFIECRateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def run_daily(
     universe: Optional[set[str]] = None,
     run_date: Optional[date] = None,
     send: bool = True,
-    limit: Optional[int] = None,
+    max_facsimile_pulls: Optional[int] = None,
 ) -> str:
     """Runs one full daily cycle. Returns the email body that was (or would have
     been) sent, or a short "nothing to report" message.
@@ -42,17 +42,17 @@ def run_daily(
     pull + diff step (spec §10.1's small-list testing phase). The cheap ping
     always covers whatever the ping endpoint returns.
 
-    `limit`, when given, caps how many changed institution/period pairs actually
-    get the full facsimile pull this run -- for smoke-testing the live pipeline
-    (each full pull is its own FFIEC round-trip; on a from-scratch cursor with a
-    ~200-institution universe that's ~200-400 sequential calls, too slow for a
-    quick "does this still work end to end" check). Debug/smoke-test only, NOT
-    for normal operation: the poll_state cursor advances past *everything* the
-    ping found changed regardless of `limit` (it's set right after the ping,
-    before this truncation), so anything beyond the cap is NOT retried next
-    run -- it's silently dropped from this cycle's coverage unless it changes
-    again later. That's an acceptable cost for a one-off confirmation run, not
-    for the real daily job (which must never pass `limit`).
+    `max_facsimile_pulls`, when given, caps how many changed institution/period
+    pairs get the full facsimile pull *this run* -- useful for a quick live
+    smoke test, or to bound a single run's wall-clock time on a very large
+    universe (each full pull is its own throttled FFIEC round-trip; the full
+    ~4,500-institution universe's first run is ~8,000+ pairs). This is safe to
+    use for real operation, unlike an earlier version of this parameter: a
+    period's poll_state cursor now only advances once *every* pair found for
+    that period this run has actually been processed. Anything left over
+    (past the cap, or skipped after an isolated per-institution failure) stays
+    uncovered by the cursor and is picked up again on the next run -- nothing
+    is silently dropped from coverage.
     """
     run_date = run_date or date.today()
 
@@ -62,27 +62,39 @@ def run_daily(
         raise  # spec §1: hard failure, must surface as an alert, never a silent skip
 
     changed: list[tuple[str, date, datetime]] = []
+    pending_watermarks: dict[date, datetime] = {}
     for period_end in periods:
         since = db.get_last_polled_at(conn, period_end) or FIRST_POLL_SENTINEL
-        poll_started_at = datetime.now(timezone.utc)
+        # Watermark captured *before* the call, not after -- so a filing that
+        # lands mid-call is seen again next run rather than silently skipped.
+        # Not written to poll_state yet, though: see the fully_processed_periods
+        # handling below -- it's only persisted once this period's slice of
+        # `changed` is confirmed fully processed, so an interrupted run (hit
+        # max_facsimile_pulls, or an isolated per-institution failure) doesn't
+        # advance the cursor past coverage it never actually got.
+        pending_watermarks[period_end] = datetime.now(timezone.utc)
         for status in client.retrieve_filer_statuses(period_end, since):
             if universe is not None and status.id_rssd not in universe:
                 continue
             existing = db.get_snapshot(conn, status.id_rssd, status.period_end)
             if existing is None or existing.last_seen_ts != status.submission_ts:
                 changed.append((status.id_rssd, status.period_end, status.submission_ts))
-        # Watermark set to *before* the call, not after -- so a filing that lands
-        # mid-call is seen again next run rather than silently skipped.
-        db.set_last_polled_at(conn, period_end, poll_started_at)
 
     logger.info("Found %d changed institution/period pair(s) since last poll.", len(changed))
-    if limit is not None and len(changed) > limit:
+
+    fully_processed_periods = set(periods)
+    if max_facsimile_pulls is not None and len(changed) > max_facsimile_pulls:
         logger.warning(
-            "--limit %d set: processing only the first %d of %d changed pairs "
-            "this run (debug/smoke-test only -- see run_daily's docstring).",
-            limit, limit, len(changed),
+            "max_facsimile_pulls=%d: processing only the first %d of %d changed "
+            "pairs this run; the rest stay uncovered by the cursor and are "
+            "picked up next run.",
+            max_facsimile_pulls, max_facsimile_pulls, len(changed),
         )
-        changed = changed[:limit]
+        for _r, period_end, _t in changed[max_facsimile_pulls:]:
+            fully_processed_periods.discard(period_end)
+        changed_to_process = changed[:max_facsimile_pulls]
+    else:
+        changed_to_process = changed
 
     watch_list_changes: list[email_report.WatchListChangeEvent] = []
     tier1_events: list[email_report.Tier1Event] = []
@@ -93,15 +105,45 @@ def run_daily(
     # Reporters), so fetch it once per period actually needed rather than guessing
     # at nonexistent facsimile fields.
     panel_by_period: dict[date, dict[str, Any]] = {}
-    for period_end in {p for _r, p, _t in changed}:
+    for period_end in {p for _r, p, _t in changed_to_process}:
         panel_by_period[period_end] = {
             str(entry["ID_RSSD"]): entry for entry in client.retrieve_panel_of_reporters(period_end)
         }
 
-    for id_rssd, period_end, submission_ts in changed:
+    failure_count = 0
+    for id_rssd, period_end, submission_ts in changed_to_process:
         panel_entry = panel_by_period.get(period_end, {}).get(id_rssd)
-        _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
-                      watch_list_changes, tier1_events, tier2_events)
+        try:
+            _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
+                          watch_list_changes, tier1_events, tier2_events)
+        except FFIECAuthError:
+            raise  # spec §1: must propagate, never swallowed
+        except FFIECRateLimitError:
+            # Proactive throttling should make this rare; once retries are
+            # exhausted (see ffiec_client), the quota problem is systemic, not
+            # isolated to this one institution -- every remaining pull would
+            # fail the same way, so stop rather than burning through the rest
+            # of `changed_to_process` repeating a doomed backoff sequence.
+            raise
+        except Exception:
+            # An isolated per-institution failure (e.g. an unexpected facsimile
+            # shape) must not sink the whole run on a universe with thousands
+            # of other institutions to process. Skip it, mark its period as not
+            # fully covered so the cursor doesn't advance past it, and keep going.
+            logger.exception(
+                "Failed to process id_rssd=%s period_end=%s -- skipping, will "
+                "retry next run.", id_rssd, period_end,
+            )
+            fully_processed_periods.discard(period_end)
+            failure_count += 1
+            continue
+
+    if failure_count:
+        logger.warning("%d institution/period pair(s) failed and will be retried next run.", failure_count)
+
+    for period_end in periods:
+        if period_end in fully_processed_periods:
+            db.set_last_polled_at(conn, period_end, pending_watermarks[period_end])
 
     snapshot_entries = _build_watch_list_snapshot(conn)
 

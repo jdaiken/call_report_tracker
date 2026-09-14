@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       universe:
-        description: "small (enforcement-orders bank list) or full (all filers)"
+        description: "small (enforcement-orders + risk-ranking bank lists) or full (all filers)"
         type: choice
-        options: [small, full]
-        default: small
+        options: [full, small]
+        default: full
       fake_diff:
         description: "Send a synthetic Tier 1 test email instead of hitting the FFIEC API"
         type: boolean
@@ -28,8 +28,8 @@ on:
         description: "TEMPORARY: clear poll_state before running, so retrieve_filer_statuses sees every filer again instead of a cursor an earlier crashed run already advanced"
         type: boolean
         default: false
-      limit:
-        description: "TEMPORARY smoke-test knob: cap how many changed institutions get a full facsimile pull this run (blank = no cap). Coverage caveat in run_daily's docstring -- never set this for the real daily run."
+      max_facsimile_pulls:
+        description: "Cap how many changed institutions get a full facsimile pull this run (blank = no cap). Safe to use: uncapped coverage is picked up on the next run, nothing is lost -- see run_daily's docstring. Useful to bound a single run's wall-clock time on the full universe."
         type: string
         default: ""
 
@@ -49,6 +49,15 @@ jobs:
     # Default is now ubuntu-latest to test that fix cleanly; switch back to
     # self-hosted here only if a hosted run still 403s with this fix in place.
     runs-on: ${{ inputs.runner_type || 'ubuntu-latest' }}
+    # The full ~4,500-institution universe's first-ever run is ~8,000+ throttled
+    # facsimile pulls (see FFIECConfig.max_requests_per_hour in config.py) --
+    # potentially hours. That's safe to let run long: run_daily only advances
+    # poll_state's cursor for periods it actually finished covering this run,
+    # so a run killed by this timeout just resumes where it left off on the
+    # next scheduled fire, rather than losing coverage. 340 leaves headroom
+    # under GitHub's 360-minute hard default so this step (not the platform)
+    # is what ends it, and "Save DuckDB state" below still gets to run.
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
 
@@ -113,10 +122,11 @@ jobs:
         run: |
           if [ "${{ inputs.fake_diff }}" = "true" ]; then
             python run.py --fake-diff
-          elif [ -n "${{ inputs.limit }}" ]; then
-            python run.py --universe "${{ inputs.universe || 'small' }}" --limit "${{ inputs.limit }}"
+          elif [ -n "${{ inputs.max_facsimile_pulls }}" ]; then
+            python run.py --universe "${{ inputs.universe || 'full' }}" \
+              --max-facsimile-pulls "${{ inputs.max_facsimile_pulls }}"
           else
-            python run.py --universe "${{ inputs.universe || 'small' }}"
+            python run.py --universe "${{ inputs.universe || 'full' }}"
           fi
 
       # Always save, even on failure, so a mid-run crash doesn't lose state already

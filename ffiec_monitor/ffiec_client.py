@@ -33,6 +33,9 @@ swallowed into a quiet empty run (spec §1).
 from __future__ import annotations
 
 import base64
+import logging
+import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
@@ -41,8 +44,19 @@ import requests
 
 from .config import FFIECConfig
 
+logger = logging.getLogger(__name__)
+
 REQUEST_TIMEOUT_SECONDS = 30
 DATE_FMT = "%m/%d/%Y"
+
+# Safety net for when proactive throttling (FFIECConfig.max_requests_per_hour)
+# still isn't enough -- e.g. this UserID's quota is shared with other traffic
+# this process doesn't know about. FFIEC's 403 body is documented to include a
+# replenishment estimate ("Quota will be replenished in 12 minutes."); prefer
+# that over a blind guess when present.
+RATE_LIMIT_DEFAULT_BACKOFF_SECONDS = 300.0
+RATE_LIMIT_MAX_RETRIES = 3
+_REPLENISH_PATTERN = re.compile(r"replenished in (\d+)\s*minute", re.IGNORECASE)
 
 # requests' default User-Agent ("python-requests/x.y.z") is a well-known signature
 # that Azure Application Gateway WAF (OWASP Core Rule Set, e.g. rule 913101 "known
@@ -89,6 +103,26 @@ class FFIECClient:
     def __init__(self, config: FFIECConfig, session: Optional[requests.Session] = None):
         self._config = config
         self._session = session or requests.Session()
+        # Proactive pacing so a large run (e.g. the full ~4,500-institution
+        # universe, mostly RetrieveFacsimile calls) never reaches FFIEC's own
+        # ~2,500/hour ceiling in the first place. A live unthrottled run
+        # measured ~1 request/sec (~3,600/hour) -- comfortably over quota on
+        # anything beyond a few hundred institutions. 0 or negative disables
+        # throttling entirely (e.g. for tests).
+        self._min_interval = (
+            3600.0 / config.max_requests_per_hour if config.max_requests_per_hour > 0 else 0.0
+        )
+        self._last_request_at: Optional[float] = None
+
+    def _throttle(self) -> None:
+        if self._min_interval <= 0:
+            return
+        now = time.monotonic()
+        if self._last_request_at is not None:
+            wait = self._min_interval - (now - self._last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_request_at = time.monotonic()
 
     def _get(self, function: str, extra_headers: Optional[dict[str, str]] = None) -> Any:
         url = f"{self._config.base_url}/{function}"
@@ -100,27 +134,45 @@ class FFIECClient:
             "User-Agent": USER_AGENT,
             **(extra_headers or {}),
         }
-        resp = self._session.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
 
-        if resp.ok:
-            return resp.json()
+        for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+            self._throttle()
+            resp = self._session.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
 
-        message = _extract_error_message(resp)
-        detail = f"{function} -> HTTP {resp.status_code}: {message}"
+            if resp.ok:
+                return resp.json()
 
-        if resp.status_code == 401 or "token" in message.lower():
-            raise FFIECAuthError(
-                f"FFIEC PWS auth failure ({detail}). FFIEC_TOKEN is likely missing/"
-                "invalid/expired (90-day, no auto-refresh) -- renew it and update "
-                "the GitHub Actions secret."
-            )
-        if resp.status_code == 403:
-            raise FFIECRateLimitError(
-                f"FFIEC PWS rate limit ({detail}). Per FFIEC's docs this means "
-                "out-of-quota (~2,500 req/hour), not an auth problem -- back off "
-                "and retry later, don't treat this as a bad token."
-            )
-        raise FFIECAPIError(f"FFIEC PWS error ({detail}). Raw body: {resp.text[:500]!r}")
+            message = _extract_error_message(resp)
+            detail = f"{function} -> HTTP {resp.status_code}: {message}"
+
+            if resp.status_code == 401 or "token" in message.lower():
+                raise FFIECAuthError(
+                    f"FFIEC PWS auth failure ({detail}). FFIEC_TOKEN is likely missing/"
+                    "invalid/expired (90-day, no auto-refresh) -- renew it and update "
+                    "the GitHub Actions secret."
+                )
+            if resp.status_code == 403:
+                # Proactive throttling should make this rare; when it still
+                # happens (e.g. quota shared with other traffic on this
+                # UserID), back off and retry rather than crashing the whole
+                # run over one institution -- FFIEC's own docs frame 403 as a
+                # temporary, self-clearing condition, not a hard failure.
+                if attempt < RATE_LIMIT_MAX_RETRIES:
+                    backoff = _parse_replenish_seconds(message) or RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+                    logger.warning(
+                        "FFIEC PWS rate limit on %s (attempt %d/%d) -- backing off %.0fs: %s",
+                        function, attempt + 1, RATE_LIMIT_MAX_RETRIES, backoff, message,
+                    )
+                    time.sleep(backoff)
+                    continue
+                raise FFIECRateLimitError(
+                    f"FFIEC PWS rate limit ({detail}), still failing after "
+                    f"{RATE_LIMIT_MAX_RETRIES} backoff retries. Per FFIEC's docs this "
+                    "means out-of-quota (~2,500 req/hour), not an auth problem."
+                )
+            raise FFIECAPIError(f"FFIEC PWS error ({detail}). Raw body: {resp.text[:500]!r}")
+
+        raise AssertionError("unreachable: retry loop must return or raise")
 
     # --- tier 1: daily lightweight ping, institutions changed since last poll --
 
@@ -244,6 +296,19 @@ def _extract_error_message(resp: requests.Response) -> str:
     except ValueError:
         pass
     return resp.text[:300] or "(empty body)"
+
+
+def _parse_replenish_seconds(message: str) -> Optional[float]:
+    """Extracts a wait time from FFIEC's documented 403 body, e.g. "Out of call
+    volume quota. Quota will be replenished in 12 minutes." Returns None (caller
+    falls back to a fixed default) if the message doesn't match that shape --
+    this is a best-effort parse of prose text, not a stable API contract.
+    """
+    match = _REPLENISH_PATTERN.search(message)
+    if not match:
+        return None
+    minutes = int(match.group(1))
+    return float(minutes * 60)
 
 
 def _decode_byte_field(value: Any) -> bytes:
