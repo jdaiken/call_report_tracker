@@ -120,7 +120,12 @@ python run.py --universe full
 ```
 
 `--no-send` builds and prints the email body without actually emailing it, for
-dry runs.
+dry runs. `--limit N` (also exposed as the `limit` workflow_dispatch input) caps
+how many changed institutions get the expensive full pull in one run, for a fast
+few-institution live smoke test instead of waiting on the whole universe --
+debug-only, see `run_daily`'s docstring in `pipeline.py` for the coverage
+caveat (the poll_state cursor still advances past everything skipped by the
+cap, so it's not retried next run); never use it for the real daily job.
 
 Unit tests: `python -m pytest tests/`
 
@@ -130,47 +135,23 @@ Unit tests: `python -m pytest tests/`
 manual triggering. The `*.duckdb` state file is gitignored (spec §9) and instead
 persists across runs via `actions/cache` -- there is no repo commit of the database.
 
-**Runner type is currently unresolved -- don't assume self-hosted is required.**
-Every live call so far has failed identically (a generic Azure Application
-Gateway 403 HTML page, not FFIEC's documented JSON error shape) regardless of
-runner type (GitHub-hosted vs. this repo's self-hosted Windows runner) or which
-of two token states was in the secret -- so neither "GitHub's IPs are blocked"
-nor "the token was bad" is actually confirmed; an earlier version of this README
-claimed the IP-block theory was confirmed by a personal-network test, but that
-test was never actually run, so that line was wrong and has been removed.
-
-One concrete, previously-unaddressed candidate was found and fixed: the client
-was sending `requests`' default `User-Agent` (`python-requests/x.y.z`), a
-signature Azure's WAF (OWASP Core Rule Set "known bad UA" rules) commonly blocks
-at the gateway before APIM or FFIEC's own logic ever runs -- which would produce
-exactly this symptom (generic gateway HTML 403) independent of token validity
-*and* independent of source IP, matching every failure seen on both runner types.
-`ffiec_client.py` now sends a real `User-Agent` (see `USER_AGENT` in that file)
-and an explicit `Accept: application/json`. This needs a real
-`workflow_dispatch` run to confirm before drawing any conclusion about whether
-a self-hosted runner is needed at all -- try `ubuntu-latest` first now that this
-fix is in, since it's simpler to operate if it works.
-
-### Self-hosted runner setup
-
-1. Repo → **Settings → Actions → Runners → New self-hosted runner**, pick your OS,
-   and follow GitHub's generated `config.sh`/`config.cmd` commands on the machine
-   you want the job to actually run from (needs a network FFIEC's gateway accepts
-   -- i.e. not another cloud VM's datacenter IP, which is very likely to hit the
-   same block).
-2. Run it as a service (the setup script offers `svc.sh install && svc.sh start`
-   on Linux/macOS, or an equivalent on Windows) so it's listening even when no
-   one's logged in -- the scheduled run only fires if the runner is online and
-   idle at 13:00 UTC.
-3. That machine needs Python (3.9+) already installed and on `PATH` -- the
-   workflow uses it directly rather than `actions/setup-python`, since that
-   action's own Windows installer needs admin rights to write to the registry,
-   which fails on a non-elevated runner. It also needs to stay on and
-   network-connected for the daily schedule to actually execute (this is the
-   real tradeoff of a self-hosted runner -- it depends on that machine's
-   uptime, unlike GitHub's hosted runners).
-4. Trigger a manual `workflow_dispatch` run once to confirm it picks up the
-   self-hosted runner and completes before trusting the unattended schedule.
+**Resolved 2026-09-14: `ubuntu-latest` works. The self-hosted Windows runner was
+never actually necessary.** Every earlier live call failed identically with a
+generic Azure Application Gateway 403 HTML page (not FFIEC's documented JSON
+error shape) regardless of runner type or token state. The actual cause: the
+client was sending `requests`' default `User-Agent` (`python-requests/x.y.z`),
+a signature Azure's WAF (OWASP Core Rule Set "known bad UA" rules) blocks at
+the gateway before APIM or FFIEC's own logic ever runs -- independent of both
+token validity and source IP, which is exactly why switching runner type never
+changed anything. Fixed by sending a real `User-Agent` (see `USER_AGENT` in
+`ffiec_client.py`). Confirmed live on `ubuntu-latest`
+(workflow run [34827048076](https://github.com/jdaiken/call_report_tracker/actions/runs/34827048076)):
+auth, `RetrieveFilersSubmissionDateTime`, `RetrievePanelOfReporters`, and
+`RetrieveFacsimile` all succeeded and parsed real Call Report data end to end.
+`runs-on: ubuntu-latest` is now the default; the `runner_type` workflow input
+and the self-hosted runner registered on `LAPTOP-1MHCNETT` are no longer
+needed and can be removed (deregister it from **Settings → Actions → Runners**
+whenever convenient -- an idle registered runner isn't harmful, just unused).
 
 ## Known limitations (spec §11)
 
@@ -184,20 +165,23 @@ fix is in, since it's simpler to operate if it works.
   in `ratios.py` after a week or two of real output.
 - `ffiec_client.py` is now written against FFIEC's actual API documentation
   ("SIS611 Retrieve Public Data via Web Service", CDR-PDD-SIS-611 v1.10), not
-  guessed -- the first live run against an earlier, guessed version failed
-  instantly with a generic Azure Application Gateway 403 HTML page (not FFIEC's
-  own JSON error shape), consistent with the request never reaching FFIEC's API
-  logic at all. Three things the guess got wrong, now fixed and covered by
-  `tests/test_ffiec_client.py`: every method parameter is a header, not a query
-  param; dates are `MM/DD/YYYY`, not ISO; and `RetrieveFacsimile` returns a raw
-  SDF byte-stream (`{"FacsimileFile": <base64>}`), not pre-parsed JSON fields --
-  `_parse_sdf()` decodes and parses it. One real caveat remains: FFIEC's own doc
-  has no actual SDF content sample, so `_parse_sdf()`'s layout (a header row of
-  MDRM codes + one data row, matching the bulk download's convention) is an
-  educated guess, not confirmed against a live single-institution pull -- if
-  that's wrong, `_parse_sdf()` is the one place to fix, not `ratios.py`'s
-  field-level mapping (which *is* verified, against a real FFIEC CDR bulk Call
-  Report download -- see `ratios.py`'s module docstring for per-ratio confidence:
+  guessed, and confirmed against a real live pull (see the Scheduling section
+  above). Two things the doc's own placeholder examples got slightly wrong,
+  found by an actual live call and now fixed + covered by
+  `tests/test_ffiec_client.py`: `RetrieveFacsimile`/`RetrieveUBPRXBRLFacsimile`
+  return the base64 blob as a *bare* JSON string body, not
+  `{"FacsimileFile": <base64>}` as the doc's "[<byte stream>]" placeholder
+  implied -- `_unwrap_facsimile_payload()` handles both shapes defensively and
+  raises a clear error (with a payload preview) for anything else. What's still
+  unconfirmed: `_parse_sdf()`'s assumed layout of the decoded SDF content
+  itself (a header row of MDRM codes + one data row, matching the bulk
+  download's convention) -- the 2026-09-14 live confirmation run got
+  `"Nothing to report today"` for the 5 institutions it pulled, meaning no
+  ratio crossed the alert threshold, not a direct look at parsed field values.
+  If a future run's ratios look wrong for a specific institution, `_parse_sdf()`
+  is the first place to check; `ratios.py`'s field-level MDRM mapping is
+  separately verified against a real FFIEC CDR bulk Call Report download (see
+  its module docstring for per-ratio confidence:
   capital ratios and most balance-sheet ratios are direct reads; ROAA/NIM/
   charge-off annualize a single period as an approximation of a true multi-quarter
   average; Net Non-Core Funding Dependence is a simplified stand-in for UBPR's
@@ -206,3 +190,14 @@ fix is in, since it's simpler to operate if it works.
   (FFIEC's recommended usage, SIS611 §3.1) -- tracked per reporting period in the
   new `poll_state` table so each run only asks for what changed since the last
   one, rather than re-fetching every filer's status every day.
+- The 2026-09-14 live confirmation run found 398 changed institution/period
+  pairs across the 200-bank small universe but only fully processed 5 of them
+  (via the `--limit`/`limit` smoke-test knob, see the Running section above);
+  `poll_state`'s cursor
+  advances past everything the ping found regardless of that cap, so the other
+  393 were not retried and are not covered by any stored snapshot yet -- the
+  next unlimited run only sees *new* changes from here, not a backfill of
+  those. `.github/workflows/daily.yml` also still carries temporary debug
+  inputs from this investigation (`runner_type`, `reset_cursor`, `limit`,
+  `diagnose_secrets`) -- all default off/empty and safe to leave, but worth
+  deleting once the daily schedule has run cleanly a few times unattended.
