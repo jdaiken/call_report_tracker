@@ -91,9 +91,10 @@ def _process_one(
 ) -> None:
     is_restatement = db.get_snapshot(conn, id_rssd, period_end) is not None
 
+    # Ratios are computed directly from the Call Report facsimile (verified MDRM
+    # codes -- see ratios.py module docstring), not from UBPR.
     facsimile = client.retrieve_facsimile(id_rssd, period_end)
-    ubpr = client.retrieve_ubpr_facsimile(id_rssd, period_end)
-    new_ratios = ratios.extract_ratios(ubpr)
+    new_ratios = ratios.extract_ratios(facsimile, period_end)
     new_ratios["total_assets"] = ratios.extract_total_assets(facsimile)
 
     meta = _meta_from_facsimile(id_rssd, period_end, facsimile)
@@ -108,6 +109,8 @@ def _process_one(
     else:
         prior_snapshot = _latest_prior_snapshot(conn, id_rssd, period_end)
         prior_ratios = prior_snapshot.ratios if prior_snapshot else {}
+        if prior_snapshot is not None:
+            ratios.compute_growth_rates(prior_ratios, new_ratios, prior_snapshot.period_end, period_end)
         roaa_history = _roaa_history(conn, id_rssd, period_end)
         triggers = alerts.classify_new_period(
             prior_ratios, new_ratios, roaa_history,

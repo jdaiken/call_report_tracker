@@ -2,7 +2,7 @@
 """CLI entrypoint for the daily FFIEC Call Report Monitor run -- spec §9/§10.
 
 Examples:
-    # Small known list first (existing enforcement-orders banks), spec §10.1
+    # Small known list first: enforcement-orders banks + risk-ranking banks, §10.1
     python run.py --universe small
 
     # Full ~4,500-institution universe, once the small-list run is trusted
@@ -24,15 +24,25 @@ from ffiec_monitor.pipeline import run_daily
 
 
 def _small_universe(conn) -> set[str]:
-    rows = conn.execute("SELECT DISTINCT id_rssd FROM enforcement_orders").fetchall()
+    """Every RSSD worth tracking on a small-list run: the enforcement-orders bank
+    list (spec §10.1) union the risk-ranking reference list (§4's LTWC/order tests
+    don't depend on which list a bank came from -- both are just "institutions to
+    watch"). Rows in either table with no id_rssd yet resolved are silently
+    skipped here, not an error -- scripts/resolve_from_bulk_por.py or
+    scripts/apply_rssd_map.py handle resolving those.
+    """
+    rows = conn.execute(
+        "SELECT id_rssd FROM enforcement_orders WHERE id_rssd IS NOT NULL "
+        "UNION SELECT id_rssd FROM risk_rankings WHERE id_rssd IS NOT NULL"
+    ).fetchall()
     return {r[0] for r in rows}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--universe", choices=["small", "full"], default="small",
-                        help="small = existing enforcement-orders bank list (default, spec §10.1); "
-                             "full = every FDIC-insured filer")
+                        help="small = enforcement-orders + risk-ranking bank lists, resolved RSSDs only "
+                             "(default, spec §10.1); full = every FDIC-insured filer")
     parser.add_argument("--db", default=get_duckdb_path())
     parser.add_argument("--no-send", action="store_true", help="build the email but do not send it")
     parser.add_argument("--fake-diff", action="store_true",
@@ -54,8 +64,10 @@ def main() -> int:
 
     universe = None if args.universe == "full" else _small_universe(conn)
     if universe is not None and not universe:
-        print("Small universe requested but enforcement_orders is empty -- run "
-              "scripts/import_enforcement_orders.py first.", file=sys.stderr)
+        print("Small universe requested but enforcement_orders and risk_rankings are "
+              "both empty (or unresolved) -- run scripts/import_enforcement_orders.py "
+              "and/or scripts/import_risk_rankings.py + scripts/apply_rssd_map.py first.",
+              file=sys.stderr)
         return 1
 
     try:

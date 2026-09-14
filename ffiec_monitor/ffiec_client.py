@@ -7,10 +7,18 @@ rather than be swallowed into a quiet empty run.
 
 Endpoint names/params below follow the FFIEC CDR PWS's long-standing SOAP-era method
 names (RetrieveFilersSubmissionDateTime, RetrieveFacsimile, RetrieveUBPRXBRLFacsimile,
-RetrieveReportingPeriods) as re-exposed through the Azure API Management REST front
-end. The exact query-string shape has not been verified against a live token in this
-environment -- if FFIEC has since renamed a parameter, only `_get()`'s callers below
-need to change, not the rest of the pipeline.
+RetrieveReportingPeriods, RetrievePanelOfReporters) as re-exposed through the Azure
+API Management REST front end.
+
+Two different things have two different confidence levels here, worth not
+conflating: the *MDRM field codes* a facsimile contains (RCOA7204, RCONB529, etc.)
+are verified against a real FFIEC CDR bulk Call Report download and used with high
+confidence in ratios.py. The *REST envelope* this client expects around them --
+endpoint names, query params, and the exact JSON wrapper shape (`{"concepts": {...}}`
+assumed by `_get()`'s callers) -- has NOT been exercised against a live token in
+this environment, since the bulk download is a different data product (a quarterly
+flat-file export) from the live PWS API. If FFIEC's actual response shape differs,
+only `_get()`'s callers below need adjusting, not ratios.py's field mapping.
 """
 from __future__ import annotations
 
@@ -98,10 +106,28 @@ class FFIECClient:
         payload = self._get("RetrieveReportingPeriods", params={"dataSeries": "Call"})
         return sorted(_parse_date(p) for p in payload)
 
+    def retrieve_panel_of_reporters(self, period_end: date) -> list[dict[str, Any]]:
+        """Full roster of Call Report filers for a period: RSSD, name, city, state,
+        FDIC cert. Used to resolve a bank name/state (e.g. from a third-party list
+        with no RSSD) to the FFIEC join key -- not for pulling ratio data itself.
+        """
+        payload = self._get(
+            "RetrievePanelOfReporters",
+            params={"reportingPeriodEndDate": period_end.isoformat(), "dataSeries": "Call"},
+        )
+        return payload.get("reporters", payload if isinstance(payload, list) else [])
+
     # --- tier 2: full pull for institutions whose timestamp changed -------
 
     def retrieve_facsimile(self, id_rssd: str, period_end: date) -> dict[str, Any]:
-        """Full Call Report data for one institution/period (facsimile, JSON/SDF)."""
+        """Full Call Report data for one institution/period (facsimile, JSON/SDF).
+
+        This is the sole source for the 12 ratios of concern (spec §5) --
+        ratios.extract_ratios() computes them directly from this payload's MDRM
+        fields (RCOA/RCFA/RCON/RCFD/RIAD codes), verified against a real FFIEC CDR
+        bulk Call Report download. See ratios.py's module docstring for per-ratio
+        confidence.
+        """
         return self._get(
             "RetrieveFacsimile",
             params={
@@ -112,8 +138,13 @@ class FFIECClient:
         )
 
     def retrieve_ubpr_facsimile(self, id_rssd: str, period_end: date) -> dict[str, Any]:
-        """UBPR ratios (peer-relative) for one institution/period -- source of the
-        12 ratios of concern, spec §5."""
+        """UBPR (peer-relative) data for one institution/period. Not used by the
+        current pipeline -- ratios.extract_ratios() computes everything from
+        retrieve_facsimile() instead, using verified Call Report MDRM codes rather
+        than the unverified UBPR concept-name mapping this used to depend on.
+        Kept in case UBPR's own peer-average figures are wired in later (e.g. for
+        peer_avg_charge_off_ratio, currently unset).
+        """
         return self._get(
             "RetrieveUBPRXBRLFacsimile",
             params={"idRssd": id_rssd, "reportingPeriodEndDate": period_end.isoformat()},

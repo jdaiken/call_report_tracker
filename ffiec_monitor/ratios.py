@@ -1,18 +1,30 @@
-"""The 12 ratios of concern (spec §5), extraction from a UBPR facsimile, and diffing
+"""The 12 ratios of concern (spec §5): extraction directly from a Call Report
+facsimile (the live `RetrieveFacsimile` daily pull, spec §1/§2), and diffing
 against a prior snapshot with the §6 materiality floor applied.
 
 All ratio values are stored/compared as percentage points (e.g. 8.23 means 8.23%).
 
-NOTE on field mapping: `UBPR_FIELD_MAP` below maps our ratio keys to UBPR XBRL
-concept names. These have not been validated against a live `RetrieveUBPRXBRLFacsimile`
-response (no token available in this build environment) -- treat them as the seam to
-correct first if a real pull comes back with different tag names. Everything else in
-this module (diffing, materiality floor, composite handling) is independent of that
-mapping and does not need to change.
+Field mapping confidence: the MDRM codes below were verified against a real FFIEC
+CDR bulk Call Report download (period 2026-06-30, ~4,300 institutions) -- not
+guessed. Confidence varies by ratio, noted inline:
+  - Capital ratios (leverage, Tier 1 RBC, Total RBC, CET1): HIGH -- read directly
+    off Schedule RC-R Part I, no derivation.
+  - Loans/deposits, pledged securities, core/brokered+reciprocal deposits,
+    noncurrent+OREO: HIGH -- standard ratios of two directly-reported balances.
+  - ROAA, NIM, charge-off ratio: MEDIUM -- correct components, but annualize a
+    single period's YTD income against that period's own average balance rather
+    than a true multi-quarter YTD average (Call Report doesn't publish one).
+  - Net Non-Core Funding Dependence: MEDIUM-LOW -- a simplified stand-in for
+    UBPR's maturity-bucketed formula; directionally useful, not bit-exact.
+  - Peer average charge-off: NOT computed (returns None) -- needs FFIEC peer
+    group definitions and aggregation across many institutions; out of scope here.
+  - Loan/capital growth: computed in `compute_growth_rates`, not `extract_ratios`,
+    since growth inherently needs the *prior* period's raw balances (see below).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Optional
 
 # 5bp floor for ratio (percentage-point) revisions -- spec §6 Tier 3.
@@ -59,65 +71,217 @@ RATIO_SPECS: list[RatioSpec] = [
 # ratios of concern shown in the report (spec §5's table only has 3 capital ratios).
 CET1_KEY = "cet1_ratio"
 
-# ratio key -> UBPR XBRL concept name. Placeholder/best-effort; see module docstring.
-UBPR_FIELD_MAP: dict[str, str] = {
-    "tier1_leverage_ratio": "UBPRE011",
-    "tier1_rbc_ratio": "UBPRE012",
-    "total_rbc_ratio": "UBPRE013",
-    "cet1_ratio": "UBPRE014",
-    "net_noncore_funding_dependence_ratio": "UBPRK454",
-    "net_loans_leases_to_deposits": "UBPRK462",
-    "pledged_securities_ratio": "UBPRK423",
-    "charge_off_ratio": "UBPRD657",
-    "peer_avg_charge_off_ratio": "UBPRDP57",
-    "loan_growth_rate": "UBPRC109",
-    "capital_growth_rate": "UBPRC110",
-    "roaa": "UBPR7401",
-    "net_interest_margin": "UBPR7403",
-    "core_deposits_to_total_deposits": "UBPRK449",
-    "brokered_reciprocal_deposits_to_total_deposits": "UBPRK450",
-    # Not one of the 12 ratios of concern shown in every email, but needed to drive
-    # the Tier 1 "noncurrent loans+OREO doubles QoQ / crosses ~3%" trigger (spec §6).
-    "noncurrent_loans_oreo_ratio": "UBPRD772",
-}
-
-# Call Report (not UBPR) concepts, keyed by the real MDRM item codes. RCON is used by
-# banks with no foreign offices; RCFD by banks that must consolidate foreign offices.
-TOTAL_ASSETS_TAGS = ("RCON2170", "RCFD2170")
+# Raw dollar figures carried inside the ratios dict alongside the 12 ratios, purely
+# so the NEXT period's pipeline run can compute loan/capital growth (see
+# compute_growth_rates). Underscore-prefixed so they're plainly "not a displayed
+# ratio" -- RATIO_SPECS never references them, so diff_ratios/full_snapshot_rows
+# ignore them automatically.
+_NET_LOANS_RAW_KEY = "_net_loans_raw"
+_TOTAL_EQUITY_RAW_KEY = "_total_equity_raw"
 
 
-def extract_total_assets(facsimile: dict[str, Any]) -> Optional[float]:
-    """Total assets from a Call Report facsimile -- used for the email identity
-    block (spec §7) and the Tier 2 asset-growth trigger (spec §6)."""
-    concepts = facsimile.get("concepts", facsimile)
-    for tag in TOTAL_ASSETS_TAGS:
-        value = _to_float(concepts.get(tag))
+def annualization_factor(period_end: date) -> float:
+    """Call Report income-statement (RIAD*) items are YTD as of period_end;
+    multiply by this to annualize. Q1->x4, Q2->x2, Q3->x4/3, Q4->x1."""
+    quarters_elapsed = period_end.month // 3
+    return 4.0 / quarters_elapsed
+
+
+def _num(raw: Any) -> Optional[float]:
+    """Parse one Call Report field: plain integers for dollar amounts (reported in
+    thousands), or a "12.3456%" string for ratio fields -- verified against a real
+    bulk download, both formats occur in the same file."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.rstrip("%")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+_to_float = _num  # kept as an alias; other modules may still import this name
+
+
+def _pick(concepts: dict[str, Any], *codes: str) -> Optional[float]:
+    """First code with a parseable value. Verified against the bulk file that
+    RCON/RCFD (and RCOA/RCFA capital-ratio) pairs are mutually exclusive per
+    institution in practice -- e.g. RCON2170 and RCFD2170 are never both populated
+    for the same bank -- so a fixed try-order is safe, not a guess about precedence.
+    """
+    for code in codes:
+        value = _num(concepts.get(code))
         if value is not None:
             return value
     return None
 
 
-def extract_ratios(ubpr_facsimile: dict[str, Any]) -> dict[str, Optional[float]]:
-    """Pull every tracked ratio (the 12 + CET1) out of a raw UBPR facsimile payload.
+def _sum_present(concepts: dict[str, Any], *codes: str) -> Optional[float]:
+    """Sum whichever of these codes are present, treating a missing/blank code as
+    0 -- appropriate for category breakdowns (e.g. a bank with no farm loans just
+    doesn't populate that charge-off line). Returns None only if NONE are present,
+    so a schedule that's entirely absent doesn't silently become a false zero."""
+    values = [_num(concepts.get(code)) for code in codes]
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
 
-    Missing/unparseable fields come back as None rather than raising -- a bank with a
-    gap in one ratio shouldn't block diffing every other ratio.
+
+def _ratio_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    return numerator / denominator * 100
+
+
+def extract_total_assets(facsimile: dict[str, Any]) -> Optional[float]:
+    """Total assets (in thousands of dollars) -- spec §7 identity block, §6 asset-
+    growth trigger. RCFD used by consolidated (foreign-office) filers, RCON by
+    everyone else -- verified mutually exclusive in the bulk data."""
+    concepts = facsimile.get("concepts", facsimile)
+    return _pick(concepts, "RCFD2170", "RCON2170")
+
+
+def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Optional[float]]:
+    """Compute the 12 ratios of concern (+ CET1, + noncurrent/OREO) from a single
+    Call Report facsimile. See module docstring for per-ratio confidence.
+
+    Missing/unparseable inputs propagate as None for that ratio rather than raising
+    -- a bank with a gap in one figure shouldn't block diffing every other ratio.
+    Loan/capital growth are NOT set here (both None) -- see compute_growth_rates.
     """
-    concepts = ubpr_facsimile.get("concepts", ubpr_facsimile)
+    c = facsimile.get("concepts", facsimile)
     out: dict[str, Optional[float]] = {}
-    for key, concept in UBPR_FIELD_MAP.items():
-        raw = concepts.get(concept)
-        out[key] = _to_float(raw)
+
+    # --- Capital: reported directly on Schedule RC-R Part I. RCOA is the column
+    # ~98% of banks use; RCFA is a second column used by a small (~2%) advanced-
+    # approaches subset -- verified counts, not a guessed precedence. A Community
+    # Bank Leverage Ratio (CBLR) bank legitimately reports ONLY the leverage ratio
+    # and leaves the other three blank -- that's real data, not a parsing gap.
+    out["tier1_leverage_ratio"] = _pick(c, "RCOA7204", "RCFA7204")
+    out["tier1_rbc_ratio"] = _pick(c, "RCOA7206", "RCFA7206")
+    out["total_rbc_ratio"] = _pick(c, "RCOA7205", "RCFA7205")
+    out[CET1_KEY] = _pick(c, "RCOAP793", "RCFAP793")
+
+    total_assets = extract_total_assets(facsimile)
+    net_loans = _pick(c, "RCFDB529", "RCONB529")  # loans & leases, net of unearned income & ACL
+    domestic_deposits = _pick(c, "RCON2200")
+    foreign_deposits = _pick(c, "RCFN2200") or 0.0
+    total_deposits = (domestic_deposits + foreign_deposits) if domestic_deposits is not None else None
+
+    out[_NET_LOANS_RAW_KEY] = net_loans
+    out[_TOTAL_EQUITY_RAW_KEY] = _pick(c, "RCFD3210", "RCON3210")
+
+    out["net_loans_leases_to_deposits"] = _ratio_pct(net_loans, total_deposits)
+
+    # Pledged securities / total securities (AFS + HTM). Excludes equity securities
+    # at fair value, which are typically immaterial for this ratio.
+    pledged = _pick(c, "RCFD0416", "RCON0416")
+    afs = _pick(c, "RCFD1773", "RCON1773") or 0.0
+    htm = _pick(c, "RCFDJJ34", "RCONJJ34") or 0.0
+    out["pledged_securities_ratio"] = _ratio_pct(pledged, afs + htm) if (afs + htm) else None
+
+    brokered = _pick(c, "RCON2365") or 0.0
+    time_gt_250k = _pick(c, "RCONJ474") or 0.0
+    reciprocal = _pick(c, "RCONJH83") or 0.0
+
+    # Net Non-Core Funding Dependence -- simplified approximation (see module
+    # docstring): (non-core liabilities - short-term investments) / long-term
+    # assets, "long-term" approximated as total assets minus short-term investments
+    # rather than a true maturity-based split.
+    other_borrowed = _pick(c, "RCFD3190", "RCON3190") or 0.0
+    repo_liabilities = _pick(c, "RCFDB995", "RCONB995") or 0.0
+    non_core_liabilities = brokered + time_gt_250k + other_borrowed + repo_liabilities + foreign_deposits
+    short_term_investments = (_pick(c, "RCFDB989", "RCONB989") or 0.0) + (_pick(c, "RCFD0071", "RCON0071") or 0.0)
+    if total_assets is not None:
+        long_term_assets = total_assets - short_term_investments
+        out["net_noncore_funding_dependence_ratio"] = (
+            _ratio_pct(non_core_liabilities - short_term_investments, long_term_assets)
+            if long_term_assets else None
+        )
+    else:
+        out["net_noncore_funding_dependence_ratio"] = None
+
+    out["brokered_reciprocal_deposits_to_total_deposits"] = _ratio_pct(brokered + reciprocal, total_deposits)
+
+    if total_deposits is not None:
+        core_deposits = total_deposits - brokered - time_gt_250k
+        out["core_deposits_to_total_deposits"] = _ratio_pct(core_deposits, total_deposits)
+    else:
+        out["core_deposits_to_total_deposits"] = None
+
+    # Noncurrent (nonaccrual + 90+ days past due) loans + OREO, over total loans + OREO.
+    nonaccrual = _pick(c, "RCFD1403", "RCON1403") or 0.0
+    past_due_90 = _pick(c, "RCFD1407", "RCON1407") or 0.0
+    oreo = _pick(c, "RCFD2150", "RCON2150") or 0.0
+    out["noncurrent_loans_oreo_ratio"] = _ratio_pct(nonaccrual + past_due_90 + oreo, net_loans + oreo) \
+        if net_loans is not None else None
+
+    factor = annualization_factor(period_end)
+
+    # ROAA: YTD net income, annualized, over the current quarter's own average
+    # assets (RC-K) -- a single-period approximation of a true YTD average.
+    net_income = _pick(c, "RIAD4340")
+    avg_assets = _pick(c, "RCFD3368", "RCON3368")
+    out["roaa"] = _ratio_pct(net_income * factor, avg_assets) if net_income is not None else None
+
+    # NIM: average earning assets approximated as avg loans + avg securities + avg
+    # fed funds sold/resell + avg due-from-banks + avg trading assets (RC-K) --
+    # Call Report has no single published "earning assets" total to read directly.
+    net_interest_income = _pick(c, "RIAD4074")
+    avg_loans = _sum_present(c, "RCON3360", "RCFN3360")
+    avg_earning_assets = _sum_present(
+        c, "RCON3360", "RCFN3360", "RCONB558", "RCONB559", "RCONB560", "RCON3365", "RCON3381", "RCON3401",
+    )
+    out["net_interest_margin"] = _ratio_pct(net_interest_income * factor, avg_earning_assets) \
+        if net_interest_income is not None else None
+
+    # Charge-off ratio: sums the charge-off/recovery category lines present in
+    # Schedule RI-B Part I. Approximation -- see module docstring.
+    charge_offs = _sum_present(c, "RIAD4638", "RIAD4655", "RIADB514", "RIADC880", "RIADC891", "RIADK205")
+    recoveries = _sum_present(c, "RIAD4608", "RIAD4665", "RIADB515", "RIADF188", "RIADC892", "RIADK206")
+    if charge_offs is None and recoveries is None:
+        out["charge_off_ratio"] = None
+    else:
+        net_charge_offs = (charge_offs or 0.0) - (recoveries or 0.0)
+        out["charge_off_ratio"] = _ratio_pct(net_charge_offs * factor, avg_loans)
+
+    # Not computed -- needs FFIEC peer group definitions + cross-institution
+    # aggregation, out of scope for a single facsimile extraction.
+    out["peer_avg_charge_off_ratio"] = None
+
+    # Growth rates need the *prior* period's raw balances -- see compute_growth_rates.
+    out["loan_growth_rate"] = None
+    out["capital_growth_rate"] = None
+
     return out
 
 
-def _to_float(raw: Any) -> Optional[float]:
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
+def compute_growth_rates(
+    prior: dict[str, Optional[float]],
+    current: dict[str, Optional[float]],
+    prior_period_end: date,
+    current_period_end: date,
+) -> None:
+    """Fills in current['loan_growth_rate'] / current['capital_growth_rate'] using
+    the raw dollar balances extract_ratios stashed in both snapshots, annualized
+    over however many months actually elapsed (robust to a skipped quarter, not
+    just a strict QoQ assumption). Mutates `current` in place; no-ops (leaves None)
+    when prior data isn't available -- e.g. the very first period seen for a bank.
+    """
+    months = (current_period_end.year - prior_period_end.year) * 12 + (
+        current_period_end.month - prior_period_end.month
+    )
+    if months <= 0:
+        return
+    annualize = 12.0 / months
+
+    for raw_key, out_key in ((_NET_LOANS_RAW_KEY, "loan_growth_rate"), (_TOTAL_EQUITY_RAW_KEY, "capital_growth_rate")):
+        old_v, new_v = prior.get(raw_key), current.get(raw_key)
+        if old_v is None or new_v is None or old_v == 0:
+            continue
+        current[out_key] = ((new_v - old_v) / old_v) * annualize * 100
 
 
 @dataclass(frozen=True)

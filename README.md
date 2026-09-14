@@ -12,7 +12,10 @@ ffiec_monitor/
   config.py        secrets/env wiring (fail loudly if missing, never a silent default)
   ffiec_client.py  FFIEC CDR PWS REST client (OAuth2 bearer)
   db.py            DuckDB schema + storage
-  ratios.py        the 12 ratios of concern, extraction + diffing + materiality floor
+  ratios.py        the 12 ratios of concern, extraction from Call Report MDRM fields,
+                   diffing + materiality floor (see its module docstring for which
+                   ratios are direct reads vs. approximations, and why)
+  matching.py      conservative name+state -> RSSD matching (shared by both resolvers)
   watch_list.py    LTWC / enforcement-order Watch List qualification
   alerts.py        Tier 1/2/3 classification, restatement handling, escalation rule
   email_report.py  email structure + smtplib delivery
@@ -20,9 +23,13 @@ ffiec_monitor/
 run.py             CLI entrypoint
 scripts/
   import_enforcement_orders.py   loads the (separately maintained) enforcement-orders CSV
+  import_risk_rankings.py        loads data/risk-rankings.csv (no RSSD yet)
+  resolve_from_bulk_por.py       resolves risk_rankings to RSSD from a bulk POR file (offline)
+  resolve_risk_rankings.py       same, but against the live FFIEC API (no bulk file on hand)
+  apply_rssd_map.py              re-applies the already-resolved data/risk-rankings-rssd-map.csv
   fake_diff.py                   synthetic Tier 1 event to test the email path (§10.2)
   svb_backtest.py                historical validation against SVB (§10.3)
-tests/             unit tests (ratio diffing, materiality floor, Watch List, tiers)
+tests/             unit tests (ratio extraction/diffing, materiality floor, Watch List, tiers)
 .github/workflows/daily.yml      scheduled run
 ```
 
@@ -56,26 +63,47 @@ an incremental sync.
 ## Risk-ranking reference list
 
 `data/risk-rankings.csv` is a third-party risk-score ranking (name/state/assets/
-percentile/CRITICAL-HIGH tier) -- **not** enforcement-orders data, and it has no
-RSSD ID. Load it into its own `risk_rankings` table (separate from
-`enforcement_orders`, since a risk-score tier isn't a S&S/AML/CMP order and
-doesn't by itself feed spec §4's Watch List logic):
+percentile/CRITICAL-HIGH tier) for 200 banks -- **not** enforcement-orders data.
+It's stored in its own `risk_rankings` table (separate from `enforcement_orders`,
+since a risk-score tier isn't a S&S/AML/CMP order and doesn't by itself feed spec
+§4's Watch List logic), and it ships with no RSSD ID -- that's the FFIEC join key
+everything else depends on, so it has to be resolved once:
 
 ```
 python scripts/import_risk_rankings.py data/risk-rankings.csv
+python scripts/apply_rssd_map.py   # applies the already-resolved mapping below
 ```
 
-Each row needs to be resolved to an `id_rssd` (the FFIEC join key) before it can
-drive an actual pipeline run -- `db.unresolved_risk_rankings()` lists what's still
-pending. Note at least one name+state collision in the source data (two distinct
-"Farmers Savings Bank, IA" entries), so name+state alone isn't a safe resolution key.
+All 200 are already resolved to `id_rssd` in `data/risk-rankings-rssd-map.csv`
+(committed, since it's tiny -- unlike the ~30MB bulk zip it was derived from,
+which isn't). How that resolution happened, for when the list changes and this
+needs redoing:
+
+- Matched name+state against the Panel of Reporters (POR) file from a real FFIEC
+  CDR bulk Call Report download (`scripts/resolve_from_bulk_por.py`) -- exact
+  matches only auto-assign (see `ffiec_monitor/matching.py`).
+- 13 name collisions (e.g. two distinct "Farmers Savings Bank, IA") were broken
+  safely using a second, independent signal: comparing each candidate's real
+  reported total assets against the risk-ranking's reported assets -- 12 had an
+  unambiguous near-exact match; disambiguating by name alone would have been a
+  guess, by assets it wasn't.
+- One ("Increase Bank, WA") had no name match at all on the panel, but a
+  "Twin City Bank, WA" with assets 0.03% off -- almost certainly a fintech
+  sponsor-bank/DBA situation, confirmed with the user before assigning rather
+  than auto-matched (a no-name-overlap match is a bigger leap than a same-name
+  collision, even with a strong asset signal).
+
+If the risk-ranking list changes, re-run `resolve_from_bulk_por.py` against a
+fresh bulk download (or `resolve_risk_rankings.py` against the live API if you
+don't have one on hand) and re-export `data/risk-rankings-rssd-map.csv`.
 
 ## Running
 
 ```
 pip install -r requirements.txt
 
-# 1. Small known list first (the enforcement-orders banks) -- spec §10.1
+# 1. Small known list first (enforcement-orders banks + the 200 risk-ranking
+#    banks, both resolved to RSSD) -- spec §10.1
 python run.py --universe small
 
 # 2. Prove the email path works end to end without hitting the API -- spec §10.2
@@ -114,8 +142,14 @@ the database.
   in `ratios.py` after a week or two of real output.
 - `ffiec_client.py`'s endpoint names/params follow FFIEC CDR PWS's long-standing
   method names (`RetrieveFilersSubmissionDateTime`, `RetrieveFacsimile`,
-  `RetrieveUBPRXBRLFacsimile`, `RetrieveReportingPeriods`) but have not been verified
-  against a live token in this build environment, and neither has the UBPR
-  field-tag mapping in `ratios.UBPR_FIELD_MAP`. If a real pull comes back shaped
-  differently, those are the two places to fix -- the rest of the pipeline
-  (diffing, tiers, Watch List, email) is independent of the wire format.
+  `RetrieveReportingPeriods`, `RetrievePanelOfReporters`) but the REST envelope
+  around them (query params, JSON wrapper shape) has not been exercised against a
+  live token in this build environment. The MDRM field codes `ratios.py` reads
+  out of that envelope *have* been verified, against a real FFIEC CDR bulk Call
+  Report download -- see `ratios.py`'s module docstring for per-ratio confidence
+  (capital ratios and most balance-sheet ratios are direct reads; ROAA/NIM/
+  charge-off annualize a single period as an approximation of a true multi-quarter
+  average; Net Non-Core Funding Dependence is a simplified stand-in for UBPR's
+  maturity-bucketed formula; peer-average charge-off isn't computed at all). If
+  the live API's response envelope differs from what `_get()`'s callers assume,
+  that's the one place to fix -- the field-level mapping shouldn't need to change.

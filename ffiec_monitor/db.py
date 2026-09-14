@@ -287,6 +287,16 @@ def unresolved_risk_rankings(conn: duckdb.DuckDBPyConnection) -> list[tuple[int,
     ).fetchall()
 
 
+def unresolved_risk_rankings_with_assets(
+    conn: duckdb.DuckDBPyConnection,
+) -> list[tuple[int, str, str, Optional[float]]]:
+    """(id, bank_name, state, total_assets) -- lets a resolver break a name
+    collision by comparing to each candidate's actual reported assets."""
+    return conn.execute(
+        "SELECT id, bank_name, state, total_assets FROM risk_rankings WHERE id_rssd IS NULL ORDER BY id"
+    ).fetchall()
+
+
 # --- alert_log -----------------------------------------------------------------
 
 def log_alert(
