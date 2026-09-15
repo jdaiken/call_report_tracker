@@ -1,8 +1,2 @@
 duckdb>=1.0.0
 requests>=2.31.0
-
-# historical_risk/ (historical-risk-spec.md)
-ffiec-data-collector>=2.0.0rc2
-pandas>=2.0.0
-lifelines>=0.29.0
-matplotlib>=3.8.0

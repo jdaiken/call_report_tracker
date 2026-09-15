@@ -7,9 +7,3 @@ venv/
 .env
 *.egg-info/
 .pytest_cache/
-
-# historical_risk/ -- raw bulk pulls (multi-GB across 2012-present) and generated
-# reports are regenerable from scripts/, not source -- see historical-risk-spec.md.
-data/ubpr_raw/
-reports/*.csv
-reports/*.png
