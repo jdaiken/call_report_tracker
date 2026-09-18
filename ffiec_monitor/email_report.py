@@ -49,6 +49,17 @@ class WatchListSnapshotEntry:
     ratios: list[RatioChange]
 
 
+@dataclass
+class RestatementEvent:
+    """A refiling of an already-seen period where no capital ratio moved >50bp
+    (alerts.classify_restatement's Tier 3 case -- see pipeline.py's
+    RESTATEMENT_SUB_FLOOR log). Real capital-ratio restatements are Tier 1 and
+    go through Tier1Event instead; this is purely "something changed, here's a
+    one-liner" for the rest, per user request 2026-09-18."""
+    meta: InstitutionMeta
+    period_end: date
+
+
 def _fmt_assets(total_assets: Optional[float]) -> str:
     if total_assets is None:
         return "n/a"
@@ -91,6 +102,16 @@ def _ratio_table(changes: list[RatioChange]) -> str:
     return "\n".join(lines)
 
 
+def _quarter_label(period_end: date) -> str:
+    quarter = (period_end.month - 1) // 3 + 1
+    return f"Q{quarter} {period_end.year}"
+
+
+def _restatement_line(evt: RestatementEvent) -> str:
+    return (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- "
+            f"{_quarter_label(evt.period_end)} Call Report amended, no material capital change")
+
+
 def _watch_list_change_line(evt: WatchListChangeEvent) -> str:
     verb = "Added" if evt.change.change_type == "ADDED" else (
         "Removed" if evt.change.change_type == "REMOVED" else "Reason changed"
@@ -104,6 +125,7 @@ def build_email_body(
     tier1_events: list[Tier1Event],
     watch_list_snapshot: list[WatchListSnapshotEntry],
     tier2_events: list[Tier2Event],
+    restatement_events: list[RestatementEvent],
     run_date: date,
 ) -> Optional[str]:
     """Returns the full email body, or None if there is nothing to report at all."""
@@ -143,6 +165,10 @@ def build_email_body(
             for t in evt.triggers:
                 lines.append(f"  - {t.description}")
         sections.append("TIER 2 DIGEST\n\n" + "\n".join(lines))
+
+    if restatement_events:
+        lines = [_restatement_line(e) for e in restatement_events]
+        sections.append("REFILINGS (no material capital change)\n\n" + "\n".join(lines))
 
     if not sections:
         return None

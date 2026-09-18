@@ -30,7 +30,7 @@ def run_fake_diff(conn, email_config: Optional[EmailConfig], send: bool = True) 
     tier1_events = [email_report.Tier1Event(meta, date.today(), tier1, False, None)] if tier1 else []
     tier2_events = [email_report.Tier2Event(meta, tier2)] if tier2 else []
 
-    body = email_report.build_email_body([], tier1_events, [], tier2_events, date.today())
+    body = email_report.build_email_body([], tier1_events, [], tier2_events, [], date.today())
     assert body is not None
 
     if send and email_config is not None:

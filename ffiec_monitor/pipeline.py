@@ -107,6 +107,7 @@ def run_daily(
     watch_list_changes: list[email_report.WatchListChangeEvent] = []
     tier1_events: list[email_report.Tier1Event] = []
     tier2_events: list[email_report.Tier2Event] = []
+    restatement_events: list[email_report.RestatementEvent] = []
 
     # RetrieveFacsimile carries no name/city/state/FDIC-cert fields (verified
     # against the real API doc -- that identity data only exists in the Panel of
@@ -123,7 +124,7 @@ def run_daily(
         panel_entry = panel_by_period.get(period_end, {}).get(id_rssd)
         try:
             _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
-                          watch_list_changes, tier1_events, tier2_events)
+                          watch_list_changes, tier1_events, tier2_events, restatement_events)
         except FFIECAuthError:
             raise  # spec §1: must propagate, never swallowed
         except FFIECRateLimitError:
@@ -156,7 +157,7 @@ def run_daily(
     snapshot_entries = _build_watch_list_snapshot(conn)
 
     body = email_report.build_email_body(
-        watch_list_changes, tier1_events, snapshot_entries, tier2_events, run_date,
+        watch_list_changes, tier1_events, snapshot_entries, tier2_events, restatement_events, run_date,
     )
     if body is None:
         heartbeat_body = _heartbeat_body(
@@ -205,6 +206,7 @@ def _process_one(
     watch_list_changes: list,
     tier1_events: list,
     tier2_events: list,
+    restatement_events: list,
 ) -> None:
     is_restatement = db.get_snapshot(conn, id_rssd, period_end) is not None
 
@@ -223,6 +225,12 @@ def _process_one(
         if not triggers:
             db.log_alert(conn, id_rssd, period_end, "TIER3", "RESTATEMENT_SUB_FLOOR",
                          {"note": "restatement with no capital ratio down >50bp"})
+            # Not a real alert (no capital ratio moved >50bp), but per user request
+            # 2026-09-18, still surfaced as a one-line email mention rather than
+            # staying invisible in alert_log -- unlike NEW_PERIOD_NO_TRIGGER below,
+            # this is a bounded, meaningful "something changed" signal, not backfill
+            # noise (a restatement only happens to a period already on file).
+            restatement_events.append(email_report.RestatementEvent(meta, period_end))
     else:
         prior_snapshot = _latest_prior_snapshot(conn, id_rssd, period_end)
         prior_ratios = prior_snapshot.ratios if prior_snapshot else {}

@@ -111,6 +111,37 @@ def test_heartbeat_sends_confirmation_email_when_nothing_to_report():
     assert sent_body == body
 
 
+class RestatementClient(FakeClient):
+    """Same institution/period on every call, but a distinct submission_ts per
+    instance -- the "changed" signal run_daily's diff relies on -- so a second
+    run sees the period as a restatement of the first, not a fresh one."""
+
+    def __init__(self, id_rssds, submission_ts):
+        super().__init__(id_rssds)
+        self._submission_ts = submission_ts
+
+    def retrieve_filer_statuses(self, period_end, since):
+        return [FilerStatus(id_rssd=r, period_end=period_end, submission_ts=self._submission_ts)
+                for r in self._id_rssds]
+
+
+def test_restatement_with_no_material_capital_change_gets_a_one_liner_not_silence():
+    """RESTATEMENT_SUB_FLOOR used to be Tier 3 -- logged to alert_log but never
+    emailed. Per user request 2026-09-18, it now surfaces as a one-line
+    REFILINGS mention instead of vanishing into a heartbeat."""
+    conn = db.connect(":memory:")
+    run_daily(conn, RestatementClient(["1"], datetime(2026, 7, 1)), None,
+              run_date=date(2026, 7, 15), send=False)  # first sight
+
+    body = run_daily(conn, RestatementClient(["1"], datetime(2026, 7, 2)), None,
+                      run_date=date(2026, 7, 16), send=False)  # refiled -- same (empty) ratios
+
+    assert body is not None
+    assert "REFILINGS" in body
+    assert "Bank 1" in body
+    assert "no material capital change" in body
+
+
 def test_heartbeat_never_fires_when_there_is_a_real_alert():
     """A real alert is its own confirmation the run fired -- heartbeat must not
     also send a redundant second email."""
