@@ -38,12 +38,15 @@ def run_preview(conn, email_config: Optional[EmailConfig], days: int = 7, send: 
         reason = parsed.get("reason", "reason not available (logged before per-ratio detail was tracked)")
         events.append(email_report.RestatementEvent(meta, period_end, reason))
 
-    body = email_report.build_email_body([], [], [], [], events, datetime.now(timezone.utc).date())
+    run_date = datetime.now(timezone.utc).date()
+    body = email_report.build_email_body([], [], [], [], events, run_date)
     assert body is not None, f"expected a body from {len(events)} real restatement event(s)"
 
     if send and email_config is not None:
+        html_body = email_report.build_email_html([], [], [], [], events, run_date)
         email_report.send_email(
-            email_config, f"[FFIEC Monitor] TEST -- new REFILINGS template preview ({len(events)} entries)", body)
+            email_config, f"[FFIEC Monitor] TEST -- new REFILINGS template preview ({len(events)} entries)",
+            body, html_body=html_body)
 
     return body
 

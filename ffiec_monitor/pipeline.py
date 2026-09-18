@@ -171,7 +171,10 @@ def run_daily(
 
     if send and email_config is not None:
         subject = _subject_for(watch_list_changes, tier1_events)
-        email_report.send_email(email_config, subject, body)
+        html_body = email_report.build_email_html(
+            watch_list_changes, tier1_events, snapshot_entries, tier2_events, restatement_events, run_date,
+        )
+        email_report.send_email(email_config, subject, body, html_body=html_body)
 
     return body
 
