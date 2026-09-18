@@ -48,6 +48,11 @@ def main() -> int:
     parser.add_argument("--fake-diff", action="store_true",
                         help="synthesize one Tier 1 event to prove the email path works end to end (spec §10.2), "
                              "without calling the FFIEC API")
+    parser.add_argument("--weekly-test-digest", type=int, default=None, metavar="DAYS",
+                        help="TEST: email every institution/period change logged in the last DAYS days, "
+                             "any tier (not just Tier 1/2) -- a query over already-collected alert_log data, "
+                             "no FFIEC API call. Answers 'did anything change recently' directly, bypassing "
+                             "the ratio thresholds that decide what's normally alert-worthy.")
     parser.add_argument("--max-facsimile-pulls", type=int, default=None,
                         help="Cap how many changed institution/period pairs get the full facsimile pull this "
                              "run -- for a quick live-pipeline smoke test, or to bound a single run's wall-clock "
@@ -70,6 +75,13 @@ def main() -> int:
         from scripts.fake_diff import run_fake_diff
         email_config = None if args.no_send else EmailConfig.from_env()
         body = run_fake_diff(conn, email_config, send=not args.no_send)
+        print(body)
+        return 0
+
+    if args.weekly_test_digest is not None:
+        from scripts.send_weekly_test_digest import run_weekly_test_digest
+        email_config = None if args.no_send else EmailConfig.from_env()
+        body = run_weekly_test_digest(conn, email_config, days=args.weekly_test_digest, send=not args.no_send)
         print(body)
         return 0
 

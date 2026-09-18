@@ -36,6 +36,10 @@ on:
         description: "TEMPORARY (a few days): email a short confirmation even when there's nothing to report, so a quiet inbox isn't mistaken for a scheduled run that never fired. Turn off once the live pipeline is trusted."
         type: boolean
         default: true
+      weekly_test_digest_days:
+        description: "TEST: email every institution/period change logged in the last N days, any tier (not just Tier 1/2) -- a query over already-collected alert_log data, no FFIEC API call. Blank = skip (normal run)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -135,6 +139,8 @@ jobs:
           fi
           if [ "${{ inputs.fake_diff }}" = "true" ]; then
             python run.py --fake-diff
+          elif [ -n "${{ inputs.weekly_test_digest_days }}" ]; then
+            python run.py --weekly-test-digest "${{ inputs.weekly_test_digest_days }}"
           elif [ -n "${{ inputs.max_facsimile_pulls }}" ]; then
             python run.py --universe "${{ inputs.universe || 'full' }}" \
               --max-facsimile-pulls "${{ inputs.max_facsimile_pulls }}" $HEARTBEAT_FLAG
