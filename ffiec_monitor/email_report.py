@@ -109,7 +109,8 @@ def _quarter_label(period_end: date) -> str:
 
 
 def _restatement_line(evt: RestatementEvent) -> str:
-    return (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- "
+    return (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- RSSD {evt.meta.id_rssd} · "
+            f"FDIC Cert {evt.meta.fdic_cert or 'n/a'} -- "
             f"{_quarter_label(evt.period_end)} Call Report amended: {evt.reason}")
 
 
