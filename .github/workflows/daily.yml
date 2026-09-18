@@ -44,6 +44,10 @@ on:
         description: "TEST: print a period_end/tier breakdown of alert_log for the last N days (counts only, no email, no API call). Blank = skip."
         type: string
         default: ""
+      preview_refilings_days:
+        description: "TEST: email a preview of the new REFILINGS template using real (already-processed) restatements logged in the last N days -- no FFIEC API call. Blank = skip."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -128,8 +132,16 @@ jobs:
         shell: bash
         run: python scripts/period_stats.py "${{ inputs.period_stats_days }}"
 
+      - name: Preview new REFILINGS template with real data
+        if: ${{ inputs.diagnose_secrets != true && inputs.preview_refilings_days != '' }}
+        shell: bash
+        env:
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python scripts/preview_refilings_template.py "${{ inputs.preview_refilings_days }}"
+
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
