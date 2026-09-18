@@ -40,6 +40,10 @@ on:
         description: "TEST: email every institution/period change logged in the last N days, any tier (not just Tier 1/2) -- a query over already-collected alert_log data, no FFIEC API call. Blank = skip (normal run)."
         type: string
         default: ""
+      period_stats_days:
+        description: "TEST: print a period_end/tier breakdown of alert_log for the last N days (counts only, no email, no API call). Blank = skip."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -119,8 +123,13 @@ jobs:
         shell: bash
         run: python scripts/reset_poll_state.py
 
+      - name: Print period_end/tier breakdown (counts only, no email)
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days != '' }}
+        shell: bash
+        run: python scripts/period_stats.py "${{ inputs.period_stats_days }}"
+
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
