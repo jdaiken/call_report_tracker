@@ -9,10 +9,13 @@ dozens of separate emails (spec §8).
 """
 from __future__ import annotations
 
+import csv
 import html
+import io
 import smtplib
 from dataclasses import dataclass
 from datetime import date
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
@@ -61,6 +64,17 @@ class RestatementEvent:
     meta: InstitutionMeta
     period_end: date
     reason: str
+
+
+@dataclass
+class NewFilingEvent:
+    """A genuinely new quarter (never seen before for this institution) that
+    crossed no Tier 1/2 threshold -- alerts.classify_new_period's Tier 3 case
+    (pipeline.py's NEW_PERIOD_NO_TRIGGER log). Per user request 2026-09-18:
+    no longer silent -- every new filing is reported, threshold or not, since
+    the user reviews the ones they care about themselves via the report link."""
+    meta: InstitutionMeta
+    period_end: date
 
 
 def _fmt_assets(total_assets: Optional[float]) -> str:
@@ -127,6 +141,13 @@ def _restatement_line(evt: RestatementEvent) -> str:
             f"    Report: {cdr_report_url(evt.meta.id_rssd, evt.period_end)}")
 
 
+def _new_filing_line(evt: NewFilingEvent) -> str:
+    return (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- RSSD {evt.meta.id_rssd} · "
+            f"FDIC Cert {evt.meta.fdic_cert or 'n/a'} -- "
+            f"{_quarter_label(evt.period_end)} Call Report filed\n"
+            f"    Report: {cdr_report_url(evt.meta.id_rssd, evt.period_end)}")
+
+
 def _watch_list_change_line(evt: WatchListChangeEvent) -> str:
     verb = "Added" if evt.change.change_type == "ADDED" else (
         "Removed" if evt.change.change_type == "REMOVED" else "Reason changed"
@@ -141,6 +162,7 @@ def build_email_body(
     watch_list_snapshot: list[WatchListSnapshotEntry],
     tier2_events: list[Tier2Event],
     restatement_events: list[RestatementEvent],
+    new_filing_events: list[NewFilingEvent],
     run_date: date,
 ) -> Optional[str]:
     """Returns the full email body, or None if there is nothing to report at all."""
@@ -185,6 +207,10 @@ def build_email_body(
         lines = [_restatement_line(e) for e in restatement_events]
         sections.append("REFILINGS (no material capital change)\n\n" + "\n".join(lines))
 
+    if new_filing_events:
+        lines = [_new_filing_line(e) for e in new_filing_events]
+        sections.append("NEW QUARTERLY FILINGS (no threshold trigger)\n\n" + "\n".join(lines))
+
     if not sections:
         return None
 
@@ -204,9 +230,12 @@ def _e(text: str) -> str:
     return html.escape(str(text))
 
 
-def _restatements_table_html(restatement_events: list[RestatementEvent]) -> str:
+def _events_table_html(events: list) -> str:
+    """Shared table renderer for RestatementEvent and NewFilingEvent -- both
+    expose .meta and .period_end and render identically (Institution, Location,
+    RSSD, FDIC Cert, Period, Link), so one function covers both event types."""
     rows = []
-    for evt in restatement_events:
+    for evt in events:
         url = cdr_report_url(evt.meta.id_rssd, evt.period_end)
         rows.append(
             "<tr>"
@@ -234,6 +263,7 @@ def build_email_html(
     watch_list_snapshot: list[WatchListSnapshotEntry],
     tier2_events: list[Tier2Event],
     restatement_events: list[RestatementEvent],
+    new_filing_events: list[NewFilingEvent],
     run_date: date,
 ) -> Optional[str]:
     """HTML counterpart to build_email_body -- same section set and ordering, so
@@ -283,7 +313,13 @@ def build_email_html(
     if restatement_events:
         sections.append(
             "<h3>Refilings (no material capital change)</h3>"
-            + _restatements_table_html(restatement_events)
+            + _events_table_html(restatement_events)
+        )
+
+    if new_filing_events:
+        sections.append(
+            "<h3>New Quarterly Filings (no threshold trigger)</h3>"
+            + _events_table_html(new_filing_events)
         )
 
     if not sections:
@@ -294,16 +330,45 @@ def build_email_html(
     return f'<html><body style="{_HTML_STYLE}">{body}</body></html>'
 
 
-def send_email(config: EmailConfig, subject: str, body: str, html_body: Optional[str] = None) -> None:
+def events_csv(restatement_events: list[RestatementEvent], new_filing_events: list[NewFilingEvent]) -> str:
+    """Institution/period changes (refilings + new filings) as CSV -- Excel/
+    Sheets open this directly, and it sorts/filters the way a table in an
+    email body never can. Per user request 2026-09-18."""
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["Type", "Institution", "City", "State", "RSSD", "FDIC Cert", "Period", "Report URL"])
+    for kind, events in (("Refiling", restatement_events), ("New Filing", new_filing_events)):
+        for evt in events:
+            m = evt.meta
+            writer.writerow([kind, m.name, m.city, m.state, m.id_rssd, m.fdic_cert or "",
+                              _quarter_label(evt.period_end), cdr_report_url(m.id_rssd, evt.period_end)])
+    return out.getvalue()
+
+
+def send_email(
+    config: EmailConfig, subject: str, body: str, html_body: Optional[str] = None,
+    attachment_filename: Optional[str] = None, attachment_content: Optional[str] = None,
+) -> None:
     if html_body is not None:
-        msg = MIMEMultipart("alternative")
+        alt = MIMEMultipart("alternative")
         # Plain text first: email clients render the LAST alternative part they
         # support, and most that support HTML prefer it -- this order gives
         # HTML-capable clients the table/link version, others the plain digest.
-        msg.attach(MIMEText(body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
+        alt.attach(MIMEText(body, "plain"))
+        alt.attach(MIMEText(html_body, "html"))
+        content: MIMEMultipart | MIMEText = alt
     else:
-        msg = MIMEText(body, "plain")
+        content = MIMEText(body, "plain")
+
+    if attachment_content is not None:
+        msg = MIMEMultipart("mixed")
+        msg.attach(content)
+        part = MIMEApplication(attachment_content.encode("utf-8"), Name=attachment_filename)
+        part["Content-Disposition"] = f'attachment; filename="{attachment_filename}"'
+        msg.attach(part)
+    else:
+        msg = content
+
     msg["Subject"] = subject
     msg["From"] = config.address
     msg["To"] = config.recipient

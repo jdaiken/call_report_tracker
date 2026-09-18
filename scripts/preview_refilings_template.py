@@ -39,14 +39,16 @@ def run_preview(conn, email_config: Optional[EmailConfig], days: int = 7, send: 
         events.append(email_report.RestatementEvent(meta, period_end, reason))
 
     run_date = datetime.now(timezone.utc).date()
-    body = email_report.build_email_body([], [], [], [], events, run_date)
+    body = email_report.build_email_body([], [], [], [], events, [], run_date)
     assert body is not None, f"expected a body from {len(events)} real restatement event(s)"
 
     if send and email_config is not None:
-        html_body = email_report.build_email_html([], [], [], [], events, run_date)
+        html_body = email_report.build_email_html([], [], [], [], events, [], run_date)
+        csv_content = email_report.events_csv(events, [])
         email_report.send_email(
             email_config, f"[FFIEC Monitor] TEST -- new REFILINGS template preview ({len(events)} entries)",
-            body, html_body=html_body)
+            body, html_body=html_body,
+            attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv", attachment_content=csv_content)
 
     return body
 

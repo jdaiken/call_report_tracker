@@ -108,6 +108,7 @@ def run_daily(
     tier1_events: list[email_report.Tier1Event] = []
     tier2_events: list[email_report.Tier2Event] = []
     restatement_events: list[email_report.RestatementEvent] = []
+    new_filing_events: list[email_report.NewFilingEvent] = []
 
     # RetrieveFacsimile carries no name/city/state/FDIC-cert fields (verified
     # against the real API doc -- that identity data only exists in the Panel of
@@ -124,7 +125,7 @@ def run_daily(
         panel_entry = panel_by_period.get(period_end, {}).get(id_rssd)
         try:
             _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
-                          watch_list_changes, tier1_events, tier2_events, restatement_events)
+                          watch_list_changes, tier1_events, tier2_events, restatement_events, new_filing_events)
         except FFIECAuthError:
             raise  # spec §1: must propagate, never swallowed
         except FFIECRateLimitError:
@@ -157,7 +158,8 @@ def run_daily(
     snapshot_entries = _build_watch_list_snapshot(conn)
 
     body = email_report.build_email_body(
-        watch_list_changes, tier1_events, snapshot_entries, tier2_events, restatement_events, run_date,
+        watch_list_changes, tier1_events, snapshot_entries, tier2_events,
+        restatement_events, new_filing_events, run_date,
     )
     if body is None:
         heartbeat_body = _heartbeat_body(
@@ -172,9 +174,17 @@ def run_daily(
     if send and email_config is not None:
         subject = _subject_for(watch_list_changes, tier1_events)
         html_body = email_report.build_email_html(
-            watch_list_changes, tier1_events, snapshot_entries, tier2_events, restatement_events, run_date,
+            watch_list_changes, tier1_events, snapshot_entries, tier2_events,
+            restatement_events, new_filing_events, run_date,
         )
-        email_report.send_email(email_config, subject, body, html_body=html_body)
+        csv_content = None
+        if restatement_events or new_filing_events:
+            csv_content = email_report.events_csv(restatement_events, new_filing_events)
+        email_report.send_email(
+            email_config, subject, body, html_body=html_body,
+            attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv" if csv_content else None,
+            attachment_content=csv_content,
+        )
 
     return body
 
@@ -210,6 +220,7 @@ def _process_one(
     tier1_events: list,
     tier2_events: list,
     restatement_events: list,
+    new_filing_events: list,
 ) -> None:
     is_restatement = db.get_snapshot(conn, id_rssd, period_end) is not None
 
@@ -230,9 +241,7 @@ def _process_one(
             db.log_alert(conn, id_rssd, period_end, "TIER3", "RESTATEMENT_SUB_FLOOR", {"reason": reason})
             # Not a real alert (no capital ratio moved >50bp), but per user request
             # 2026-09-18, still surfaced as a one-line email mention rather than
-            # staying invisible in alert_log -- unlike NEW_PERIOD_NO_TRIGGER below,
-            # this is a bounded, meaningful "something changed" signal, not backfill
-            # noise (a restatement only happens to a period already on file).
+            # staying invisible in alert_log.
             restatement_events.append(email_report.RestatementEvent(meta, period_end, reason))
     else:
         prior_snapshot = _latest_prior_snapshot(conn, id_rssd, period_end)
@@ -246,6 +255,14 @@ def _process_one(
         )
         if not triggers:
             db.log_alert(conn, id_rssd, period_end, "TIER3", "NEW_PERIOD_NO_TRIGGER", {})
+            # Per user request 2026-09-18: every new quarter is reported, not just
+            # threshold-crossing ones -- the user reviews whichever ones they care
+            # about themselves via the report link. Note this is a much higher-
+            # volume category than restatements: expect a large batch whenever a
+            # new quarter opens and institutions file over the following weeks
+            # (comparable to the ~8,600-entry initial full-universe backfill),
+            # not the small trickle restatements produce.
+            new_filing_events.append(email_report.NewFilingEvent(meta, period_end))
 
     active_orders = db.get_active_order_types(conn, id_rssd)
     wl_change = watch_list.recompute_membership(conn, id_rssd, new_ratios, active_orders, run_date)

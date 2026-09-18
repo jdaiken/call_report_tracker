@@ -166,6 +166,19 @@ def test_restatement_one_liner_names_the_actual_ratio_that_moved():
     assert "Total Risk-Based Capital Ratio 11.20% -> 11.05% (-0.15pp)" in body
 
 
+def test_new_period_with_no_trigger_gets_a_one_liner_not_silence():
+    """NEW_PERIOD_NO_TRIGGER used to be Tier 3 -- logged to alert_log but never
+    emailed, so a first-sighted quarter with no threshold-crossing change was
+    indistinguishable from nothing happening. Per user request 2026-09-18,
+    every new quarter is now reported -- not just threshold-crossing ones."""
+    conn = db.connect(":memory:")
+    body = run_daily(conn, FakeClient(["1"]), None, run_date=date(2026, 7, 15), send=False)
+
+    assert body != "Nothing to report today."
+    assert "NEW QUARTERLY FILINGS" in body
+    assert "Bank 1" in body
+
+
 def test_heartbeat_never_fires_when_there_is_a_real_alert():
     """A real alert is its own confirmation the run fired -- heartbeat must not
     also send a redundant second email."""
