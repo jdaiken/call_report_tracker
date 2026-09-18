@@ -6,6 +6,7 @@ correctly against real data without waiting for a fresh restatement to occur
 """
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,17 +21,22 @@ from ffiec_monitor.config import EmailConfig, get_duckdb_path
 def run_preview(conn, email_config: Optional[EmailConfig], days: int = 7, send: bool = True) -> str:
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = conn.execute(
-        "SELECT id_rssd, period_end FROM alert_log "
+        "SELECT id_rssd, period_end, detail FROM alert_log "
         "WHERE tier = 'TIER3' AND trigger_type = 'RESTATEMENT_SUB_FLOOR' AND logged_at >= ? "
         "ORDER BY logged_at ASC",
         [since],
     ).fetchall()
 
     events = []
-    for id_rssd, period_end in rows:
+    for id_rssd, period_end, detail in rows:
         meta = db.get_institution_meta(conn, id_rssd)
-        if meta is not None:
-            events.append(email_report.RestatementEvent(meta, period_end))
+        if meta is None:
+            continue
+        # `detail` is a JSON string; older rows (logged before the "reason" field
+        # was added) only have the generic "note" key, so no real reason exists.
+        parsed = json.loads(detail) if detail else {}
+        reason = parsed.get("reason", "reason not available (logged before per-ratio detail was tracked)")
+        events.append(email_report.RestatementEvent(meta, period_end, reason))
 
     body = email_report.build_email_body([], [], [], [], events, datetime.now(timezone.utc).date())
     assert body is not None, f"expected a body from {len(events)} real restatement event(s)"

@@ -109,3 +109,22 @@ def test_escalation_rule_no_op_when_not_on_watch_list():
     triggers = alerts.classify_new_period(prior, current, [], None, None)
     escalated = alerts.escalate_for_watch_list(triggers, on_watch_list=False)
     assert escalated == triggers
+
+
+def test_describe_restatement_change_names_the_largest_moving_ratio():
+    stored = {"tier1_leverage_ratio": 9.00, "total_rbc_ratio": 11.20}
+    refiled = {"tier1_leverage_ratio": 9.02, "total_rbc_ratio": 11.05}
+    reason = alerts.describe_restatement_change(stored, refiled)
+    assert reason == "Total Risk-Based Capital Ratio 11.20% -> 11.05% (-0.15pp)"
+
+
+def test_describe_restatement_change_no_fields_present():
+    reason = alerts.describe_restatement_change({}, {})
+    assert reason == "no capital ratio field present in both versions to compare"
+
+
+def test_describe_restatement_change_identical_ratios():
+    stored = {"total_rbc_ratio": 11.20}
+    refiled = {"total_rbc_ratio": 11.20}
+    reason = alerts.describe_restatement_change(stored, refiled)
+    assert reason == "capital ratios unchanged -- likely a non-capital field correction"

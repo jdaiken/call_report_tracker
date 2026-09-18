@@ -195,6 +195,40 @@ def classify_restatement(
     return triggers
 
 
+_CAPITAL_RATIO_LABELS = {
+    "tier1_leverage_ratio": "Tier 1 Leverage Ratio",
+    "tier1_rbc_ratio": "Tier 1 Risk-Based Capital Ratio",
+    "total_rbc_ratio": "Total Risk-Based Capital Ratio",
+    "cet1_ratio": "CET1 Ratio",
+}
+
+
+def describe_restatement_change(
+    stored: dict[str, Optional[float]], refiled: dict[str, Optional[float]]
+) -> str:
+    """One-line "why" for a sub-floor restatement (classify_restatement found no
+    capital ratio down >50bp) -- names whichever capital ratio moved most, even
+    below that threshold, rather than leaving the reader with just "amended."
+    """
+    best_key, best_delta = None, 0.0
+    for key in CAPITAL_RATIO_KEYS:
+        old_v, new_v = stored.get(key), refiled.get(key)
+        if old_v is None or new_v is None:
+            continue
+        delta = new_v - old_v
+        if best_key is None or abs(delta) > abs(best_delta):
+            best_key, best_delta = key, delta
+
+    if best_key is None:
+        return "no capital ratio field present in both versions to compare"
+    if best_delta == 0:
+        return "capital ratios unchanged -- likely a non-capital field correction"
+
+    old_v, new_v = stored[best_key], refiled[best_key]
+    label = _CAPITAL_RATIO_LABELS[best_key]
+    return f"{label} {old_v:.2f}% -> {new_v:.2f}% ({best_delta:+.2f}pp)"
+
+
 def escalate_for_watch_list(triggers: list[Trigger], on_watch_list: bool) -> list[Trigger]:
     """Spec §6 escalation rule: any Tier 2 trigger on a bank already on the Watch
     List auto-escalates to Tier 1."""

@@ -125,7 +125,7 @@ class RestatementClient(FakeClient):
                 for r in self._id_rssds]
 
 
-def test_restatement_with_no_material_capital_change_gets_a_one_liner_not_silence():
+def test_restatement_with_no_ratio_data_gets_a_one_liner_not_silence():
     """RESTATEMENT_SUB_FLOOR used to be Tier 3 -- logged to alert_log but never
     emailed. Per user request 2026-09-18, it now surfaces as a one-line
     REFILINGS mention instead of vanishing into a heartbeat."""
@@ -139,7 +139,31 @@ def test_restatement_with_no_material_capital_change_gets_a_one_liner_not_silenc
     assert body is not None
     assert "REFILINGS" in body
     assert "Bank 1" in body
-    assert "no material capital change" in body
+    assert "no capital ratio field present in both versions to compare" in body
+
+
+class RestatedRatioClient(RestatementClient):
+    """A restatement carrying a real (below-threshold) capital ratio delta,
+    so describe_restatement_change has an actual number to name."""
+
+    def __init__(self, id_rssds, submission_ts, total_rbc_ratio):
+        super().__init__(id_rssds, submission_ts)
+        self._total_rbc_ratio = total_rbc_ratio
+
+    def retrieve_facsimile(self, id_rssd, period_end):
+        return {"RCOA7205": str(self._total_rbc_ratio)}
+
+
+def test_restatement_one_liner_names_the_actual_ratio_that_moved():
+    conn = db.connect(":memory:")
+    run_daily(conn, RestatedRatioClient(["1"], datetime(2026, 7, 1), 11.20), None,
+              run_date=date(2026, 7, 15), send=False)  # first sight
+
+    body = run_daily(conn, RestatedRatioClient(["1"], datetime(2026, 7, 2), 11.05), None,
+                      run_date=date(2026, 7, 16), send=False)  # refiled, -0.15pp (sub-floor)
+
+    assert body is not None
+    assert "Total Risk-Based Capital Ratio 11.20% -> 11.05% (-0.15pp)" in body
 
 
 def test_heartbeat_never_fires_when_there_is_a_real_alert():

@@ -58,6 +58,7 @@ class RestatementEvent:
     one-liner" for the rest, per user request 2026-09-18."""
     meta: InstitutionMeta
     period_end: date
+    reason: str
 
 
 def _fmt_assets(total_assets: Optional[float]) -> str:
@@ -109,7 +110,7 @@ def _quarter_label(period_end: date) -> str:
 
 def _restatement_line(evt: RestatementEvent) -> str:
     return (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- "
-            f"{_quarter_label(evt.period_end)} Call Report amended, no material capital change")
+            f"{_quarter_label(evt.period_end)} Call Report amended: {evt.reason}")
 
 
 def _watch_list_change_line(evt: WatchListChangeEvent) -> str:

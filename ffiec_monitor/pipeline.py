@@ -223,14 +223,14 @@ def _process_one(
         stored = db.get_snapshot(conn, id_rssd, period_end)
         triggers = alerts.classify_restatement(stored.ratios, new_ratios)
         if not triggers:
-            db.log_alert(conn, id_rssd, period_end, "TIER3", "RESTATEMENT_SUB_FLOOR",
-                         {"note": "restatement with no capital ratio down >50bp"})
+            reason = alerts.describe_restatement_change(stored.ratios, new_ratios)
+            db.log_alert(conn, id_rssd, period_end, "TIER3", "RESTATEMENT_SUB_FLOOR", {"reason": reason})
             # Not a real alert (no capital ratio moved >50bp), but per user request
             # 2026-09-18, still surfaced as a one-line email mention rather than
             # staying invisible in alert_log -- unlike NEW_PERIOD_NO_TRIGGER below,
             # this is a bounded, meaningful "something changed" signal, not backfill
             # noise (a restatement only happens to a period already on file).
-            restatement_events.append(email_report.RestatementEvent(meta, period_end))
+            restatement_events.append(email_report.RestatementEvent(meta, period_end, reason))
     else:
         prior_snapshot = _latest_prior_snapshot(conn, id_rssd, period_end)
         prior_ratios = prior_snapshot.ratios if prior_snapshot else {}
