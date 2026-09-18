@@ -215,13 +215,12 @@ def _restatements_table_html(restatement_events: list[RestatementEvent]) -> str:
             f'<td style="{_TD_STYLE}">{_e(evt.meta.id_rssd)}</td>'
             f'<td style="{_TD_STYLE}">{_e(evt.meta.fdic_cert or "n/a")}</td>'
             f'<td style="{_TD_STYLE}">{_e(_quarter_label(evt.period_end))}</td>'
-            f'<td style="{_TD_STYLE}">{_e(evt.reason)}</td>'
             f'<td style="{_TD_STYLE}"><a href="{_e(url)}">Call Report</a></td>'
             "</tr>"
         )
     header = "".join(
         f'<th style="{_TH_STYLE}">{col}</th>'
-        for col in ("Institution", "Location", "RSSD", "FDIC Cert", "Period", "Reason", "Link")
+        for col in ("Institution", "Location", "RSSD", "FDIC Cert", "Period", "Link")
     )
     return (
         f'<table style="{_TABLE_STYLE}"><thead><tr>{header}</tr></thead>'
