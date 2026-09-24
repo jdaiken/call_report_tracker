@@ -33,9 +33,9 @@ on:
         type: string
         default: ""
       heartbeat:
-        description: "TEMPORARY (a few days): email a short confirmation even when there's nothing to report, so a quiet inbox isn't mistaken for a scheduled run that never fired. Turn off once the live pipeline is trusted."
+        description: "Email a short confirmation even when there's nothing to report, so a quiet inbox isn't mistaken for a scheduled run that never fired. Off by default now that the live pipeline is trusted -- flip to true for a one-off manual check."
         type: boolean
-        default: true
+        default: false
       weekly_test_digest_days:
         description: "TEST: email every institution/period change logged in the last N days, any tier (not just Tier 1/2) -- a query over already-collected alert_log data, no FFIEC API call. Blank = skip (normal run)."
         type: string
@@ -164,7 +164,7 @@ jobs:
           HEARTBEAT_INPUT: ${{ inputs.heartbeat }}
         run: |
           HEARTBEAT_FLAG=""
-          if [ "${HEARTBEAT_INPUT:-true}" != "false" ]; then
+          if [ "${HEARTBEAT_INPUT:-false}" = "true" ]; then
             HEARTBEAT_FLAG="--heartbeat"
           fi
           if [ "${{ inputs.fake_diff }}" = "true" ]; then
