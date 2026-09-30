@@ -77,6 +77,19 @@ class NewFilingEvent:
     period_end: date
 
 
+@dataclass
+class TreasuryDeskEvent:
+    """Anything that happened this run to a bank on the Treasury Desk list
+    (see treasury_desk.py) -- surfaced in its own section at the top of the
+    email regardless of tier, per user request 2026-09-30. `what` is a one-line
+    summary of the underlying event (Tier 1/2 trigger, refiling, new filing,
+    Watch List change), which still also appears in its normal section."""
+    meta: InstitutionMeta
+    period_end: Optional[date]
+    desk_name: str
+    what: str
+
+
 def _fmt_assets(total_assets: Optional[float]) -> str:
     if total_assets is None:
         return "n/a"
@@ -148,6 +161,15 @@ def _new_filing_line(evt: NewFilingEvent) -> str:
             f"    Report: {cdr_report_url(evt.meta.id_rssd, evt.period_end)}")
 
 
+def _treasury_desk_line(evt: TreasuryDeskEvent) -> str:
+    period = f"{_quarter_label(evt.period_end)} -- " if evt.period_end else ""
+    line = (f"{evt.meta.name} ({evt.meta.city}, {evt.meta.state}) -- RSSD {evt.meta.id_rssd} · "
+            f"FDIC Cert {evt.meta.fdic_cert or 'n/a'} -- {period}{evt.what}")
+    if evt.period_end:
+        line += f"\n    Report: {cdr_report_url(evt.meta.id_rssd, evt.period_end)}"
+    return line
+
+
 def _watch_list_change_line(evt: WatchListChangeEvent) -> str:
     verb = "Added" if evt.change.change_type == "ADDED" else (
         "Removed" if evt.change.change_type == "REMOVED" else "Reason changed"
@@ -164,9 +186,14 @@ def build_email_body(
     restatement_events: list[RestatementEvent],
     new_filing_events: list[NewFilingEvent],
     run_date: date,
+    treasury_desk_events: Optional[list[TreasuryDeskEvent]] = None,
 ) -> Optional[str]:
     """Returns the full email body, or None if there is nothing to report at all."""
     sections: list[str] = []
+
+    if treasury_desk_events:
+        lines = [_treasury_desk_line(e) for e in treasury_desk_events]
+        sections.append("TREASURY DESK\n\n" + "\n".join(lines))
 
     if watch_list_changes:
         lines = [_watch_list_change_line(e) for e in watch_list_changes]
@@ -257,6 +284,33 @@ def _events_table_html(events: list) -> str:
     )
 
 
+def _treasury_desk_table_html(events: list[TreasuryDeskEvent]) -> str:
+    rows = []
+    for evt in events:
+        period = _quarter_label(evt.period_end) if evt.period_end else ""
+        link = (f'<a href="{_e(cdr_report_url(evt.meta.id_rssd, evt.period_end))}">Call Report</a>'
+                if evt.period_end else "")
+        rows.append(
+            "<tr>"
+            f'<td style="{_TD_STYLE}">{_e(evt.meta.name)}</td>'
+            f'<td style="{_TD_STYLE}">{_e(evt.meta.city)}, {_e(evt.meta.state)}</td>'
+            f'<td style="{_TD_STYLE}">{_e(evt.meta.id_rssd)}</td>'
+            f'<td style="{_TD_STYLE}">{_e(evt.meta.fdic_cert or "n/a")}</td>'
+            f'<td style="{_TD_STYLE}">{_e(period)}</td>'
+            f'<td style="{_TD_STYLE}">{_e(evt.what)}</td>'
+            f'<td style="{_TD_STYLE}">{link}</td>'
+            "</tr>"
+        )
+    header = "".join(
+        f'<th style="{_TH_STYLE}">{col}</th>'
+        for col in ("Institution", "Location", "RSSD", "FDIC Cert", "Period", "What happened", "Link")
+    )
+    return (
+        f'<table style="{_TABLE_STYLE}"><thead><tr>{header}</tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def build_email_html(
     watch_list_changes: list[WatchListChangeEvent],
     tier1_events: list[Tier1Event],
@@ -265,6 +319,7 @@ def build_email_html(
     restatement_events: list[RestatementEvent],
     new_filing_events: list[NewFilingEvent],
     run_date: date,
+    treasury_desk_events: Optional[list[TreasuryDeskEvent]] = None,
 ) -> Optional[str]:
     """HTML counterpart to build_email_body -- same section set and ordering, so
     the two must be called with identical arguments (build_email_body's None
@@ -274,6 +329,9 @@ def build_email_html(
     rendering rather than a parallel implementation to keep in sync.
     """
     sections: list[str] = []
+
+    if treasury_desk_events:
+        sections.append("<h3>Treasury Desk</h3>" + _treasury_desk_table_html(treasury_desk_events))
 
     if watch_list_changes:
         lines = [_watch_list_change_line(e) for e in watch_list_changes]

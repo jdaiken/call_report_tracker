@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import duckdb
 
-from . import alerts, db, email_report, ratios, watch_list
+from . import alerts, db, email_report, ratios, treasury_desk, watch_list
 from .config import EmailConfig
 from .ffiec_client import FFIECAuthError, FFIECClient, FFIECRateLimitError
 
@@ -35,6 +35,7 @@ def run_daily(
     send: bool = True,
     max_facsimile_pulls: Optional[int] = None,
     heartbeat: bool = False,
+    treasury_desk_matcher: Optional[treasury_desk.TreasuryDeskMatcher] = None,
 ) -> str:
     """Runs one full daily cycle. Returns the email body that was (or would have
     been) sent, or a short "nothing to report" message.
@@ -61,6 +62,10 @@ def run_daily(
     Temporary by design: meant to be turned off again once the live pipeline
     (esp. the full-universe rollout) is trusted to actually run daily; it never
     duplicates a real alert email, only fires on the otherwise-silent path.
+
+    `treasury_desk_matcher` defaults to the committed data/treasury-desk.csv
+    list; anything this run produced for a bank on it is repeated in the
+    email's TREASURY DESK section (see treasury_desk.py).
     """
     run_date = run_date or date.today()
 
@@ -156,10 +161,14 @@ def run_daily(
             db.set_last_polled_at(conn, period_end, pending_watermarks[period_end])
 
     snapshot_entries = _build_watch_list_snapshot(conn)
+    treasury_desk_events = _treasury_desk_events(
+        treasury_desk_matcher or treasury_desk.load(),
+        watch_list_changes, tier1_events, tier2_events, restatement_events, new_filing_events,
+    )
 
     body = email_report.build_email_body(
         watch_list_changes, tier1_events, snapshot_entries, tier2_events,
-        restatement_events, new_filing_events, run_date,
+        restatement_events, new_filing_events, run_date, treasury_desk_events,
     )
     if body is None:
         heartbeat_body = _heartbeat_body(
@@ -172,10 +181,10 @@ def run_daily(
         return heartbeat_body if heartbeat else "Nothing to report today."
 
     if send and email_config is not None:
-        subject = _subject_for(watch_list_changes, tier1_events)
+        subject = _subject_for(watch_list_changes, tier1_events, treasury_desk_events)
         html_body = email_report.build_email_html(
             watch_list_changes, tier1_events, snapshot_entries, tier2_events,
-            restatement_events, new_filing_events, run_date,
+            restatement_events, new_filing_events, run_date, treasury_desk_events,
         )
         csv_content = None
         if restatement_events or new_filing_events:
@@ -346,7 +355,42 @@ def _build_watch_list_snapshot(conn) -> list[email_report.WatchListSnapshotEntry
     return entries
 
 
-def _subject_for(watch_list_changes: list, tier1_events: list) -> str:
+def _treasury_desk_events(
+    matcher: treasury_desk.TreasuryDeskMatcher,
+    watch_list_changes: list, tier1_events: list, tier2_events: list,
+    restatement_events: list, new_filing_events: list,
+) -> list[email_report.TreasuryDeskEvent]:
+    """Every event from this run whose institution is on the Treasury Desk
+    list, summarized one line each. meta.as_of_period is the period this run
+    processed (see _meta_from_panel), which is the only period Tier 2 and
+    Watch List events carry."""
+    candidates: list[tuple[db.InstitutionMeta, str]] = []
+    for e in tier1_events:
+        candidates.append((e.meta, "Tier 1: " + "; ".join(t.description for t in e.triggers)))
+    for e in tier2_events:
+        candidates.append((e.meta, "Tier 2: " + "; ".join(t.description for t in e.triggers)))
+    for e in watch_list_changes:
+        candidates.append((e.meta, "Watch List " + email_report._watch_list_change_line(e)))
+    for e in restatement_events:
+        candidates.append((e.meta, f"Call Report amended: {e.reason}"))
+    for e in new_filing_events:
+        candidates.append((e.meta, "Call Report filed"))
+
+    events = []
+    for meta, what in candidates:
+        desk_name = matcher.match(meta.name, meta.state)
+        if desk_name is not None:
+            events.append(email_report.TreasuryDeskEvent(meta, meta.as_of_period, desk_name, what))
+    return events
+
+
+def _subject_for(watch_list_changes: list, tier1_events: list, treasury_desk_events: list = ()) -> str:
+    if treasury_desk_events:
+        institutions = {e.meta.id_rssd for e in treasury_desk_events}
+        subject = f"[FFIEC Monitor] Treasury Desk alert -- {len(institutions)} institution(s)"
+        if tier1_events:
+            subject += f" + Tier 1 alert -- {len(tier1_events)} institution(s)"
+        return subject
     if tier1_events:
         return f"[FFIEC Monitor] Tier 1 alert -- {len(tier1_events)} institution(s)"
     if watch_list_changes:

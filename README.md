@@ -99,6 +99,20 @@ If the risk-ranking list changes, re-run `resolve_from_bulk_por.py` against a
 fresh bulk download (or `resolve_risk_rankings.py` against the live API if you
 don't have one on hand) and re-export `data/risk-rankings-rssd-map.csv`.
 
+## Treasury Desk special alert
+
+`data/treasury-desk.csv` is a user-supplied list of banks (name, optional
+`|`-separated `aliases` for legal-name variations, optional `state` pin). Any
+event this run produces for one of them -- Tier 1/2, refiling, new filing,
+Watch List change -- is repeated in a **TREASURY DESK** section at the top of
+the email, and the subject becomes `[FFIEC Monitor] Treasury Desk alert`.
+Matching is by name against the live Panel of Reporters name (see
+`ffiec_monitor/treasury_desk.py` for the rules); generic names like "Pinnacle
+Bank" can match banks in several states until you fill in `state`. Covered on
+`--universe full` (the scheduled default); a `small` run only sees the banks
+in the risk-ranking/enforcement lists. Same list and matcher live in
+edgar_bank_monitor -- edit both copies together.
+
 ## Running
 
 ```
