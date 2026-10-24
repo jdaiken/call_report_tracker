@@ -45,27 +45,14 @@ def collect(today, weekly: bool) -> Bundle:
 def _finviz_probe() -> str:
     """When the Finviz screen fails, fetch the page directly and describe what came back."""
     try:
-        import re
         import requests
         from finvizfinance.util import headers
         r = requests.get("https://finviz.com/screener.ashx", params={"v": "111", "f": "ind_banksregional"},
                          headers=headers, timeout=30)
-        t = r.text
-        marks = {m: t.count(m) for m in ("pageSelect", "screener-pages", "quote.ashx?t=", "styled-table-new",
-                                          "screener_table", "is-pages", "Total:", "#1 /", "<tr", "data-row")}
-        for needle in ("__NEXT_DATA__", "application/json", "\"ticker\"", "\"Ticker\""):
-            k = t.find(needle)
-            if k >= 0 and os.environ.get("GITHUB_ACTIONS") == "true":
-                print(f"::notice title=Finviz {needle[:14]}::{t[k:k + 350].replace(chr(10), ' ').replace('%', '%25')}")
-        i = t.find("data-row")
-        snippet = t[max(0, i - 700):i + 500].replace("\n", " ") if i >= 0 else ""
-        if os.environ.get("GITHUB_ACTIONS") == "true" and snippet:
-            for n in range(0, len(snippet), 380):
-                print(f"::notice title=Finviz row HTML {n // 380 + 1}::{snippet[n:n + 380].replace('%', '%25')}")
-            j = t.find("Total:")
-            if j >= 0:
-                print(f"::notice title=Finviz total::{t[j - 300:j + 300].replace(chr(10), ' ').replace('%', '%25')}")
-        return f"HTTP {r.status_code}, {len(t):,} bytes, markers={marks}"
+        redesign = '"hasRedesignEnabled":true' in r.text
+        return (f"HTTP {r.status_code}, {len(r.text):,} bytes"
+                + ("; Finviz's redesigned screener draws rows with JavaScript, which finvizfinance can't read yet"
+                   if redesign else ""))
     except Exception as e:
         return f"probe error: {e}"
 
