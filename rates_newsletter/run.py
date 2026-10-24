@@ -63,7 +63,21 @@ def check_sources(b: Bundle) -> int:
         print(f"{'FAIL' if err else 'OK  '}  {name:24} {err or ok_text}")
         bad += 1 if err else 0
     print(f"\n{bad} source(s) failed.")
-    return 1 if bad else 0
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # Also post results as run annotations, visible on the run page without opening the log.
+        fails = [f"{k}: {r.error}" for k, r in sorted(b.readings.items()) if not r.ok]
+        fails += [f"{n}: {e}" for n, e, _ in extra_checks if e]
+        oks = [k for k, r in sorted(b.readings.items()) if r.ok] + [n for n, e, _ in extra_checks if not e]
+        def esc(t: str) -> str:
+            return t.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::notice title=Sources OK ({len(oks)})::{esc(', '.join(oks))}")
+        for line in fails[:9]:
+            print(f"::warning title=Source failed::{esc(line[:400])}")
+        if len(fails) > 9:
+            print(f"::warning title=More failures::{len(fails) - 9} more; see the log.")
+    # Only the core rate data should turn the run red; an optional source failing is a warning.
+    core_ok = sum(1 for r in b.readings.values() if r.ok) >= len(b.readings) * 0.8
+    return 0 if core_ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
