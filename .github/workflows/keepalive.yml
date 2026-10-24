@@ -1,0 +1,26 @@
+name: Keep schedules alive
+
+# GitHub pauses scheduled workflows in a public repo after 60 days without a
+# commit. This makes a tiny commit on the 1st of every month (well inside the
+# 60 days) so the daily FFIEC and rates emails never get paused.
+
+on:
+  schedule:
+    - cron: "17 14 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit a timestamp
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive
+          git commit -m "Keep scheduled workflows active" && git push
