@@ -42,6 +42,22 @@ def collect(today, weekly: bool) -> Bundle:
     )
 
 
+def _finviz_probe() -> str:
+    """When the Finviz screen fails, fetch the page directly and describe what came back."""
+    try:
+        import re
+        import requests
+        from finvizfinance.util import headers
+        r = requests.get("https://finviz.com/screener.ashx", params={"v": "111", "f": "ind_banksregional"},
+                         headers=headers, timeout=30)
+        title = re.search(r"<title>(.*?)</title>", r.text, re.S | re.I)
+        rows = len(re.findall(r"screener-body-table-nw", r.text))
+        return (f"HTTP {r.status_code}, {len(r.text):,} bytes, title={title.group(1).strip()[:80] if title else 'none'!r}, "
+                f"table cells found={rows}")
+    except Exception as e:
+        return f"probe error: {e}"
+
+
 def check_sources(b: Bundle) -> int:
     bad = 0
     for key, r in sorted(b.readings.items()):
@@ -59,6 +75,8 @@ def check_sources(b: Bundle) -> int:
         ("Regional banks (Finviz)", b.regional.error, f"{len(b.regional.quotes)} banks"),
         ("Fed headlines", ", ".join(b.feed_errors) or None, f"{len(b.headlines)} in the past week"),
     ]
+    if b.regional.error:
+        extra_checks.append(("Finviz diagnostic", _finviz_probe(), ""))
     for name, err, ok_text in extra_checks:
         print(f"{'FAIL' if err else 'OK  '}  {name:24} {err or ok_text}")
         bad += 1 if err else 0

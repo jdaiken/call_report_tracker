@@ -153,7 +153,9 @@ def fetch_all(series_ids: list[str], start: date, fetcher=None) -> dict[str, Obs
 
 def parse_rss(xml_text: str, feed_name: str, since: date) -> list[Headline]:
     items = []
-    root = ET.fromstring(xml_text)
+    # federalreserve.gov feeds start with a byte-order mark, which ElementTree
+    # rejects ("XML declaration not at start"); strip it and any leading space.
+    root = ET.fromstring(xml_text.lstrip("\ufeff \r\n\t").encode("utf-8"))
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
@@ -174,10 +176,10 @@ def fetch_headlines(since: date) -> tuple[list[Headline], list[str]]:
     for name, url in FED_FEEDS.items():
         try:
             r = _get(session, url, {})
-            out.extend(parse_rss(r.text, name, since))
+            out.extend(parse_rss(r.content.decode("utf-8-sig", errors="replace"), name, since))
         except Exception as e:
             log.warning("Could not load feed %s: %s", name, e)
-            errors.append(name)
+            errors.append(f"{name} ({str(e)[:120]})")
     seen, unique = set(), []
     for h in sorted(out, key=lambda h: h.published, reverse=True):
         if h.link not in seen:

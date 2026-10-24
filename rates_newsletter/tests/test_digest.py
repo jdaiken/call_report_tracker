@@ -271,3 +271,10 @@ def test_auto_edition_picks_weekly_on_monday(monkeypatch, tmp_path):
     monkeypatch.setattr(fetch, "today_eastern", lambda: date(2026, 10, 27))   # Tuesday
     assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
     assert (tmp_path / "digest.html").exists()
+
+
+def test_rss_with_byte_order_mark():
+    xml = ("﻿<?xml version=\"1.0\" encoding=\"utf-8\" ?><rss><channel>"
+           "<item><title>BOM item</title><link>https://x/1</link><pubDate>Fri, 23 Oct 2026 14:00:00 GMT</pubDate></item>"
+           "</channel></rss>")
+    assert [h.title for h in parse_rss(xml, "Monetary policy", since=date(2026, 10, 19))] == ["BOM item"]
