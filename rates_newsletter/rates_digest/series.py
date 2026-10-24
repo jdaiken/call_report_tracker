@@ -64,10 +64,6 @@ SERIES: list[Series] = [
     Series("MMNDR", "Average bank money market rate", "rate", "%", "monthly",
            "The FDIC's national average rate on bank money market deposit accounts, updated monthly.",
            "The closest bank product to ICS. The further it lags T-bills, the stronger the pull of cash out of banks.", 0.03),
-    Series("NDR12MCD", "Average bank 12-month CD rate", "rate", "%", "monthly",
-           "The FDIC's national average rate on 12-month CDs, updated monthly.",
-           "A benchmark for CDARS-style term deposits; compare with the 1-year Treasury and with what member banks offer.", 0.05),
-    # --- deposits
     Series("DPSSCBW027SBOG", "Deposits at small banks", "level", "$B", "weekly",
            "Deposits at all U.S. banks outside the 25 largest (Fed H.8, seasonally adjusted). Most of IntraFi's network.",
            "Falling deposits force small banks to pay up, borrow, or shrink lending.", 1.0),
@@ -93,24 +89,10 @@ SERIES: list[Series] = [
     Series("DRCRELEXFACBS", "Commercial real estate loans past due", "rate", "%", "quarterly",
            "Share of bank commercial real estate loans 30+ days past due, reported quarterly.",
            "CRE is the biggest credit risk for community banks. Rising delinquencies lead losses, capital strain and bank failures.", 0.15),
-    # --- stocks and volatility
-    Series("SP500", "S&P 500", "level", "", "daily",
-           "Stock index of 500 large U.S. companies; the broadest read on the market.",
-           "Big drops tighten financial conditions and push depositors toward fully insured options.", 5.0),
-    Series("DJIA", "Dow Jones Industrial Average", "level", "", "daily",
-           "Stock index of 30 large, well-known U.S. companies.", "Same signal as the S&P 500, the one most people quote.", 5.0),
-    Series("NASDAQCOM", "Nasdaq Composite", "level", "", "daily",
-           "Index of all Nasdaq stocks, heavy in technology.", "Swings first and hardest when risk appetite changes.", 6.0),
+    # --- market stress
     Series("VIXCLS", "VIX (fear gauge)", "points", "", "daily",
            "Expected stock market volatility over the next month, priced from S&P 500 options.",
            "Spikes come with flights to safety, when depositors look hardest at whether their money is insured.", 4.0),
-    # --- economy
-    Series("CPIAUCSL", "Inflation (CPI, past 12 months)", "yoy", "%", "monthly",
-           "How much consumer prices rose over the past year.",
-           "Inflation above the Fed's 2% goal keeps rates, and deposit costs, higher for longer.", 0.20),
-    Series("UNRATE", "Unemployment rate", "rate", "%", "monthly",
-           "Share of people looking for work who can't find it.",
-           "A rising rate usually brings Fed cuts and, later, loan losses at banks.", 0.20),
 ]
 
 SERIES_BY_ID = {s.id: s for s in SERIES}
@@ -137,9 +119,6 @@ SPREADS: list[Spread] = [
            "How much more a depositor earns in 3-month T-bills than in the average bank money market account.",
            "A wide or widening gap pulls large balances out of banks; a narrowing gap helps deposit retention.",
            0.20, max_b_age_days=45),
-    Spread("bill_vs_effr", "3-month T-bill minus fed funds", "DGS3MO", "EFFR",
-           "How the 3-month bill compares with the overnight rate.",
-           "Below zero usually means markets expect a Fed cut soon.", 0.15),
     Spread("curve_10y_2y", "Yield curve (10-year minus 2-year)", "DGS10", "DGS2",
            "The gap between long and short Treasury yields.",
            "Inverted (negative) curves squeeze bank margins, since banks borrow short and lend long, and have often come before recessions.",

@@ -1,43 +1,41 @@
-# Rates & Markets
+# IntraFi Risk Monitor (rates & markets)
 
-Weekday morning emails (about 8:45am Eastern) with the essential rates and
-market measures:
+One email every weekday morning (about 8:45am Eastern), with the same report
+attached as a PDF. It tracks only the rate and market measures that signal a
+risk IntraFi cares about.
 
-- **Tuesday–Friday, short:** "Today at a glance," 11 charts each headed by a
-  plain-English takeaway, and a compact card per item: value, **Bottom line**,
-  recent changes, and its ranges on one line with the current one highlighted.
-- **Monday, full edition:** all 14 charts, plus **What it is**, **What it means
-  now** and **Risk to watch** for every item, with the ranges shown in full.
+**How it reads, top to bottom:**
+1. **Today's alerts:** anything in a Watch or Risk range, a Fed rate move, or a bank failure in the past week.
+2. **Risk dashboard:** every measure on one line with a status (Normal / Watch / Risk / Info), a one-line insight and today's reading.
+3. **One section per risk area**, each with charts (Watch and Risk ranges shaded) and, for every measure:
+   **Insight** (what today's reading means), **Why IntraFi cares** (the risk), **What it is**, and **Ranges**.
+4. **Coming up:** Fed decisions and major data releases in the next week.
 
-Charts shade the Watch (amber) and Risk (red) ranges, so you can see how close a
-reading is to trouble, and label every line at its end. Ranges are general
-rules of thumb for context, not official thresholds; they live in `ITEMS` in
-`rates_digest/newsletter.py` and are easy to adjust.
+Ranges are general rules of thumb for context, not official thresholds. They
+live in `ITEMS` in `rates_digest/newsletter.py` and are easy to adjust.
 
 ## What it tracks
 
-| Section | Items | Charts |
-|---|---|---|
-| The Fed and overnight funding | Fed funds target, effective fed funds, SOFR, SOFR minus IORB | Fed target vs. EFFR vs. SOFR |
-| Treasury yields | 3-month bill, 2-year, 10-year | All three, 2 years |
-| The yield curve | 10-year minus 2-year | 5 years |
-| What banks pay vs. Treasuries | FDIC national money market and 12-month CD rates; T-bill vs. money market gap | Deposit rates vs. bills; the gap |
-| Where deposits are going | Small-bank and large-bank deposits, retail money market funds | Indexed to a year ago |
-| Bank funding stress | Small-bank borrowings (mostly FHLB), Fed discount window | One chart each |
-| Credit risk | High-yield spread, CRE loans past due | One chart each |
-| Stocks and volatility | S&P 500, Dow, Nasdaq, VIX | Indexed stocks; VIX |
-| The economy | CPI inflation, unemployment | Both, 5 years |
-| The week ahead | Fed decisions, CPI, jobs, GDP, PCE release dates | |
+| Risk area | Measures |
+|---|---|
+| Rate path | Fed funds rate, rate outlook (2-year Treasury) |
+| Deposit competition | T-bill vs. average bank money market rate, retail money market funds |
+| Deposit flight | Small-bank deposits (vs. the largest banks) |
+| Stablecoins | Dollar stablecoins in circulation |
+| Funding and liquidity stress | SOFR minus interest on reserves, Fed discount window, small-bank borrowing (mostly FHLB) |
+| Member-bank balance sheets | 10-year Treasury, yield curve, CRE loans past due |
+| Credit and market stress | High-yield spread, VIX |
+| Bank failures | FDIC failures this year and in the past week |
+
+FHLB advance rates aren't included: the FHLBanks publish them to members only.
+Small-bank borrowing is the closest public read on FHLB demand.
 
 ## Sources
 
-FRED (St. Louis Fed) for every rate and market series, FDIC BankFind for bank
-failures, and the Fed's published meeting schedule (typed into
+FRED (St. Louis Fed) for rates and bank data, FDIC BankFind for bank failures,
+DeFiLlama for stablecoins, and the Fed's published meeting schedule (typed into
 `rates_digest/extras.py`; add next year's dates each fall, and the email warns
 two months before the list runs out).
-
-FHLB advance rates aren't included: the FHLBanks publish them to members only.
-Small-bank borrowings are the closest public read on FHLB demand.
 
 ## Setup
 
@@ -45,17 +43,16 @@ Secrets on this repo (Settings → Secrets and variables → Actions):
 `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` (shared with the FFIEC monitor),
 `FRED_API_KEY`, and optionally `ALERT_RECIPIENT`.
 
-Actions → *Rates & Markets* → *Run workflow* (pick the edition: auto, short or full):
+Actions → *IntraFi Risk Monitor* → *Run workflow*:
 - `check_series`: lists every source as OK or failed (also shown as notes on the run page)
-- `dry_run`: builds the email and attaches it as a downloadable artifact
+- `dry_run`: builds the email and PDF and attaches them as a downloadable artifact
 - `send`: emails it now
 
 ## Running locally
 
 ```bash
 pip install -r requirements.txt
-python run.py --sample --short  # made-up data, no network; writes newsletter.html + charts
-python run.py --sample --full   # the Monday edition
+python run.py --sample          # made-up data, no network: newsletter.html, charts and the PDF
 python run.py --check-series    # live: does every source load?
 python -m pytest -q
 ```
@@ -64,13 +61,14 @@ python -m pytest -q
 
 ```
 rates_digest/
-  series.py        the essential series: what each is and the risk to watch
-  newsletter.py    sections, charts, ranges to know, "what it means now", email layout
-  analysis.py      changes, past-year ranges, spreads, automatic watch flags
-  charts.py        PNG line charts (matplotlib)
+  newsletter.py    risk areas, measures (insight / why IntraFi cares / what it is / ranges), report + email
+  pdf.py           the PDF attachment, drawn from the same report
+  charts.py        PNG line charts with shaded Watch/Risk ranges
+  series.py        the FRED series used
+  analysis.py      changes, past-year ranges, spreads, sudden-move flags
   fetch.py         FRED
-  extras.py        FDIC bank failures; release calendar and Fed meeting dates
-  email_report.py  page shell and Gmail sending (charts inline)
+  extras.py        FDIC bank failures, stablecoins, release calendar and Fed meeting dates
+  email_report.py  page shell and Gmail sending (charts inline, PDF attached)
   sample_data.py   made-up data for previews and tests (always labeled SAMPLE)
 run.py             entry point
 tests/

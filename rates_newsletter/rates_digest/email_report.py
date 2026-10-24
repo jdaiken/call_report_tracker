@@ -7,6 +7,7 @@ import os
 import smtplib
 from dataclasses import dataclass, field
 from datetime import date
+from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -90,9 +91,11 @@ def page(kicker: str, title: str, inner: str, b: Bundle) -> str:
 
 
 def send_email(config: EmailConfig, subject: str, text_body: str, html_body: Optional[str],
-               images: Optional[dict[str, bytes]] = None) -> None:
+               images: Optional[dict[str, bytes]] = None,
+               attachments: Optional[list[tuple[str, bytes, str]]] = None) -> None:
     """`images` maps a content-id to PNG bytes; the HTML references them as
-    <img src="cid:...">, so charts show inline without being attachments."""
+    <img src="cid:...">, so charts show inline. `attachments` are
+    (filename, bytes, subtype) files attached at the end, e.g. the PDF."""
     alt = MIMEMultipart("alternative")
     alt.attach(MIMEText(text_body, "plain", "utf-8"))
     if html_body:
@@ -107,6 +110,14 @@ def send_email(config: EmailConfig, subject: str, text_body: str, html_body: Opt
             msg.attach(img)
     else:
         msg = alt
+    if attachments:
+        outer = MIMEMultipart("mixed")
+        outer.attach(msg)
+        for filename, data, subtype in attachments:
+            part = MIMEApplication(data, _subtype=subtype)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            outer.attach(part)
+        msg = outer
     msg["Subject"] = subject
     msg["From"] = config.address
     msg["To"] = config.recipient

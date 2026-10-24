@@ -1,8 +1,6 @@
-"""Rates & markets newsletter: short weekday email, full edition on Mondays.
+"""IntraFi Risk Monitor: one daily email (with the same report attached as a PDF).
 
-  python run.py                 build from live data and email it (full edition if Monday)
-  python run.py --full          force the full edition (all charts + explanations)
-  python run.py --short         force the short daily edition
+  python run.py                 build from live data and email it
   python run.py --dry-run       build from live data, write HTML/text/PNGs, don't email
   python run.py --sample        made-up sample data (no network), write preview files
   python run.py --check-series  test that every data source loads, then exit
@@ -18,7 +16,8 @@ from pathlib import Path
 
 from rates_digest import analysis, extras, fetch
 from rates_digest.email_report import Bundle, EmailConfig, send_email
-from rates_digest.newsletter import render, stablecoin_reading
+from rates_digest.newsletter import build_report, render_html, render_text, stablecoin_reading
+from rates_digest.pdf import render_pdf
 from rates_digest.series import SERIES, SERIES_BY_ID, SPREADS
 
 log = logging.getLogger("rates_digest")
@@ -68,8 +67,6 @@ def check_sources(b: Bundle) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--full", action="store_true", help="full edition (default on Mondays)")
-    ap.add_argument("--short", action="store_true", help="short daily edition (default Tuesday-Friday)")
     ap.add_argument("--dry-run", action="store_true", help="write files instead of emailing")
     ap.add_argument("--sample", action="store_true", help="use made-up sample data (implies --dry-run)")
     ap.add_argument("--check-series", action="store_true", help="report which sources load, then exit")
@@ -92,8 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Only %d of %d readings loaded -- not sending a mostly empty email.", loaded, len(b.readings))
         return 1
 
-    full = args.full or (not args.short and today.weekday() == 0)
-    html_body, text_body, images, subject = render(b, full=full)
+    rep = build_report(b)
+    images = {c.cid: c.png for a in rep.areas for c in a.charts}
+    html_body, text_body, subject = render_html(rep, b), render_text(rep), rep.subject
+    pdf_bytes = render_pdf(rep)
+    pdf_name = f"IntraFi-Risk-Monitor-{today:%Y-%m-%d}.pdf"
 
     if args.dry_run or args.sample:
         out = Path(args.out_dir)
@@ -104,10 +104,12 @@ def main(argv: list[str] | None = None) -> int:
             preview = preview.replace(f'"cid:{cid}"', f'"{cid}.png"')
         (out / "newsletter.html").write_text(preview, encoding="utf-8")
         (out / "newsletter.txt").write_text(text_body, encoding="utf-8")
-        print(f"Subject: {subject}\nWrote {out / 'newsletter.html'} (+ {len(images)} charts)")
+        (out / pdf_name).write_bytes(pdf_bytes)
+        print(f"Subject: {subject}\nWrote {out / 'newsletter.html'} (+ {len(images)} charts) and {out / pdf_name}")
         return 0
 
-    send_email(EmailConfig.from_env(), subject, text_body, html_body, images)
+    send_email(EmailConfig.from_env(), subject, text_body, html_body, images,
+               attachments=[(pdf_name, pdf_bytes, "pdf")])
     log.info("Sent: %s", subject)
     return 0
 

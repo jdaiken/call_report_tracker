@@ -3,11 +3,12 @@ from datetime import date, timedelta
 
 from rates_digest import analysis
 from rates_digest.email_report import Bundle
-from rates_digest.extras import FailureResult, fomc_events, parse_failures, parse_release_dates
+from rates_digest.extras import FailureResult, fomc_events, parse_failures, parse_release_dates, parse_stablecoins
 from rates_digest.fetch import Observations, parse_fred_csv
-from rates_digest.newsletter import ITEMS, SECTIONS, current_zone, means_text, render
+from rates_digest.newsletter import (AREAS, ITEMS, build_report, current_zone, insight_line, render_html, render_text,
+                                     stablecoin_reading)
 from rates_digest.sample_data import sample_bundle, sample_observations
-from rates_digest.series import SERIES, SERIES_BY_ID, SPREADS
+from rates_digest.series import SERIES_BY_ID, SPREADS
 
 TODAY = date(2026, 10, 26)
 
@@ -17,20 +18,19 @@ def obs(sid, pts):
 
 
 def test_catalog_is_consistent():
-    ids = [s.id for s in SERIES]
-    assert len(ids) == len(set(ids))
-    known = set(ids) | {sp.key for sp in SPREADS} | {"STABLECOINS"}   # stablecoins come from DeFiLlama
+    known = set(SERIES_BY_ID) | {sp.key for sp in SPREADS} | {"STABLECOINS"}
     for sp in SPREADS:
         assert sp.a in SERIES_BY_ID and sp.b in SERIES_BY_ID
-    for sec in SECTIONS:
-        for key in sec.items:
-            assert key in known, key
-        for ch in sec.charts:
+    for a in AREAS:
+        for key in a.items:
+            assert key in ITEMS and key in known, key
+        for ch in a.charts:
             for _, key in ch.lines:
                 assert key in known, key
-    for item in ITEMS.values():          # zones are ordered and don't overlap
-        for a, b in zip(item.zones, item.zones[1:]):
-            assert a.hi == b.lo
+    for item in ITEMS.values():          # every item explains itself; zones are ordered, no gaps
+        assert item.what and item.why
+        for x, y in zip(item.zones, item.zones[1:]):
+            assert x.hi == y.lo
 
 
 def test_parse_fred_csv_handles_missing_and_both_headers():
@@ -39,24 +39,9 @@ def test_parse_fred_csv_handles_missing_and_both_headers():
         assert pts == [(date(2026, 10, 20), 3.90), (date(2026, 10, 22), 3.95)]
 
 
-def test_rate_changes_and_past_year_range():
-    pts = [(TODAY - timedelta(days=400), 5.0), (TODAY - timedelta(days=30), 4.5), (TODAY - timedelta(days=1), 4.25), (TODAY, 4.25)]
-    r = analysis.build_reading(SERIES_BY_ID["DGS3MO"], obs("DGS3MO", pts), TODAY)
-    assert r.change_text("month") == "down 0.25 points"
-    assert r.compact_change("year") == "−0.75 pts"
-    assert (r.low_1y, r.high_1y) == (4.25, 4.5)
-
-
 def test_millions_series_convert_even_without_units():
-    pts = [(TODAY - timedelta(days=7), 6000.0), (TODAY, 9169.0)]
-    r = analysis.build_reading(SERIES_BY_ID["WLCFLPCL"], obs("WLCFLPCL", pts), TODAY)
+    r = analysis.build_reading(SERIES_BY_ID["WLCFLPCL"], obs("WLCFLPCL", [(TODAY - timedelta(days=7), 6000.0), (TODAY, 9169.0)]), TODAY)
     assert r.display_value == "$9 billion" and r.change_text("week") == "up $3 billion"
-
-
-def test_cpi_shown_as_year_over_year_inflation():
-    r = analysis.build_reading(SERIES_BY_ID["CPIAUCSL"], obs("CPIAUCSL", [(date(2025, 9, 1), 300.0), (date(2026, 9, 1), 309.0)]), TODAY)
-    assert r.display_value == "3.00%"
-    assert current_zone(ITEMS["CPIAUCSL"], r).label.startswith("3% to 5%")
 
 
 def test_quarterly_series_not_stale_between_releases():
@@ -64,82 +49,90 @@ def test_quarterly_series_not_stale_between_releases():
     assert not r.stale and r.change_text("last") == "up 0.13 points"
 
 
-def test_zones_value_yoy_and_drawdown():
+def test_zones_and_insights():
     vix = analysis.build_reading(SERIES_BY_ID["VIXCLS"], obs("VIXCLS", [(TODAY - timedelta(days=1), 18.0), (TODAY, 32.0)]), TODAY)
     assert current_zone(ITEMS["VIXCLS"], vix).tone == "risk"
+    b = Bundle(TODAY, {"VIXCLS": vix}, [])
+    assert insight_line("VIXCLS", vix, b) == "32.0: panic."
     dep = analysis.build_reading(SERIES_BY_ID["DPSSCBW027SBOG"],
                                  obs("DPSSCBW027SBOG", [(TODAY - timedelta(days=365), 5700.0), (TODAY, 5650.0)]), TODAY)
     z = current_zone(ITEMS["DPSSCBW027SBOG"], dep)
     assert z.label == "Shrinking" and z.tone == "risk"
-    sp = analysis.build_reading(SERIES_BY_ID["SP500"], obs("SP500", [(TODAY - timedelta(days=100), 6000.0), (TODAY, 5100.0)]), TODAY)
-    assert "correction" in current_zone(ITEMS["SP500"], sp).label
-    from rates_digest.newsletter import bottom_line
-    b = Bundle(TODAY, {"SP500": sp}, [])
-    assert "15.0% below its past-year high" in bottom_line("SP500", sp, b)[0]
-    assert "Down 15.0% since the previous reading" in means_text("SP500", sp, b)
 
 
-def test_means_text_uses_context():
+def test_rate_outlook_insight():
     data = {"DGS2": obs("DGS2", [(TODAY - timedelta(days=1), 3.4), (TODAY, 3.3)]),
             "EFFR": obs("EFFR", [(TODAY - timedelta(days=1), 3.88), (TODAY, 3.87)])}
     readings = analysis.build_all(data, TODAY)
-    from rates_digest.newsletter import bottom_line
-    bl, _ = bottom_line("DGS2", readings["DGS2"], Bundle(TODAY, readings, []))
-    assert "markets expect the Fed to cut" in bl
+    assert "markets expect cuts" in insight_line("DGS2", readings["DGS2"], Bundle(TODAY, readings, []))
 
 
-def test_failed_series_does_not_break_newsletter():
+def test_report_alerts_status_and_subject():
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    tones = {i.key: i.tone for a in rep.areas for i in a.items}
+    assert set(tones) == {k for a in AREAS for k in a.items}
+    n_alerts = sum(1 for t, _ in rep.alerts if t in ("risk", "watch"))
+    assert rep.subject.startswith("IntraFi Risk Monitor") and (str(n_alerts) in rep.subject or "all normal" in rep.subject)
+    assert any("The Fed cut rates" in x for _, x in rep.alerts)       # sample has a Fed cut 5 days ago
+
+
+def test_email_and_text_render():
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    html, text = render_html(rep, b), render_text(rep)
+    for key in ("Today's alerts", "Risk dashboard", "Insight:", "Why IntraFi cares:", "What it is:", "Ranges"):
+        assert key in html or htmllib.escape(key, quote=True) in html, key
+    for item in ITEMS.values():
+        assert htmllib.escape(item.name, quote=True) in html and item.name in text
+    for a in rep.areas:
+        for c in a.charts:
+            assert f'src="cid:{c.cid}"' in html and c.png[:4] == b"\x89PNG"
+    assert "SAMPLE DATA" in html and "SAMPLE DATA" in text
+
+
+def test_pdf_renders():
+    from rates_digest.pdf import render_pdf
+    rep = build_report(sample_bundle(TODAY))
+    pdf = render_pdf(rep)
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 50_000
+
+
+def test_failed_series_does_not_break_report():
     data = sample_observations(TODAY)
     data["VIXCLS"] = Observations("VIXCLS", [], error="HTTP 500")
     readings = analysis.build_all(data, TODAY)
-    html, text, images, subject = render(Bundle(TODAY, readings, analysis.watch_flags(readings)))
-    assert "Did not load this week" in html and "VIX" in html and images
+    b = Bundle(TODAY, readings, analysis.watch_flags(readings))
+    rep = build_report(b)
+    vix = next(i for a in rep.areas for i in a.items if i.key == "VIXCLS")
+    assert not vix.loaded and "Did not load" in render_html(rep, b)
 
 
-def test_short_daily_edition():
-    html, text, images, subject = render(sample_bundle(TODAY))
-    assert len(images) == sum(1 for s in SECTIONS for c in s.charts if c.daily)
-    assert "Today at a glance" in html and "Ranges" in html and "What it is:" not in html
-    assert "Monday's edition" in html and subject.startswith("Rates & Markets, ")
-
-
-def test_full_render_with_sample_data():
-    b = sample_bundle(TODAY)
-    html, text, images, subject = render(b, full=True)
-    assert len(images) == sum(len(s.charts) for s in SECTIONS)
-    assert all(png[:4] == b"\x89PNG" for png in images.values())
-    for cid in images:
-        assert f'src="cid:{cid}"' in html
-    for key in ("What it is:", "What it means now:", "Risk to watch:", "Ranges to know", "Today at a glance"):
-        assert key in html
-    for s in SERIES:
-        if s.id not in ("DFEDTARL", "IORB"):   # shown via other items
-            assert htmllib.escape(s.name, quote=True) in html, s.name
-    assert "Bottom line:" in html
-    assert subject.startswith("Rates & Markets (weekly)") and "SAMPLE DATA" in html and "SAMPLE DATA" in text
-
-
-def test_parse_fdic_failures_and_headline():
-    payload = {"data": [
+def test_bank_failure_alert():
+    fails = parse_failures({"data": [
         {"data": {"NAME": "Old Bank", "CITYST": "X, TX", "FAILDATE": "1/10/2025", "QBFDEP": 50000}},
-        {"data": {"NAME": "New Bank", "CITYST": "Y, OH", "FAILDATE": "10/23/2026", "QBFDEP": 1200000}},
-    ]}
-    fails = parse_failures(payload)
+        {"data": {"NAME": "New Bank", "CITYST": "Y, OH", "FAILDATE": "10/23/2026", "QBFDEP": 1200000}}]})
     assert [f.name for f in fails] == ["New Bank", "Old Bank"]
-    from rates_digest.newsletter import headline_bullets
-    texts = " ".join(t for _, t in headline_bullets(Bundle(TODAY, {}, [], failures=FailureResult(fails))))
-    assert "The FDIC closed New Bank (Y, OH) on Oct 23, with $1.2 billion in deposits" in texts
-    assert "Bank failures so far in 2026: 1" in texts
+    rep = build_report(Bundle(TODAY, {}, [], failures=FailureResult(fails)))
+    assert rep.alerts[0][0] == "risk" and "New Bank (Y, OH)" in rep.alerts[0][1] and "$1.2 billion" in rep.alerts[0][1]
+    assert "Bank failures in 2026: 1" in rep.failures_line
+
+
+def test_stablecoins():
+    pts = parse_stablecoins([{"date": "1761264000", "totalCirculatingUSD": {"peggedUSD": 3.1e11}},
+                             {"date": 1729728000, "totalCirculatingUSD": {"peggedUSD": 1.7e11}}, {"bad": 1}])
+    r = stablecoin_reading(pts, pts[-1][0])
+    assert r.display_value == "$310 billion"
+    assert current_zone(ITEMS["STABLECOINS"], r).label.startswith("Over 75%")
+    assert not stablecoin_reading([], TODAY, "HTTP 500").ok
 
 
 def test_release_calendar_and_fomc():
     events = parse_release_dates({"release_dates": [
         {"release_name": "Consumer Price Index", "date": "2026-10-27"},
-        {"release_name": "Some Obscure Survey", "date": "2026-10-27"},
-        {"release_name": "Employment Situation", "date": "2026-10-30"}]})
-    assert [e.label for e in events] == ["Inflation report (CPI)", "Jobs report"]
-    fomc = fomc_events(date(2026, 10, 26), date(2026, 11, 2))
-    assert len(fomc) == 1 and fomc[0].when == date(2026, 10, 28)
+        {"release_name": "Some Obscure Survey", "date": "2026-10-27"}]})
+    assert [e.label for e in events] == ["Inflation report (CPI)"]
+    assert [e.when for e in fomc_events(date(2026, 10, 26), date(2026, 11, 2))] == [date(2026, 10, 28)]
 
 
 def test_fetch_all_stops_early_when_fred_is_down(monkeypatch):
@@ -150,40 +143,31 @@ def test_fetch_all_stops_early_when_fred_is_down(monkeypatch):
     def failing(sid):
         calls.append(sid)
         return Observations(sid, [], error="connection refused")
-    out = fetch.fetch_all([f"S{i}" for i in range(10)], TODAY, fetcher=failing)
-    assert len(calls) == 3 and len(out) == 10
+    assert len(fetch.fetch_all([f"S{i}" for i in range(10)], TODAY, fetcher=failing)) == 10 and len(calls) == 3
 
 
-def test_run_sample_writes_preview(tmp_path):
-    # Load this folder's run.py by path: the FFIEC monitor has its own run.py.
+def test_attachment_is_added(monkeypatch):
+    from rates_digest import email_report
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, *a): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def login(self, *a): pass
+        def send_message(self, msg): sent["msg"] = msg
+    monkeypatch.setattr(email_report.smtplib, "SMTP_SSL", FakeSMTP)
+    email_report.send_email(email_report.EmailConfig("a@x.com", "pw", "a@x.com"), "s", "t", "<p>h</p>",
+                            {"chart1": b"\x89PNGfake"}, [("report.pdf", b"%PDF-1.4 fake", "pdf")])
+    names = [p.get_filename() for p in sent["msg"].walk() if p.get_filename()]
+    assert "report.pdf" in names
+
+
+def test_run_sample_writes_email_and_pdf(tmp_path):
     import importlib.util
     import pathlib
     spec = importlib.util.spec_from_file_location("rates_run", pathlib.Path(__file__).parents[1] / "run.py")
     run = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(run)
-    assert run.main(["--sample", "--full", "--out-dir", str(tmp_path)]) == 0
-    assert (tmp_path / "newsletter.html").exists() and (tmp_path / "chart1.png").exists()
-
-
-def test_stablecoins_parse_reading_and_section():
-    from rates_digest.extras import parse_stablecoins
-    from rates_digest.newsletter import stablecoin_reading
-    pts = parse_stablecoins([{"date": "1761264000", "totalCirculatingUSD": {"peggedUSD": 3.1e11}},
-                             {"date": 1729728000, "totalCirculatingUSD": {"peggedUSD": 1.7e11}}, {"bad": 1}])
-    assert len(pts) == 2 and abs(pts[-1][1] - 310.0) < 1e-9
-    r = stablecoin_reading(pts, pts[-1][0])
-    assert r.display_value == "$310 billion"
-    assert current_zone(ITEMS["STABLECOINS"], r).label.startswith("Above 75%")
-    html, _, _, _ = render(sample_bundle(TODAY), full=True)
-    assert "Stablecoins in circulation" in html and "GENIUS Act" in html
-    assert not stablecoin_reading([], TODAY, "HTTP 500").ok
-
-
-def test_bottom_lines_are_specific():
-    from rates_digest.newsletter import bottom_line
-    readings = analysis.build_all(sample_observations(TODAY), TODAY)
-    b = Bundle(TODAY, readings, [])
-    bl, tone = bottom_line("VIXCLS", readings["VIXCLS"], b)
-    assert "range" in bl and tone in ("ok", "watch", "risk")
-    bl, _ = bottom_line("SOFR", readings["SOFR"], b)
-    assert "reserves" in bl
+    assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
+    assert (tmp_path / "newsletter.html").exists() and list(tmp_path.glob("IntraFi-Risk-Monitor-*.pdf"))
