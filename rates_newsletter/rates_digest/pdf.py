@@ -85,19 +85,20 @@ def _header(title: str, n: int) -> list:
     return [t, Spacer(1, 10)]
 
 
-def _img(png: bytes, width: float) -> Image:
+def _img(png: bytes, width: float, scale: float = 1.0) -> Image:
+    # scale < 1 keeps the full width but trims height (the chart is redrawn squatter, not cropped)
     img = Image(io.BytesIO(png))
-    img.drawWidth, img.drawHeight = width, width * img.imageHeight / img.imageWidth
+    img.drawWidth, img.drawHeight = width, width * img.imageHeight / img.imageWidth * scale
     return img
 
 
-def _panel(p: Panel, width: float = CELL_W) -> Table:
+def _panel(p: Panel, width: float = CELL_W, scale: float = 1.0) -> Table:
     inner = width - 14
     head = Table([[_p(escape(p.title), "ptitle"), _badge(p.tone)]], colWidths=[inner - 0.62 * inch, 0.62 * inch])
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
                               ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
     content = [head, Spacer(1, 3), _p(_link(p.reading, p.url), "big"), _p(escape(p.signal), "sig"), Spacer(1, 4)]
-    content.append(_img(p.png, inner) if p.png else _p("Chart unavailable", "small"))
+    content.append(_img(p.png, inner, scale) if p.png else _p("Chart unavailable", "small"))
     t = Table([[content]], colWidths=[width])
     t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
@@ -105,8 +106,8 @@ def _panel(p: Panel, width: float = CELL_W) -> Table:
     return t
 
 
-def _grid(panels: list[Panel]) -> Table:
-    rows = [[_panel(panels[i]), "", _panel(panels[i + 1]) if i + 1 < len(panels) else ""] for i in range(0, len(panels), 2)]
+def _grid(panels: list[Panel], scale: float = 1.0) -> Table:
+    rows = [[_panel(panels[i], scale=scale), "", _panel(panels[i + 1], scale=scale) if i + 1 < len(panels) else ""] for i in range(0, len(panels), 2)]
     t = Table(rows, colWidths=[CELL_W, GAP, CELL_W])
     t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                            ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -156,38 +157,56 @@ def _summary(rep: Report) -> list:
     return story
 
 
+def _rates_page(rep: Report) -> list:
+    story = _header("Rates", 2)
+    hdr = [_p(x, "label") for x in ("RATE", "LATEST", "1 DAY", "1 WK", "1 MO", "1 YR", "AS OF")]
+    for c in hdr[1:]:
+        c.style = ParagraphStyle("lr", parent=S["label"], alignment=TA_RIGHT)
+    rows, styles = [hdr], [("LINEBELOW", (0, 0), (-1, 0), 1, INK), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                           ("TOPPADDING", (0, 0), (-1, -1), 1.2), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.6)]
+    for title, grp in rep.rates:
+        rows.append([_p(escape(title.upper()), "label")] + [""] * 6)
+        styles += [("SPAN", (0, len(rows) - 1), (-1, len(rows) - 1)), ("TOPPADDING", (0, len(rows) - 1), (-1, len(rows) - 1), 5)]
+        for r in grp:
+            rows.append([_p(escape(r.name), "cell"), _p(_link(r.latest, r.url), "numb")]
+                        + [_p(escape(x), "num") for x in (r.day, r.week, r.month, r.year, r.as_of)])
+            styles.append(("LINEBELOW", (0, len(rows) - 1), (-1, len(rows) - 1), 0.4, RULE))
+    num_w = 0.78 * inch
+    table = Table(rows, colWidths=[WIDTH - 1.25 * inch - 5 * num_w, 1.25 * inch] + [num_w] * 5)
+    table.setStyle(TableStyle(styles))
+    return story + [table, Spacer(1, 12), _grid(rep.rates_panels)]
+
+
 def _last_page(rep: Report) -> list:
-    story = _header("Market stress & calendar", 5)
+    story = _header("Markets & calendar", 5) + [_grid(rep.last_panels[:2])]
     fails = [_p("Bank failures", "ptitle"), Spacer(1, 3),
              _p(str(rep.failures_ytd) if rep.failures_ytd is not None else "n/a", "big"),
              _p(f"failures in {rep.today.year}", "sig"), Spacer(1, 6)]
     if rep.recent_failures:
         fails += [_p(f"<b>{f.fail_date:%b %-d}</b> · {escape(f.name)}, {escape(f.city_state)} · "
-                     f"{fmt_thousands(f.deposits_thousands)}", "cell") for f in rep.recent_failures[:5]]
+                     f"{fmt_thousands(f.deposits_thousands)}", "cell") for f in rep.recent_failures[:8]]
     else:
-        fails.append(_p("None in the past 30 days", "sig"))
+        fails.append(_p("None so far this year", "sig"))
     fails += [Spacer(1, 6), _p(_link("FDIC failed bank list", FDIC_FAILURES_URL, LINK), "small")]
     fcell = Table([[fails]], colWidths=[CELL_W])
     fcell.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("TOPPADDING", (0, 0), (-1, -1), 7)]))
-    top = Table([[_panel(rep.vix), "", fcell]], colWidths=[CELL_W, GAP, CELL_W])
+    top = Table([[_panel(rep.last_panels[2]), "", fcell]], colWidths=[CELL_W, GAP, CELL_W])
     top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                              ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    story += [top, Spacer(1, 14)]
+    story += [top, Spacer(1, 10)]
     if rep.coming_up:
         story += [_p("COMING UP", "label"), Spacer(1, 3)]
         ev = Table([[_p(f"<b>{e.when:%a %b %-d}</b>", "cell"), _p(escape(e.label), "cell")] for e in rep.coming_up],
                    colWidths=[1.1 * inch, WIDTH - 1.1 * inch])
         ev.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.5),
                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
-        story += [ev, Spacer(1, 12)]
-    story += [_p("DATA SOURCES", "label"), Spacer(1, 3)]
-    src = Table([[_p(escape(name), "small"),
-                  _p(" · ".join(_link(lbl.split(": ", 1)[-1], u, LINK) for lbl, u in links), "small")]
-                 for name, links in rep.sources], colWidths=[2.1 * inch, WIDTH - 2.1 * inch])
-    src.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0.8),
-                             ("BOTTOMPADDING", (0, 0), (-1, -1), 0.8), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    story.append(src)
+        story += [ev, Spacer(1, 8)]
+    story.append(_p("<b>Sources:</b> " + _link("FRED (St. Louis Fed)", "https://fred.stlouisfed.org", LINK) + " · "
+                    + _link("FDIC", FDIC_FAILURES_URL, LINK) + " · "
+                    + _link("DeFiLlama", "https://defillama.com/stablecoins", LINK)
+                    + ". Each reading links to its series.", "small"))
     if rep.missing:
         story += [Spacer(1, 8), _p(f"Unavailable today: {escape(', '.join(rep.missing))}", "small")]
     return story
@@ -197,8 +216,8 @@ def render_pdf(rep: Report) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
                             bottomMargin=0.55 * inch, title=f"{NAME} {rep.today:%Y-%m-%d}", author=NAME)
-    story = _summary(rep)
-    for i, (title, panels) in enumerate(rep.pages, start=2):
+    story = _summary(rep) + [PageBreak()] + _rates_page(rep)
+    for i, (title, panels) in enumerate(rep.pages, start=3):
         story += [PageBreak()] + _header(title, i) + [_grid(panels)]
     story += [PageBreak()] + _last_page(rep)
 

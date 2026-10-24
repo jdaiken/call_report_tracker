@@ -40,6 +40,12 @@ def collect(today) -> Bundle:
     )
 
 
+def _failure_summary(b: Bundle) -> str:
+    ytd = sorted((f for f in b.failures.failures if f.fail_date.year == b.today.year), key=lambda f: f.fail_date)
+    names = "; ".join(f"{f.fail_date:%b %-d} {f.name} ({f.city_state})" for f in ytd)
+    return f"{len(ytd)} in {b.today.year}" + (f": {names}" if names else "")
+
+
 def check_sources(b: Bundle) -> int:
     bad = []
     for key, r in sorted(b.readings.items()):
@@ -49,7 +55,7 @@ def check_sources(b: Bundle) -> int:
             bad.append(f"{key}: {r.error}")
             print(f"FAIL  {key:16} {r.error}")
     for name, err, ok_text in (
-        ("FDIC bank failures", b.failures.error, f"{len(b.failures.failures)} records"),
+        ("FDIC bank failures", b.failures.error, _failure_summary(b)),
         ("Release calendar", b.calendar.error, f"{len(b.calendar.events)} events in the next 7 days"),
     ):
         print(f"{'FAIL' if err else 'OK  '}  {name:20} {err or ok_text}")
@@ -60,6 +66,8 @@ def check_sources(b: Bundle) -> int:
         # Results as run annotations, visible on the run page without opening the log.
         oks = [k for k, r in sorted(b.readings.items()) if r.ok]
         print(f"::notice title=Sources OK ({len(oks)})::{', '.join(oks)}")
+        if not b.failures.error:
+            print(f"::notice title=Bank failures::{_failure_summary(b)[:900]}")
         for line in bad[:9]:
             print(f"::warning title=Source failed::{line[:400].replace('%', '%25')}")
     core_ok = sum(1 for r in b.readings.values() if r.ok) >= len(b.readings) * 0.8
@@ -91,9 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     rep = build_report(b)
-    images = {p.cid: p.png for _, panels in rep.pages for p in panels if p.png}
-    if rep.vix.png:
-        images[rep.vix.cid] = rep.vix.png
+    images = {p.cid: p.png for p in rep.all_panels if p.png}
     html_body, text_body, subject = render_html(rep, b), render_text(rep), rep.subject
     pdf_bytes = render_pdf(rep)
     pdf_name = f"Rates-Deposit-Risk-Monitor-{today:%Y-%m-%d}.pdf"

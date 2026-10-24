@@ -5,7 +5,7 @@ from rates_digest import analysis
 from rates_digest.email_report import Bundle
 from rates_digest.extras import FailureResult, fomc_events, parse_failures, parse_release_dates, parse_stablecoins
 from rates_digest.fetch import Observations, parse_fred_csv
-from rates_digest.monitor import CHART_PAGES, SUMMARY_GROUPS, VIX_PANEL, build_report, render_html, render_text, signal
+from rates_digest.monitor import CHART_PAGES, LAST_PAGE_PANELS, RATE_GROUPS, RATES_PANELS, SUMMARY_GROUPS, build_report, render_html, render_text, signal
 from rates_digest.newsletter import ITEMS, current_zone, sources_for, stablecoin_reading
 from rates_digest.pdf import render_pdf
 from rates_digest.sample_data import sample_bundle, sample_observations
@@ -26,8 +26,8 @@ def test_layout_is_consistent():
     known = set(SERIES_BY_ID) | {sp.key for sp in SPREADS} | {"STABLECOINS"}
     summary_keys = [k for _, keys in SUMMARY_GROUPS for k in keys]
     assert set(summary_keys) == set(ITEMS)                       # every measure is on the summary page
-    assert len(CHART_PAGES) == 3 and all(len(p.panels) == 4 for p in CHART_PAGES)
-    for spec in [s for p in CHART_PAGES for s in p.panels] + [VIX_PANEL]:
+    assert len(CHART_PAGES) == 2 and all(len(p.panels) == 4 for p in CHART_PAGES)
+    for spec in [s for p in CHART_PAGES for s in p.panels] + RATES_PANELS + LAST_PAGE_PANELS:
         assert spec.key in ITEMS
         for _, key in spec.lines:
             assert key in known, key
@@ -98,7 +98,7 @@ def test_charts_embedded():
     b = sample_bundle(TODAY)
     rep = build_report(b)
     html = render_html(rep, b)
-    panels = [p for _, ps in rep.pages for p in ps] + [rep.vix]
+    panels = rep.all_panels
     assert len(panels) == 13
     for p in panels:
         assert p.png and p.png[:4] == b"\x89PNG" and f'src="cid:{p.cid}"' in html
@@ -174,3 +174,17 @@ def test_run_sample_writes_email_and_pdf(tmp_path):
     assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
     pdfs = list(tmp_path.glob("Rates-Deposit-Risk-Monitor-*.pdf"))
     assert (tmp_path / "newsletter.html").exists() and pdfs and pdf_pages(pdfs[0].read_bytes()) == 5
+
+
+def test_rates_table_has_every_daily_rate():
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    keys = [k for _, ks in RATE_GROUPS for k, _ in ks]
+    assert len(keys) == 17 and all(k in SERIES_BY_ID for k in keys)
+    html = render_html(rep, b)
+    for _, rows in rep.rates:
+        for r in rows:
+            assert r.latest != "n/a", r.name
+            assert r.name in html and r.url in html
+    pdf = render_pdf(rep)
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5

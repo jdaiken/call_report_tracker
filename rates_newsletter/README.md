@@ -6,10 +6,10 @@ with the same report attached as a PDF.
 | Page | Contents |
 |---|---|
 | 1 Summary | Risk / Watch / Normal counts, key signals, every measure in one table (latest, last change, 1 month, 1 year, status) |
-| 2 Rates | Fed policy path, Treasuries vs. bank deposits, 10-year Treasury, yield curve |
+| 2 Rates | Every daily rate in one table (Fed target, EFFR, IORB, SOFR, prime; 1-month to 10-year Treasuries; FDIC national deposit rates and rate caps) with 1-day, 1-week, 1-month and 1-year changes; Fed policy path; Treasuries vs. bank deposits |
 | 3 Deposits & competition | Deposit flight (small vs. largest banks vs. money funds), money market funds, stablecoins, small-bank borrowing |
 | 4 Funding & credit stress | Overnight funding (SOFR − IORB), discount window, high-yield spread, CRE loans past due |
-| 5 Market stress & calendar | VIX, bank failures, upcoming Fed decisions and data releases, data sources |
+| 5 Markets & calendar | 10-year Treasury, yield curve, VIX, every bank failure this year, upcoming Fed decisions and data releases |
 
 Each chart panel shows the latest reading, a status badge and a one-line
 signal; Watch and Risk ranges are shaded on the chart. Every reading links to

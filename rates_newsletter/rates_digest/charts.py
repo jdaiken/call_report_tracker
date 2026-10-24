@@ -70,6 +70,7 @@ def line_chart(lines: list[Line], kind: str, start: date, *, zero_line: bool = F
                ref_line: Optional[tuple[float, str]] = None, step: bool = False,
                bands: Optional[list[Band]] = None,
                range_band: Optional[tuple[list[tuple[date, float]], list[tuple[date, float]], str]] = None,
+               height: float = 4.05,
                compact: bool = False) -> Optional[bytes]:
     """Return PNG bytes, or None if there's nothing to draw."""
     lines = [Line(l.label, [(d, v) for d, v in l.points if d >= start]) for l in lines[:3]]
@@ -81,7 +82,7 @@ def line_chart(lines: list[Line], kind: str, start: date, *, zero_line: bool = F
 
     # compact = a panel in a 2x2 grid (about 3.5 inches wide in print)
     fs = 9.5 if compact else 10.5          # base font size
-    fig, ax = plt.subplots(figsize=(4.9, 4.05) if compact else (7.6, 3.9), dpi=200 if compact else 150)
+    fig, ax = plt.subplots(figsize=(4.9, height) if compact else (7.6, 3.9), dpi=200 if compact else 150)
     fig.patch.set_facecolor(SURFACE)
     ax.set_facecolor(SURFACE)
     for spine in ("top", "right", "left"):
