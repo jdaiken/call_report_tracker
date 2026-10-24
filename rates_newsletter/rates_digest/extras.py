@@ -34,6 +34,7 @@ class Failure:
 class FailureResult:
     failures: list[Failure] = field(default_factory=list)   # newest first
     error: Optional[str] = None
+    notes: list[str] = field(default_factory=list)          # partial problems (one source down)
 
 
 def _parse_fdic_date(s: str) -> Optional[date]:
@@ -145,14 +146,13 @@ def fetch_failures() -> FailureResult:
             listed = parse_failed_bank_list(r.text)
             if listed:
                 break
+            errors.append(f"{url}: no rows ({r.headers.get('content-type')}, {r.text[:80]!r})")
         except Exception as e:
             errors.append(f"{url}: {e}")
     if not api and not listed:
         log.warning("FDIC failures unavailable: %s", errors)
         return FailureResult(error="; ".join(errors) or "no records")
-    res = FailureResult(merge_failures(api, listed))
-    res.sources = ("API" if api else "") + (" + published list" if listed else "")   # type: ignore[attr-defined]
-    return res
+    return FailureResult(merge_failures(api, listed), notes=errors)
 
 
 def deposits_note(f: Failure) -> str:

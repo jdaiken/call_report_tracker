@@ -68,6 +68,8 @@ def check_sources(b: Bundle) -> int:
         print(f"::notice title=Sources OK ({len(oks)})::{', '.join(oks)}")
         if not b.failures.error:
             print(f"::notice title=Bank failures::{_failure_summary(b)[:900]}")
+            for note in b.failures.notes[:3]:
+                print(f"::warning title=Bank failures source::{note[:400]}")
         for line in bad[:9]:
             print(f"::warning title=Source failed::{line[:400].replace('%', '%25')}")
     core_ok = sum(1 for r in b.readings.values() if r.ok) >= len(b.readings) * 0.8
