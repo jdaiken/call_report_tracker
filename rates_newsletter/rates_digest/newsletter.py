@@ -231,6 +231,33 @@ ITEMS: dict[str, Item] = {i.key: i for i in [
 ]}
 
 
+FRED_URL = "https://fred.stlouisfed.org/series/{}"
+FDIC_FAILURES_URL = "https://www.fdic.gov/bank-failures/failed-bank-list"
+DEFILLAMA_URL = "https://defillama.com/stablecoins"
+
+# The underlying series behind each measure (spreads link to both sides).
+_SOURCE_SERIES = {
+    "DFEDTARU": ["DFEDTARU", "DFEDTARL", "EFFR"],
+    "DGS2": ["DGS2", "EFFR"],
+    "bill_vs_mm": ["DGS3MO", "MMNDR"],
+    "DPSSCBW027SBOG": ["DPSSCBW027SBOG", "DPSLCBW027SBOG"],
+    "sofr_vs_iorb": ["SOFR", "IORB"],
+    "curve_10y_2y": ["DGS10", "DGS2"],
+}
+
+
+def sources_for(key: str) -> list[tuple[str, str]]:
+    """(label, url) pairs where the reader can check the number."""
+    from .series import SERIES_BY_ID
+    if key == "STABLECOINS":
+        return [("DeFiLlama: stablecoins", DEFILLAMA_URL)]
+    out = []
+    for sid in _SOURCE_SERIES.get(key, [key]):
+        s = SERIES_BY_ID.get(sid)
+        out.append((f"FRED: {s.name if s else sid} ({sid})", FRED_URL.format(sid)))
+    return out
+
+
 def insight_line(key: str, r: Reading, b: Bundle) -> str:
     """The one-line insight: where it sits in its ranges, plus the item's own context."""
     item = ITEMS[key]
@@ -372,6 +399,7 @@ class ItemContent:
     ranges: list[RangeChip]
     basis: str
     loaded: bool = True
+    sources: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -412,7 +440,7 @@ def item_content(key: str, b: Bundle) -> ItemContent:
     r = b.readings.get(key)
     if r is None or not r.ok:
         return ItemContent(key, item.name, "n/a", "", "info", "Data didn't load today; it retries next run.",
-                           item.why, item.what, "", "", [], "", loaded=False)
+                           item.why, item.what, "", "", [], "", loaded=False, sources=sources_for(key))
     z = current_zone(item, r)
     changes = " · ".join(f"{lbl} {r.compact_change(w)}" for lbl, w in (("Last:", "last"), ("1 mo:", "month"), ("1 yr:", "year"))
                          if r.changes.get(w) is not None)
@@ -423,7 +451,8 @@ def item_content(key: str, b: Bundle) -> ItemContent:
         insight += f" (Latest data: {r.as_of:%b %-d, %Y}.)"
     return ItemContent(key, item.name, r.display_value, f"{r.as_of:%b %-d}" if r.as_of else "",
                        z.tone if z else "info", insight, item.why, item.what, changes, past,
-                       [RangeChip(zz.label, zz.tone, zz is z) for zz in item.zones], item.basis)
+                       [RangeChip(zz.label, zz.tone, zz is z) for zz in item.zones], item.basis,
+                       sources=sources_for(key))
 
 
 def build_chart(spec: ChartSpec, b: Bundle) -> Optional[bytes]:
@@ -514,14 +543,28 @@ def _dashboard_html(rep: Report) -> str:
                      f'<td style="padding:7px 6px;border-bottom:1px solid {LINE};vertical-align:top;font-size:13.5px;line-height:1.45;color:{INK}">'
                      f'<b>{_esc(i.name)}</b><br><span style="color:{QUIET}">{_esc(i.insight)}</span></td>'
                      f'<td style="padding:7px 6px;border-bottom:1px solid {LINE};vertical-align:top;text-align:right;'
-                     f'font-size:14px;font-weight:700;color:{INK};white-space:nowrap">{_esc(i.reading)}</td></tr>')
+                     f'font-size:14px;font-weight:700;white-space:nowrap">{_reading_link(i)}</td></tr>')
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">{rows}</table>'
+
+
+def _reading_link(i: ItemContent) -> str:
+    """The reading itself links to its data source, so it can be checked in one click."""
+    if not i.sources:
+        return f'<span style="color:{INK}">{_esc(i.reading)}</span>'
+    return f'<a href="{_esc(i.sources[0][1])}" style="color:{INK};text-decoration:underline">{_esc(i.reading)}</a>'
+
+
+def _sources_html(i: ItemContent) -> str:
+    if not i.sources:
+        return ""
+    links = " &middot; ".join(f'<a href="{_esc(u)}" style="color:#1d5fbf">{_esc(lbl)}</a>' for lbl, u in i.sources)
+    return f'<p style="margin:6px 0 0;font-size:12px;line-height:1.5;color:{QUIET}"><b style="color:{INK}">Check the data:</b> {links}</p>'
 
 
 def _item_html(i: ItemContent) -> str:
     if not i.loaded:
         return (f'<div style="padding:12px 0;border-top:1px solid {LINE}"><b style="color:{INK}">{_esc(i.name)}</b>'
-                f'<p style="margin:4px 0 0;font-size:13px;color:{QUIET}">{_esc(i.insight)}</p></div>')
+                f'<p style="margin:4px 0 0;font-size:13px;color:{QUIET}">{_esc(i.insight)}</p>{_sources_html(i)}</div>')
     color = TONE_COLOR[i.tone] if i.tone in ("watch", "risk") else INK
     ranges = ""
     if i.ranges:
@@ -537,7 +580,7 @@ def _item_html(i: ItemContent) -> str:
 <div style="padding:14px 0 10px;border-top:1px solid {LINE}">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
     <td style="font-size:15.5px;font-weight:700;color:{INK}">{_esc(i.name)} {_badge(i.tone)}</td>
-    <td align="right" style="font-size:18px;font-weight:700;color:{INK};white-space:nowrap">{_esc(i.reading)}</td>
+    <td align="right" style="font-size:18px;font-weight:700;white-space:nowrap">{_reading_link(i)}</td>
   </tr></table>
   <p style="margin:2px 0 8px;font-size:12px;color:{QUIET}">{meta}</p>
   <p style="margin:0 0 8px;padding:8px 10px;background:#f4f5f7;border-left:4px solid {color};font-size:14.5px;font-weight:700;
@@ -545,6 +588,7 @@ def _item_html(i: ItemContent) -> str:
   <p {lab}><b>Why IntraFi cares:</b> {_esc(i.why)}</p>
   <p {lab}><b>What it is:</b> {_esc(i.what)}</p>
   {ranges}
+  {_sources_html(i)}
 </div>"""
 
 
@@ -557,10 +601,12 @@ def render_html(rep: Report, b: Bundle, image_src: Callable[[str], str] = lambda
                   + "</ul>")
     else:
         inner += f'<p style="margin:0;font-size:14.5px;color:{OK_C}"><b>&#10003; All clear:</b> nothing is in a Watch or Risk range.</p>'
-    inner += f'<p style="margin:8px 0 0;font-size:13.5px;color:{INK}">{_esc(rep.failures_line)}</p>'
+    inner += (f'<p style="margin:8px 0 0;font-size:13.5px;color:{INK}">{_esc(rep.failures_line)} '
+              f'<a href="{FDIC_FAILURES_URL}" style="color:#1d5fbf;font-size:12px">Check the FDIC failed bank list</a></p>')
     inner += ('<h2 style="margin:28px 0 4px;font-size:19px;color:%s">Risk dashboard</h2>' % INK
               + f'<p style="margin:0 0 4px;font-size:12.5px;color:{QUIET}">Green = Normal, amber = Watch, red = Risk, gray = '
-              "for information. Ranges are rules of thumb, not official thresholds. The same report is attached as a PDF.</p>"
+              "for information. Click any reading to check it at the source. Ranges are rules of thumb, not official "
+              "thresholds. The same report is attached as a PDF.</p>"
               + _dashboard_html(rep))
     for a in rep.areas:
         inner += (f'<h2 style="margin:36px 0 2px;font-size:20px;color:{INK};border-bottom:2px solid {INK};padding-bottom:4px">'
@@ -587,7 +633,7 @@ def render_text(rep: Report) -> str:
     lines += [f"INTRAFI RISK MONITOR - {rep.today:%A, %B %-d, %Y}", "(Charts are in the HTML email and the attached PDF.)", "",
               "TODAY'S ALERTS"]
     lines += [f"  - {TONE_WORD[t].upper()}: {x}" for t, x in rep.alerts] or ["  All clear: nothing in a Watch or Risk range."]
-    lines += [f"  {rep.failures_line}", "", "RISK DASHBOARD"]
+    lines += [f"  {rep.failures_line} ({FDIC_FAILURES_URL})", "", "RISK DASHBOARD"]
     for a in rep.areas:
         lines.append(f"  {a.title.upper()}")
         lines += [f"    [{TONE_WORD[i.tone]:6}] {i.name}: {i.reading} - {i.insight}" for i in a.items]
@@ -601,6 +647,7 @@ def render_text(rep: Report) -> str:
                       f"    Why IntraFi cares: {i.why}", f"    What it is: {i.what}"]
             if i.ranges:
                 lines.append("    Ranges: " + "; ".join(("> " if c.current else "") + c.label for c in i.ranges))
+            lines += [f"    Check the data: {u}" for _, u in i.sources]
     if rep.coming_up:
         lines += ["", "COMING UP"] + [f"  {e.when:%a %b %-d}: {e.label}" for e in rep.coming_up]
     lines += ["", "Ranges are rules of thumb, not official thresholds. Data: FRED, FDIC, DeFiLlama. Not investment advice."]

@@ -17,7 +17,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (CondPageBreak, Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table,
                                 TableStyle)
 
-from .newsletter import TONE_COLOR, TONE_WORD, ItemContent, Report
+from .newsletter import FDIC_FAILURES_URL, TONE_COLOR, TONE_WORD, ItemContent, Report
 
 # DejaVu ships with matplotlib, so the PDF needs no system fonts and renders
 # symbols like the minus sign that the built-in PDF fonts lack.
@@ -67,9 +67,17 @@ def _png(png: bytes, width: float) -> Image:
     return img
 
 
+def _link(label: str, url: str) -> str:
+    return f'<link href="{escape(url)}" color="#1d5fbf"><u>{escape(label)}</u></link>'
+
+
+def _reading(i: ItemContent) -> Paragraph:
+    return _p(_link(i.reading, i.sources[0][1]) if i.sources else escape(i.reading), "reading")
+
+
 def _item(i: ItemContent, width: float) -> KeepTogether:
     color = TONE_COLOR[i.tone] if i.tone in ("watch", "risk") else "#1f2328"
-    head = Table([[_badge(i.tone), _p(escape(i.name), "name"), _p(escape(i.reading), "reading")]],
+    head = Table([[_badge(i.tone), _p(escape(i.name), "name"), _reading(i)]],
                  colWidths=[0.72 * inch, width - 2.2 * inch, 1.48 * inch])
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                               ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
@@ -91,6 +99,8 @@ def _item(i: ItemContent, width: float) -> KeepTogether:
                            else escape(c.label) for c in i.ranges)
         basis = f" ({escape(i.basis)})" if i.basis else ""
         parts += [Spacer(1, 2), _p(f"<b>Ranges{basis}:</b> {chips}", "small")]
+    if i.sources:
+        parts += [Spacer(1, 2), _p("<b>Check the data:</b> " + " · ".join(_link(lbl, u) for lbl, u in i.sources), "small")]
     parts.append(Spacer(1, 4))
     line = Table([[""]], colWidths=[width], rowHeights=[0.5])
     line.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, -1), 0.5, RULE)]))
@@ -116,11 +126,11 @@ def render_pdf(rep: Report) -> bytes:
                                    _style(f"al{t}", 9.5, color=colors.HexColor(TONE_COLOR[t]), leftIndent=8, spaceAfter=3)))
     else:
         story.append(_p("<b>All clear:</b> nothing is in a Watch or Risk range.", "body"))
-    story.append(_p(escape(rep.failures_line), "body"))
+    story.append(_p(f"{escape(rep.failures_line)} {_link('Check the FDIC failed bank list', FDIC_FAILURES_URL)}", "body"))
 
     story.append(_p("Risk dashboard", "h2"))
-    story.append(_p("Green = Normal, amber = Watch, red = Risk, gray = for information. "
-                    "Ranges are rules of thumb, not official thresholds.", "small"))
+    story.append(_p("Green = Normal, amber = Watch, red = Risk, gray = for information. Click any reading to check it "
+                    "at the source. Ranges are rules of thumb, not official thresholds.", "small"))
     rows, styles = [], [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 3),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 3)]
     for a in rep.areas:
@@ -130,7 +140,7 @@ def render_pdf(rep: Report) -> bytes:
         for i in a.items:
             styles.append(("LINEBELOW", (0, len(rows)), (-1, len(rows)), 0.4, RULE))
             rows.append([_badge(i.tone), _p(f"<b>{escape(i.name)}</b><br/><font color='#5f6670'>{escape(i.insight)}</font>", "body"),
-                         _p(escape(i.reading), "reading")])
+                         _reading(i)])
     dash = Table(rows, colWidths=[0.72 * inch, width - 2.0 * inch, 1.28 * inch])
     dash.setStyle(TableStyle(styles))
     story.append(dash)

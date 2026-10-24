@@ -171,3 +171,19 @@ def test_run_sample_writes_email_and_pdf(tmp_path):
     spec.loader.exec_module(run)
     assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
     assert (tmp_path / "newsletter.html").exists() and list(tmp_path.glob("IntraFi-Risk-Monitor-*.pdf"))
+
+
+def test_every_measure_links_to_its_source():
+    from rates_digest.newsletter import sources_for
+    for key in ITEMS:
+        srcs = sources_for(key)
+        assert srcs and all(u.startswith("https://") for _, u in srcs), key
+    assert sources_for("sofr_vs_iorb")[0][1] == "https://fred.stlouisfed.org/series/SOFR"
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    html = render_html(rep, b)
+    assert "Check the data:" in html and "https://fred.stlouisfed.org/series/DGS10" in html
+    assert "https://defillama.com/stablecoins" in html and "https://www.fdic.gov/bank-failures/failed-bank-list" in html
+    assert "https://fred.stlouisfed.org/series/" in render_text(rep)
+    from rates_digest.pdf import render_pdf
+    assert b"fred.stlouisfed.org/series/DGS10" in render_pdf(rep)
