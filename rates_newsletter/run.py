@@ -53,7 +53,11 @@ def _finviz_probe() -> str:
         t = r.text
         marks = {m: t.count(m) for m in ("pageSelect", "screener-pages", "quote.ashx?t=", "styled-table-new",
                                           "screener_table", "is-pages", "Total:", "#1 /", "<tr", "data-row")}
-        i = t.find("quote.ashx?t=")
+        for needle in ("__NEXT_DATA__", "application/json", "\"ticker\"", "\"Ticker\""):
+            k = t.find(needle)
+            if k >= 0 and os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::notice title=Finviz {needle[:14]}::{t[k:k + 350].replace(chr(10), ' ').replace('%', '%25')}")
+        i = t.find("data-row")
         snippet = t[max(0, i - 700):i + 500].replace("\n", " ") if i >= 0 else ""
         if os.environ.get("GITHUB_ACTIONS") == "true" and snippet:
             for n in range(0, len(snippet), 380):
