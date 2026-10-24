@@ -1,13 +1,14 @@
-name: Weekly Rates & Markets
+name: Rates & Markets
 
 # Lives in this repo (not its own) so it can use the same EMAIL_ADDRESS /
 # EMAIL_APP_PASSWORD secrets as the FFIEC monitor. Code is in rates_newsletter/.
-# One email a week, Monday morning.
+# Weekday mornings: a short email Tuesday-Friday, the full edition (every chart
+# plus what-it-is and risk notes) on Mondays.
 
 on:
   schedule:
-    # Mondays 12:43 UTC = 8:43am EDT / 7:43am EST.
-    - cron: "43 12 * * 1"
+    # Weekdays 12:43 UTC = 8:43am EDT / 7:43am EST.
+    - cron: "43 12 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
@@ -15,6 +16,11 @@ on:
         type: choice
         options: [send, dry_run, check_series]
         default: send
+      edition:
+        description: "auto = full on Mondays, short other days"
+        type: choice
+        options: [auto, short, full]
+        default: auto
 
 permissions:
   contents: read
@@ -42,11 +48,14 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
           MODE: ${{ inputs.mode }}
+          EDITION: ${{ inputs.edition }}
         run: |
+          FLAG=""
+          case "${EDITION:-auto}" in short) FLAG="--short" ;; full) FLAG="--full" ;; esac
           case "${MODE:-send}" in
             check_series) python run.py --check-series ;;
-            dry_run)      python run.py --dry-run --out-dir out ;;
-            *)            python run.py ;;
+            dry_run)      python run.py $FLAG --dry-run --out-dir out ;;
+            *)            python run.py $FLAG ;;
           esac
 
       - name: Upload preview (dry run only)

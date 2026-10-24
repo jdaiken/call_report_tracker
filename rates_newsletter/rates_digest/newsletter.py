@@ -1,6 +1,6 @@
-"""The weekly newsletter: essential rates and markets, each with what it is,
-what it means right now, the risk to watch, and the ranges to know, plus
-charts for every section.
+"""The newsletter: essential rates and markets, each with a bottom line, what
+it is, what it means right now, the risk to watch, and the ranges to know,
+plus a chart (with a plain-English takeaway) for every section.
 
 "Ranges to know" are general rules of thumb for context, not official
 thresholds. All analysis text is rules-based: fixed sentences filled in from
@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Callable, Optional
 
 from .analysis import Reading
-from .charts import Line, index_to_100, line_chart
+from .charts import Band, Line, index_to_100, line_chart
 from .email_report import INK, LINE, QUIET, Bundle, _esc, page
 from .extras import FOMC_DECISION_DAYS, fmt_thousands
 from .series import SERIES_BY_ID, SPREADS
@@ -103,6 +103,15 @@ def means_effr(r: Reading, b: Bundle) -> str:
     return f"At {r.display_value} it sits {where} the Fed's range, so the Fed's target is holding."
 
 
+def means_sofr(r: Reading, b: Bundle) -> str:
+    gap = _r(b, "sofr_vs_iorb")
+    if not gap:
+        return ""
+    if gap.value > 0:
+        return (f"SOFR is {gap.value:.2f} points above what the Fed pays on reserves: overnight cash is getting tighter.")
+    return f"SOFR is {abs(gap.value):.2f} points below what the Fed pays on reserves: overnight funding is calm."
+
+
 def means_bill(r: Reading, b: Bundle) -> str:
     gap = _r(b, "bill_vs_effr")
     if not gap:
@@ -179,7 +188,7 @@ def means_vix(r: Reading, b: Bundle) -> str:
 ITEMS: dict[str, Item] = {i.key: i for i in [
     Item("DFEDTARU", means=means_fed),
     Item("EFFR", means=means_effr),
-    Item("SOFR"),
+    Item("SOFR", means=means_sofr),
     Item("sofr_vs_iorb", [_z(None, 0.0, "Below 0: cash is plentiful"), _z(0.0, 0.10, "0 to +0.10: tightening", "watch"),
                           _z(0.10, None, "Above +0.10: funding stress", "risk")]),
     Item("DGS3MO", means=means_bill),
@@ -239,16 +248,140 @@ ITEMS: dict[str, Item] = {i.key: i for i in [
 
 
 # ------------------------------------------------------------------ sections
+def _zone_short(z: Zone) -> str:
+    return z.label.split(": ")[-1]
+
+
+def _pct_since(r: Optional[Reading], window: str) -> Optional[float]:
+    if not r or r.changes.get(window) is None or not r.bases.get(window):
+        return None
+    return r.changes[window] / r.bases[window] * 100
+
+
+def _zone_line(key: str, b: Bundle) -> str:
+    r = _r(b, key)
+    item = ITEMS.get(key)
+    if not r or not item:
+        return ""
+    z = current_zone(item, r)
+    return f"{r.name} is {r.display_value}" + (f": {_zone_short(z)}." if z else ".")
+
+
+# One plain-English headline per chart: the takeaway, stated up front.
+def take_fed(b: Bundle) -> str:
+    top, bot, sofr, gap = _r(b, "DFEDTARU"), _r(b, "DFEDTARL"), _r(b, "SOFR"), _r(b, "sofr_vs_iorb")
+    if not (top and bot):
+        return "The Fed's target range and overnight rates"
+    s = f"The Fed's range is {bot.value:.2f}% to {top.value:.2f}%"
+    if gap is not None and sofr:
+        s += (f"; SOFR ({sofr.display_value}) is above what the Fed pays on reserves, so overnight cash is getting tighter."
+              if gap.value > 0 else "; overnight rates sit inside it and funding is calm.")
+    return s + ("" if s.endswith(".") else ".")
+
+
+def take_treasuries(b: Bundle) -> str:
+    two, ten, effr = _r(b, "DGS2"), _r(b, "DGS10"), _r(b, "EFFR")
+    if not (two and effr):
+        return "Treasury yields"
+    d = two.value - effr.value
+    view = ("markets expect Fed cuts" if d <= -0.25 else "markets expect higher rates" if d >= 0.25
+            else "markets expect rates to hold")
+    s = f"The 2-year ({two.display_value}) is {abs(d):.2f} points {'below' if d < 0 else 'above'} fed funds: {view}."
+    if ten and ten.changes.get("month") is not None:
+        s += f" The 10-year is {ten.display_value}, {ten.change_text('month')} this month."
+    return s
+
+
+def take_curve(b: Bundle) -> str:
+    c = _r(b, "curve_10y_2y")
+    if not c:
+        return "The yield curve"
+    z = current_zone(ITEMS["curve_10y_2y"], c)
+    return f"The curve is {c.display_value}: {_zone_short(z) if z else ''}."
+
+
+def take_deposit_rates(b: Bundle) -> str:
+    gap, mm, bill = _r(b, "bill_vs_mm"), _r(b, "MMNDR"), _r(b, "DGS3MO")
+    if not (gap and mm and bill):
+        return "Bank deposit rates vs. Treasuries"
+    return (f"T-bills pay {bill.display_value}; the average bank money market account pays {mm.display_value}, "
+            f"a gap of {gap.value:.2f} points.")
+
+
+def take_gap(b: Bundle) -> str:
+    g = _r(b, "bill_vs_mm")
+    if not g:
+        return "The T-bill vs. bank gap"
+    z = current_zone(ITEMS["bill_vs_mm"], g)
+    trend = g.change_text("month")
+    return f"The gap is {g.value:.2f} points ({_zone_short(z) if z else ''}), {trend} over the past month."
+
+
+def take_deposits(b: Bundle) -> str:
+    parts = []
+    for k, label in (("DPSSCBW027SBOG", "small banks"), ("DPSLCBW027SBOG", "large banks"), ("WRMFNS", "money funds")):
+        p = _pct_since(_r(b, k), "year")
+        if p is not None:
+            parts.append(f"{label} {p:+.1f}%")
+    return ("Past year: " + ", ".join(parts) + ".") if parts else "Deposits and money funds"
+
+
+def take_stablecoins(b: Bundle) -> str:
+    r = _r(b, "STABLECOINS")
+    if not r:
+        return "Stablecoins in circulation"
+    p = _pct_since(r, "year")
+    z = current_zone(ITEMS["STABLECOINS"], r)
+    return f"Stablecoins total {r.display_value}" + (f", {p:+.0f}% in a year: {_zone_short(z)}." if p is not None and z else ".")
+
+
+def take_single(key: str) -> Callable[[Bundle], str]:
+    def f(b: Bundle) -> str:
+        r = _r(b, key)
+        if not r:
+            return ""
+        z = current_zone(ITEMS.get(key, Item(key)), r)
+        s = f"{r.name} is {r.display_value}"
+        if z:
+            s += f": {_zone_short(z)}"
+        m = r.change_text("month")
+        if m not in ("n/a",):
+            s += f" ({m} over the past month)"
+        return s + "."
+    return f
+
+
+def take_stocks(b: Bundle) -> str:
+    parts = []
+    for k, label in (("SP500", "S&P 500"), ("DJIA", "Dow"), ("NASDAQCOM", "Nasdaq")):
+        r = _r(b, k)
+        if r and r.high_1y:
+            parts.append(f"{label} {(1 - r.value / r.high_1y) * 100:.1f}% below")
+    return ("Distance from past-year highs: " + ", ".join(parts) + ".") if parts else "Stocks"
+
+
+def take_economy(b: Bundle) -> str:
+    cpi, un = _r(b, "CPIAUCSL"), _r(b, "UNRATE")
+    if not (cpi and un):
+        return "Inflation and unemployment"
+    goal = "above" if cpi.value > 2.05 else "at or below"
+    return f"Inflation is {cpi.display_value}, {goal} the Fed's 2% goal; unemployment is {un.display_value}."
+
+
 @dataclass
 class ChartSpec:
-    title: str
-    lines: list[tuple[str, str]]      # (legend label, reading key)
+    takeaway: Callable[[Bundle], str]
+    subtitle: str                     # what the chart shows, in small print
+    lines: list[tuple[str, str]]      # (label, reading key)
     kind: str                         # pct | points | billions | index | level
     years: float
     index: bool = False
     zero: bool = False
     ref: Optional[tuple[float, str]] = None
     step: bool = False
+    zones_key: Optional[str] = None   # shade this item's Watch/Risk ranges on the chart
+    fed_band: bool = False            # shade the Fed's target range
+    daily: bool = True                # False = only in the full Monday edition
 
 
 @dataclass
@@ -260,52 +393,55 @@ class Section:
 
 
 SECTIONS = [
-    Section("The Fed and overnight funding",
-            "Where the Fed has set rates and whether overnight markets are behaving.",
-            [ChartSpec("Fed target vs. what banks actually pay overnight",
-                       [("Fed target (top)", "DFEDTARU"), ("Effective fed funds", "EFFR"), ("SOFR", "SOFR")], "pct", 2, step=False)],
+    Section("The Fed and overnight funding", "Where the Fed has set rates and whether overnight markets are behaving.",
+            [ChartSpec(take_fed, "Gray band: the Fed's target range. Lines: what banks actually paid overnight. Past 2 years.",
+                       [("Fed funds", "EFFR"), ("SOFR", "SOFR")], "pct", 2, fed_band=True)],
             ["DFEDTARU", "EFFR", "SOFR", "sofr_vs_iorb"]),
-    Section("Treasury yields",
-            "The safe-asset yields every bank rate is measured against.",
-            [ChartSpec("3-month, 2-year and 10-year Treasury yields",
+    Section("Treasury yields", "The safe-asset yields every bank rate is measured against.",
+            [ChartSpec(take_treasuries, "3-month, 2-year and 10-year Treasury yields. Past 2 years.",
                        [("3-month", "DGS3MO"), ("2-year", "DGS2"), ("10-year", "DGS10")], "pct", 2)],
             ["DGS3MO", "DGS2", "DGS10"]),
     Section("The yield curve", "Long rates minus short rates: the shape that drives bank margins.",
-            [ChartSpec("10-year minus 2-year Treasury yield", [("10-yr minus 2-yr", "curve_10y_2y")], "points", 5, zero=True)],
+            [ChartSpec(take_curve, "10-year minus 2-year Treasury yield. Below the black line = inverted. Past 5 years.",
+                       [("10-yr minus 2-yr", "curve_10y_2y")], "points", 5, zero=True, zones_key="curve_10y_2y")],
             ["curve_10y_2y"]),
     Section("What banks pay depositors vs. Treasuries",
             "How competitive bank deposits are. This is the backdrop for ICS and CDARS pricing.",
-            [ChartSpec("Bank deposit rates vs. the 3-month T-bill",
-                       [("3-month T-bill", "DGS3MO"), ("Bank 12-mo CD (avg)", "NDR12MCD"), ("Bank money market (avg)", "MMNDR")], "pct", 3),
-             ChartSpec("The gap: T-bill minus bank money market rate", [("Gap", "bill_vs_mm")], "points", 4, ref=(4.5, "very wide"))],
+            [ChartSpec(take_deposit_rates, "3-month T-bill vs. FDIC national average bank rates. Past 3 years.",
+                       [("T-bill", "DGS3MO"), ("12-mo CD", "NDR12MCD"), ("Money market", "MMNDR")], "pct", 3, daily=False),
+             ChartSpec(take_gap, "T-bill yield minus the average bank money market rate, in percentage points. Past 4 years.",
+                       [("Gap", "bill_vs_mm")], "points", 4, zones_key="bill_vs_mm")],
             ["MMNDR", "NDR12MCD", "bill_vs_mm"]),
-    Section("Where deposits are going",
-            "The pool IntraFi's network moves, and the competition for it.",
-            [ChartSpec("Deposits and money funds (one year ago = 100)",
-                       [("Small banks", "DPSSCBW027SBOG"), ("Large banks", "DPSLCBW027SBOG"), ("Money market funds", "WRMFNS")],
+    Section("Where deposits are going", "The pool IntraFi's network moves, and the competition for it.",
+            [ChartSpec(take_deposits, "Each line starts at 100 one year ago, so you can compare growth. Above 100 = grew.",
+                       [("Small banks", "DPSSCBW027SBOG"), ("Large banks", "DPSLCBW027SBOG"), ("Money funds", "WRMFNS")],
                        "index", 1, index=True, ref=(100.0, ""))],
             ["DPSSCBW027SBOG", "DPSLCBW027SBOG", "WRMFNS"]),
     Section("Stablecoins", "Digital dollars: the newest competitor for bank deposits.",
-            [ChartSpec("Stablecoins in circulation", [("Stablecoin supply", "STABLECOINS")], "billions", 3)],
+            [ChartSpec(take_stablecoins, "Total dollar stablecoins in circulation. Past 3 years.",
+                       [("Stablecoins", "STABLECOINS")], "billions", 3)],
             ["STABLECOINS"]),
-    Section("Bank funding stress",
-            "Early warnings that banks are short of cash. Usually quiet; they matter when they move.",
-            [ChartSpec("Small banks' borrowing (mostly FHLB advances)", [("Borrowings", "H8B3094NSMA")], "billions", 3),
-             ChartSpec("Emergency borrowing from the Fed (discount window)", [("Discount window", "WLCFLPCL")], "billions", 4,
-                       ref=(50.0, "stress"))],
+    Section("Bank funding stress", "Early warnings that banks are short of cash. Usually quiet; they matter when they move.",
+            [ChartSpec(take_single("H8B3094NSMA"), "Money small banks have borrowed, mostly FHLB advances. Past 3 years.",
+                       [("Borrowings", "H8B3094NSMA")], "billions", 3),
+             ChartSpec(take_single("WLCFLPCL"), "Emergency loans from the Fed's discount window. Past 4 years.",
+                       [("Discount window", "WLCFLPCL")], "billions", 4, zones_key="WLCFLPCL")],
             ["H8B3094NSMA", "WLCFLPCL"]),
     Section("Credit risk", "Whether borrowers are getting into trouble.",
-            [ChartSpec("High-yield credit spread", [("High-yield spread", "BAMLH0A0HYM2")], "pct", 5, ref=(5.0, "default worries")),
-             ChartSpec("Commercial real estate loans past due (quarterly)", [("CRE delinquency", "DRCRELEXFACBS")], "pct", 12,
-                       step=True, ref=(2.0, "elevated"))],
+            [ChartSpec(take_single("BAMLH0A0HYM2"), "Extra yield on junk bonds over Treasuries. Past 5 years.",
+                       [("High-yield spread", "BAMLH0A0HYM2")], "pct", 5, zones_key="BAMLH0A0HYM2"),
+             ChartSpec(take_single("DRCRELEXFACBS"), "Share of bank CRE loans 30+ days past due, by quarter. Past 12 years.",
+                       [("CRE past due", "DRCRELEXFACBS")], "pct", 12, step=True, zones_key="DRCRELEXFACBS", daily=False)],
             ["BAMLH0A0HYM2", "DRCRELEXFACBS"]),
     Section("Stocks and volatility", "Market mood. Sharp drops send depositors looking for safety.",
-            [ChartSpec("Stocks (one year ago = 100)", [("S&P 500", "SP500"), ("Dow", "DJIA"), ("Nasdaq", "NASDAQCOM")],
-                       "index", 1, index=True, ref=(100.0, "")),
-             ChartSpec("VIX fear gauge", [("VIX", "VIXCLS")], "level", 2, ref=(30.0, "stress"))],
+            [ChartSpec(take_stocks, "Each index starts at 100 one year ago. Above 100 = up over the year.",
+                       [("S&P 500", "SP500"), ("Dow", "DJIA"), ("Nasdaq", "NASDAQCOM")], "index", 1, index=True, ref=(100.0, "")),
+             ChartSpec(take_single("VIXCLS"), "Expected stock market volatility. Past 2 years.",
+                       [("VIX", "VIXCLS")], "level", 2, zones_key="VIXCLS")],
             ["SP500", "DJIA", "NASDAQCOM", "VIXCLS"]),
     Section("The economy", "What drives the Fed's next move.",
-            [ChartSpec("Inflation and unemployment", [("Inflation (CPI, 12-mo)", "CPIAUCSL"), ("Unemployment", "UNRATE")], "pct", 5)],
+            [ChartSpec(take_economy, "Inflation (CPI, past 12 months) and the unemployment rate. Past 5 years.",
+                       [("Inflation", "CPIAUCSL"), ("Unemployment", "UNRATE")], "pct", 5, daily=False)],
             ["CPIAUCSL", "UNRATE"]),
 ]
 
@@ -334,32 +470,47 @@ def _meta(key: str) -> tuple[str, str]:
     return (sp.what_it_is, sp.reading) if sp else ("", "")
 
 
-def means_text(key: str, r: Reading, b: Bundle) -> str:
+# ----------------------------------------------------------- the insights
+def bottom_line(key: str, r: Reading, b: Bundle) -> tuple[str, Optional[str]]:
+    """(one-sentence takeaway, tone) shown first on each card."""
     item = ITEMS.get(key, Item(key))
-    parts = []
     z = current_zone(item, r)
     if z:
         m = metric_value(item, r)
         if item.metric == "drawdown":
-            parts.append(f"It is {m:.1f}% below its past-year high: {z.label.split(': ')[-1].lower()}.")
-        elif item.metric == "yoy":
-            parts.append(f"{item.metric_label.capitalize()}: {m:+.1f}%, which is {z.label.split(': ')[-1].lower()}.")
-        else:
-            parts.append(f"At {r.display_value}, it is in the “{z.label.split(': ')[-1].lower()}” range.")
+            return f"{m:.1f}% below its past-year high: {_zone_short(z).lower()}.", z.tone
+        if item.metric == "yoy":
+            return f"{m:+.1f}% over the past year: {_zone_short(z).lower()}.", z.tone
+        short = _zone_short(z)
+        main, _, why = short.partition(" (")
+        return f"{r.display_value}: in the \u201c{main}\u201d range" + (f" ({why}" if why else "") + ".", z.tone
+    if item.means:
+        first = item.means(r, b).split(". ")[0].rstrip(".")
+        if first:
+            return first + ".", None
+    return "", None
+
+
+def means_text(key: str, r: Reading, b: Bundle) -> str:
+    """The detail under the bottom line: context, then how it has moved."""
+    item = ITEMS.get(key, Item(key))
+    parts = []
     if item.means:
         extra = item.means(r, b)
-        if extra:
+        bl, _ = bottom_line(key, r, b)
+        if extra and extra.split(". ")[0].rstrip(".") + "." != bl:
             parts.append(extra)
-    trend = []
-    for w, label in (("week", "this week"), ("month", "over the past month")):
-        t = r.change_text(w)
-        if t not in ("n/a",):
-            trend.append(f"{t} {label}")
-    if trend:
-        parts.append(trend[0].capitalize() + (", " + trend[1] if len(trend) > 1 else "") + ".")
+        elif extra and ". " in extra:
+            parts.append(extra.split(". ", 1)[1])
+    moves = []
+    for w, label in (("last", "since the previous reading"), ("month", "over the past month"), ("year", "over the past year")):
+        if r.changes.get(w) is not None:
+            moves.append(f"{r.change_text(w)} {label}")
+    if moves:
+        parts.append(moves[0].capitalize() + "".join(f", {m}" for m in moves[1:]) + ".")
     if r.stale and r.as_of:
         parts.append(f"Latest data is from {r.as_of:%b %-d, %Y}.")
-    return " ".join(parts)
+    return " ".join(p for p in parts if p)
 
 
 # -------------------------------------------------------------------- render
@@ -367,17 +518,56 @@ def _chip(text: str, tone: str, current: bool) -> str:
     color = TONE_COLOR[tone]
     if current:
         return (f'<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;border-radius:4px;'
-                f'border:1.5px solid {color};color:{color};font-size:12px;font-weight:700">'
+                f'border:1.5px solid {color};color:{color};font-size:12.5px;font-weight:700">'
                 f'&#9654; {_esc(text)} (now)</span>')
     return (f'<span style="display:inline-block;margin:0 6px 6px 0;padding:3px 8px;border-radius:4px;'
-            f'border:1px solid {LINE};color:{QUIET};font-size:12px">{_esc(text)}</span>')
+            f'border:1px solid {LINE};color:{QUIET};font-size:12.5px">{_esc(text)}</span>')
 
 
 def _status_badge(tone: str) -> str:
     color = TONE_COLOR[tone]
     icon = {"ok": "&#10003;", "watch": "&#9888;", "risk": "&#9888;"}[tone]
     return (f'<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:{color};color:#fff;'
-            f'font-size:11px;font-weight:700;letter-spacing:.03em">{icon} {TONE_WORD[tone].upper()}</span>')
+            f'font-size:11px;font-weight:700;letter-spacing:.03em;vertical-align:middle">{icon} {TONE_WORD[tone].upper()}</span>')
+
+
+def ranges_inline(item: Item, current: Optional[Zone]) -> str:
+    """One line of ranges, current one in bold color: 'Ranges: Below 15: calm · **20 to 30: elevated** · ...'"""
+    parts = []
+    for z in item.zones:
+        if z is current:
+            parts.append(f'<b style="color:{TONE_COLOR[z.tone]}">&#9654; {_esc(z.label)}</b>')
+        else:
+            parts.append(_esc(z.label))
+    on = f" ({_esc(item.metric_label)})" if item.metric_label else ""
+    return f"Ranges{on}: " + " &middot; ".join(parts)
+
+
+def item_card_short(key: str, b: Bundle) -> str:
+    r = b.readings.get(key)
+    if r is None:
+        return ""
+    if not r.ok:
+        return (f'<div style="padding:10px 0;border-top:1px solid {LINE};font-size:13px;color:{QUIET}">'
+                f'<b style="color:{INK}">{_esc(r.name)}</b>: data didn\'t load today.</div>')
+    item = ITEMS.get(key, Item(key))
+    z = current_zone(item, r)
+    bl, tone = bottom_line(key, r, b)
+    bl_color = TONE_COLOR[tone] if tone in ("watch", "risk") else INK
+    changes = " &middot; ".join(f"{lbl} {_esc(r.compact_change(w))}"
+                                for lbl, w in (("Last:", "last"), ("1 mo:", "month"), ("1 yr:", "year"))
+                                if r.changes.get(w) is not None)
+    small = f"font-size:12.5px;line-height:1.5;color:{QUIET};margin:3px 0 0"
+    return f"""
+<div style="padding:11px 0 9px;border-top:1px solid {LINE}">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-size:15px;font-weight:700;color:{INK}">{_esc(r.name)} {_status_badge(z.tone) if z else ''}</td>
+    <td align="right" style="font-size:17px;font-weight:700;color:{INK};white-space:nowrap">{_esc(r.display_value)}</td>
+  </tr></table>
+  {f'<p style="margin:4px 0 0;font-size:14px;font-weight:600;line-height:1.45;color:{bl_color}">{_esc(bl)}</p>' if bl else ''}
+  <p style="{small}">{changes}</p>
+  {f'<p style="{small}">{ranges_inline(item, z)}</p>' if item.zones else ''}
+</div>"""
 
 
 def item_card(key: str, b: Bundle) -> str:
@@ -388,31 +578,36 @@ def item_card(key: str, b: Bundle) -> str:
     what, risk = _meta(key)
     if not r.ok:
         return (f'<div style="padding:14px 0;border-top:1px solid {LINE}"><b style="color:{INK}">{_esc(r.name)}</b>'
-                f'<p style="margin:4px 0 0;font-size:13px;color:{QUIET}">Data didn\'t load this week; it retries next run.</p></div>')
+                f'<p style="margin:4px 0 0;font-size:13px;color:{QUIET}">Data didn\'t load today; it retries next run.</p></div>')
     z = current_zone(item, r)
     badge = _status_badge(z.tone) if z else ""
-    changes = " &middot; ".join(f"{lbl}: {_esc(r.compact_change(w))}" for lbl, w in (("1 wk", "week"), ("1 mo", "month"), ("1 yr", "year"))
+    bl, tone = bottom_line(key, r, b)
+    bl_color = TONE_COLOR.get(tone, INK) if tone in ("watch", "risk") else INK
+    changes = " &middot; ".join(f"{lbl}: {_esc(r.compact_change(w))}"
+                                for lbl, w in (("Last", "last"), ("1 mo", "month"), ("1 yr", "year"))
                                 if r.changes.get(w) is not None)
     rng = ""
     if r.low_1y is not None and r.high_1y is not None:
         from .analysis import fmt_value
-        rng = f" &middot; Past year: {_esc(fmt_value(r.low_1y, r.kind, r.unit))} to {_esc(fmt_value(r.high_1y, r.kind, r.unit))}"
+        rng = f" &middot; Past-year range: {_esc(fmt_value(r.low_1y, r.kind, r.unit))} to {_esc(fmt_value(r.high_1y, r.kind, r.unit))}"
     as_of = f"as of {r.as_of:%b %-d}" if r.as_of else ""
     ranges = ""
     if item.zones:
         on = f" (based on {item.metric_label})" if item.metric_label else ""
-        ranges = (f'<p style="margin:8px 0 2px;font-size:12px;font-weight:600;color:{INK}">Ranges to know{_esc(on)}</p>'
+        ranges = (f'<p style="margin:10px 0 4px;font-size:12.5px;font-weight:700;color:{INK}">Ranges to know{_esc(on)}</p>'
                   + "".join(_chip(zz.label, zz.tone, zz is z) for zz in item.zones))
+    p = 'style="margin:0 0 7px;font-size:14px;line-height:1.55;color:%s"' % INK
     return f"""
 <div style="padding:16px 0 12px;border-top:1px solid {LINE}">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-    <td style="font-size:15px;font-weight:700;color:{INK}">{_esc(r.name)} {badge}</td>
-    <td align="right" style="font-size:18px;font-weight:700;color:{INK};white-space:nowrap">{_esc(r.display_value)}</td>
+    <td style="font-size:16px;font-weight:700;color:{INK}">{_esc(r.name)} {badge}</td>
+    <td align="right" style="font-size:20px;font-weight:700;color:{INK};white-space:nowrap">{_esc(r.display_value)}</td>
   </tr></table>
-  <p style="margin:2px 0 8px;font-size:12px;color:{QUIET}">{_esc(as_of)}{(' &middot; ' + changes) if changes else ''}{rng}</p>
-  <p style="margin:0 0 6px;font-size:13.5px;line-height:1.5;color:{INK}"><b>What it is:</b> {_esc(what)}</p>
-  <p style="margin:0 0 6px;font-size:13.5px;line-height:1.5;color:{INK}"><b>What it means now:</b> {_esc(means_text(key, r, b))}</p>
-  {f'<p style="margin:0 0 6px;font-size:13.5px;line-height:1.5;color:{INK}"><b>Risk to watch:</b> {_esc(risk)}</p>' if risk else ''}
+  <p style="margin:2px 0 10px;font-size:12.5px;color:{QUIET}">{_esc(as_of)}{(' &middot; ' + changes) if changes else ''}{rng}</p>
+  {f'<p style="margin:0 0 9px;padding:8px 10px;background:#f4f5f7;border-left:4px solid {bl_color};font-size:15px;font-weight:700;line-height:1.45;color:{bl_color}">Bottom line: {_esc(bl)}</p>' if bl else ''}
+  <p {p}><b>What it is:</b> {_esc(what)}</p>
+  <p {p}><b>What it means now:</b> {_esc(means_text(key, r, b))}</p>
+  {f'<p {p}><b>Risk to watch:</b> {_esc(risk)}</p>' if risk else ''}
   {ranges}
 </div>"""
 
@@ -426,31 +621,44 @@ def build_chart(spec: ChartSpec, b: Bundle) -> Optional[bytes]:
         if spec.index:
             pts = index_to_100(pts, start)
         lines.append(Line(label, pts))
+    bands = []
+    if spec.zones_key and spec.zones_key in ITEMS and ITEMS[spec.zones_key].metric == "value":
+        for z in ITEMS[spec.zones_key].zones:
+            if z.tone in ("watch", "risk"):
+                bands.append(Band(z.lo, z.hi, z.tone, f"{TONE_WORD[z.tone]}: {_zone_short(z)}"))
+    fed = None
+    if spec.fed_band:
+        top, bot = b.readings.get("DFEDTARU"), b.readings.get("DFEDTARL")
+        if top and bot and top.ok and bot.ok:
+            fed = (bot.points, top.points, "Fed target range")
     try:
-        return line_chart(lines, spec.kind, start, zero_line=spec.zero, ref_line=spec.ref, step=spec.step)
+        return line_chart(lines, spec.kind, start, zero_line=spec.zero, ref_line=spec.ref, step=spec.step,
+                          bands=bands, range_band=fed)
     except Exception:
         return None
 
 
 def headline_bullets(b: Bundle) -> list[tuple[str, str]]:
-    """The week in one page: anything in a risk or watch range, plus essentials."""
+    """Today at a glance: anything in a Risk or Watch range, plus essentials."""
     out: list[tuple[str, str]] = []
     top = _r(b, "DFEDTARU")
     if top:
         out.append(("info", means_fed(top, b)))
     parts = []
     for k, label in (("SP500", "S&P 500"), ("DJIA", "Dow"), ("NASDAQCOM", "Nasdaq")):
-        r = _r(b, k)
-        if r and r.changes.get("week") is not None:
-            parts.append(f"{label} {r.change_text('week')}")
+        p = _pct_since(_r(b, k), "last")
+        if p is not None:
+            parts.append(f"{label} {'up' if p > 0 else 'down'} {abs(p):.1f}%" if abs(p) >= 0.05 else f"{label} flat")
     ten = _r(b, "DGS10")
-    if ten and ten.changes.get("week") is not None:
-        parts.append(f"10-year Treasury {ten.display_value} ({ten.change_text('week')})")
+    if ten and ten.changes.get("last") is not None:
+        parts.append(f"10-year Treasury {ten.display_value} ({ten.change_text('last')})")
     if parts:
-        out.append(("info", "This week: " + ", ".join(parts) + "."))
+        day = next((b.readings[k].as_of for k in ("SP500", "DGS10") if _r(b, k)), None)
+        out.append(("info", f"Markets{f' on {day:%A}' if day else ''}: " + ", ".join(parts) + "."))
+    risks, watches = [], []
     for f in b.flags:
         if f.level == "watch":
-            out.append(("watch", f.text))
+            watches.append(f.text)
     flagged = {k for f in b.flags for k in f.keys}
     for key, item in ITEMS.items():
         r = b.readings.get(key)
@@ -458,80 +666,93 @@ def headline_bullets(b: Bundle) -> list[tuple[str, str]]:
             continue
         z = current_zone(item, r)
         if z and z.tone in ("watch", "risk"):
-            out.append((z.tone, f"{r.name} is {r.display_value}: {z.label.split(': ')[-1]}."))
+            bl, _ = bottom_line(key, r, b)
+            (risks if z.tone == "risk" else watches).append(f"{r.name}: {bl}")
     for f in b.failures.failures:
         if (b.today - f.fail_date).days <= 7:
-            out.append(("risk", f"The FDIC closed {f.name} ({f.city_state}) on {f.fail_date:%b %-d}, with "
-                                f"{fmt_thousands(f.deposits_thousands)} in deposits. Check whether it was in IntraFi's network."))
+            risks.append(f"The FDIC closed {f.name} ({f.city_state}) on {f.fail_date:%b %-d}, with "
+                         f"{fmt_thousands(f.deposits_thousands)} in deposits. Check whether it was in IntraFi's network.")
+    out += [("risk", t) for t in risks] + [("watch", t) for t in watches]
     if not b.failures.error:
         ytd = [f for f in b.failures.failures if f.fail_date.year == b.today.year]
         out.append(("info", f"Bank failures so far in {b.today.year}: {len(ytd)}"
                             + (f" (most recent: {ytd[0].name}, {ytd[0].fail_date:%b %-d})." if ytd else ".")))
-    if not any(t in ("watch", "risk") for t, _ in out):
-        out.append(("ok", "Nothing is in a watch or risk range this week."))
+    if not risks and not watches:
+        out.append(("ok", "Nothing is in a Watch or Risk range today."))
     return out
 
 
-def render(b: Bundle) -> tuple[str, str, dict[str, bytes], str]:
-    """Returns (html, text, images by content-id, subject)."""
+def render(b: Bundle, full: bool = False) -> tuple[str, str, dict[str, bytes], str]:
+    """Returns (html, text, images by content-id, subject). `full` is the Monday
+    edition: every chart plus what-it-is and risk notes for each item."""
     images: dict[str, bytes] = {}
     bullets = headline_bullets(b)
     color = {"risk": RISK_C, "watch": WATCH_C}
-    inner = ('<h2 style="margin:22px 0 8px;font-size:18px;color:%s">The week in one page</h2>' % INK
-             + '<ul style="margin:0;padding-left:20px;font-size:14px;line-height:1.55">'
+    inner = ('<h2 style="margin:22px 0 8px;font-size:19px;color:%s">Today at a glance</h2>' % INK
+             + '<ul style="margin:0;padding-left:20px;font-size:14.5px;line-height:1.55">'
              + "".join(f'<li style="margin:0 0 8px;color:{color.get(t, INK)}">'
                        f'{"<b>" + TONE_WORD[t] + ":</b> " if t in color else ""}{_esc(x)}</li>' for t, x in bullets)
              + "</ul>")
-    inner += (f'<p style="margin:10px 0 0;font-size:12px;line-height:1.5;color:{QUIET}">"Points" means percentage points '
-              "(0.25 points = 25 basis points). Ranges to know are general rules of thumb for context, not official thresholds. "
-              "Bank deposit rates are FDIC national averages.</p>")
+    inner += (f'<p style="margin:10px 0 0;font-size:12.5px;line-height:1.5;color:{QUIET}">'
+              "Green = Normal, amber = Watch, red = Risk (shaded the same way on charts). \"Points\" = percentage points "
+              "(0.25 = 25 basis points). Ranges are rules of thumb, not official thresholds. "
+              + ("" if full else "Full explanations of every item are in Monday's edition.") + "</p>")
     n = 0
     for sec in SECTIONS:
-        inner += (f'<h2 style="margin:34px 0 4px;font-size:19px;color:{INK};border-bottom:2px solid {INK};padding-bottom:4px">'
-                  f'{_esc(sec.title)}</h2><p style="margin:0 0 10px;font-size:13px;color:{QUIET}">{_esc(sec.intro)}</p>')
+        inner += (f'<h2 style="margin:36px 0 4px;font-size:20px;color:{INK};border-bottom:2px solid {INK};padding-bottom:4px">'
+                  f'{_esc(sec.title)}</h2><p style="margin:0 0 6px;font-size:13px;color:{QUIET}">{_esc(sec.intro)}</p>')
         for spec in sec.charts:
+            if not full and not spec.daily:
+                continue
             png = build_chart(spec, b)
-            if png:
-                n += 1
-                cid = f"chart{n}"
-                images[cid] = png
-                inner += (f'<p style="margin:10px 0 2px;font-size:13px;font-weight:600;color:{INK}">{_esc(spec.title)}</p>'
-                          f'<img src="cid:{cid}" width="624" alt="{_esc(spec.title)} chart" '
-                          f'style="display:block;width:100%;max-width:624px;height:auto;border:0;margin:0 0 4px">')
+            if not png:
+                continue
+            n += 1
+            cid = f"chart{n}"
+            images[cid] = png
+            take = spec.takeaway(b) or ""
+            inner += (f'<p style="margin:14px 0 2px;font-size:16px;font-weight:700;line-height:1.4;color:{INK}">{_esc(take)}</p>'
+                      f'<p style="margin:0 0 4px;font-size:12.5px;color:{QUIET}">{_esc(spec.subtitle)}</p>'
+                      f'<img src="cid:{cid}" width="624" alt="{_esc(take)}" '
+                      f'style="display:block;width:100%;max-width:624px;height:auto;border:0;margin:0 0 6px">')
         for key in sec.items:
-            inner += item_card(key, b)
+            inner += item_card(key, b) if full else item_card_short(key, b)
     if b.calendar.events:
-        inner += (f'<h2 style="margin:34px 0 8px;font-size:19px;color:{INK};border-bottom:2px solid {INK};padding-bottom:4px">'
-                  "The week ahead</h2><ul style=\"margin:0;padding-left:20px;font-size:14px;line-height:1.55\">"
+        inner += (f'<h2 style="margin:36px 0 8px;font-size:20px;color:{INK};border-bottom:2px solid {INK};padding-bottom:4px">'
+                  "Coming up (next 7 days)</h2><ul style=\"margin:0;padding-left:20px;font-size:14.5px;line-height:1.6\">"
                   + "".join(f"<li><b>{e.when:%a %b %-d}</b> &middot; {_esc(e.label)}</li>" for e in b.calendar.events) + "</ul>")
-    html = page("Weekly Rates & Markets", f"Week of {b.today:%B %-d, %Y}", inner, b)
+    html = page("Rates & Markets" + (" · Weekly edition" if full else ""), f"{b.today:%A, %B %-d, %Y}", inner, b)
 
     lines = []
     if b.sample:
         lines.append("*** SAMPLE DATA FOR PREVIEW ONLY - NOT REAL RATES ***\n")
-    lines += [f"WEEKLY RATES & MARKETS - week of {b.today:%B %-d, %Y}", "(Charts are in the HTML version.)", "",
-              "THE WEEK IN ONE PAGE"]
+    lines += [f"RATES & MARKETS - {b.today:%A, %B %-d, %Y}", "(Charts are in the HTML version.)", "", "TODAY AT A GLANCE"]
     lines += [f"  - {TONE_WORD[t].upper() + ': ' if t in color else ''}{x}" for t, x in bullets]
     for sec in SECTIONS:
-        lines += ["", sec.title.upper()]
+        lines += ["", sec.title.upper()] + [f"  > {spec.takeaway(b)}" for spec in sec.charts
+                                            if (full or spec.daily) and spec.takeaway(b)]
         for key in sec.items:
             r = b.readings.get(key)
             if not r or not r.ok:
                 continue
             what, risk = _meta(key)
             item = ITEMS.get(key, Item(key))
-            lines += [f"  {r.name}: {r.display_value}",
-                      f"    What it is: {what}", f"    What it means now: {means_text(key, r, b)}"]
-            if risk:
-                lines.append(f"    Risk to watch: {risk}")
+            bl, _ = bottom_line(key, r, b)
+            lines += [f"  {r.name}: {r.display_value}"]
+            if bl:
+                lines.append(f"    Bottom line: {bl}")
+            if full:
+                lines += [f"    What it is: {what}", f"    What it means now: {means_text(key, r, b)}"]
+                if risk:
+                    lines.append(f"    Risk to watch: {risk}")
             if item.zones:
-                lines.append("    Ranges to know: " + "; ".join(z.label for z in item.zones))
+                lines.append("    Ranges to know: " + "; ".join(zz.label for zz in item.zones))
     if b.calendar.events:
-        lines += ["", "THE WEEK AHEAD"] + [f"  {e.when:%a %b %-d}: {e.label}" for e in b.calendar.events]
-    lines += ["", "Ranges are rules of thumb, not official thresholds. Data: FRED, FDIC. Not investment advice."]
+        lines += ["", "COMING UP"] + [f"  {e.when:%a %b %-d}: {e.label}" for e in b.calendar.events]
+    lines += ["", "Ranges are rules of thumb, not official thresholds. Data: FRED, FDIC, DeFiLlama. Not investment advice."]
     text = "\n".join(lines)
 
     top_issue = next((x for t, x in bullets if t in ("risk", "watch")), None)
-    tail = (top_issue.split(". ")[0].rstrip(".")[:80] if top_issue else "nothing in a watch or risk range")
-    subject = f"Weekly Rates & Markets, {b.today:%b %-d}: {tail}"
+    tail = (top_issue.split(". ")[0].rstrip(".")[:80] if top_issue else "nothing in a Watch or Risk range")
+    subject = f"Rates & Markets{' (weekly)' if full else ''}, {b.today:%a %b %-d}: {tail}"
     return html, text, images, subject

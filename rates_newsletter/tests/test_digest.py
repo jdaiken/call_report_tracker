@@ -73,16 +73,19 @@ def test_zones_value_yoy_and_drawdown():
     assert z.label == "Shrinking" and z.tone == "risk"
     sp = analysis.build_reading(SERIES_BY_ID["SP500"], obs("SP500", [(TODAY - timedelta(days=100), 6000.0), (TODAY, 5100.0)]), TODAY)
     assert "correction" in current_zone(ITEMS["SP500"], sp).label
+    from rates_digest.newsletter import bottom_line
     b = Bundle(TODAY, {"SP500": sp}, [])
-    assert "15.0% below its past-year high" in means_text("SP500", sp, b)
+    assert "15.0% below its past-year high" in bottom_line("SP500", sp, b)[0]
+    assert "Down 15.0% since the previous reading" in means_text("SP500", sp, b)
 
 
 def test_means_text_uses_context():
     data = {"DGS2": obs("DGS2", [(TODAY - timedelta(days=1), 3.4), (TODAY, 3.3)]),
             "EFFR": obs("EFFR", [(TODAY - timedelta(days=1), 3.88), (TODAY, 3.87)])}
     readings = analysis.build_all(data, TODAY)
-    text = means_text("DGS2", readings["DGS2"], Bundle(TODAY, readings, []))
-    assert "markets expect the Fed to cut" in text
+    from rates_digest.newsletter import bottom_line
+    bl, _ = bottom_line("DGS2", readings["DGS2"], Bundle(TODAY, readings, []))
+    assert "markets expect the Fed to cut" in bl
 
 
 def test_failed_series_does_not_break_newsletter():
@@ -93,19 +96,27 @@ def test_failed_series_does_not_break_newsletter():
     assert "Did not load this week" in html and "VIX" in html and images
 
 
+def test_short_daily_edition():
+    html, text, images, subject = render(sample_bundle(TODAY))
+    assert len(images) == sum(1 for s in SECTIONS for c in s.charts if c.daily)
+    assert "Today at a glance" in html and "Ranges" in html and "What it is:" not in html
+    assert "Monday's edition" in html and subject.startswith("Rates & Markets, ")
+
+
 def test_full_render_with_sample_data():
     b = sample_bundle(TODAY)
-    html, text, images, subject = render(b)
+    html, text, images, subject = render(b, full=True)
     assert len(images) == sum(len(s.charts) for s in SECTIONS)
     assert all(png[:4] == b"\x89PNG" for png in images.values())
     for cid in images:
         assert f'src="cid:{cid}"' in html
-    for key in ("What it is:", "What it means now:", "Risk to watch:", "Ranges to know", "The week in one page"):
+    for key in ("What it is:", "What it means now:", "Risk to watch:", "Ranges to know", "Today at a glance"):
         assert key in html
     for s in SERIES:
         if s.id not in ("DFEDTARL", "IORB"):   # shown via other items
             assert htmllib.escape(s.name, quote=True) in html, s.name
-    assert subject.startswith("Weekly Rates & Markets") and "SAMPLE DATA" in html and "SAMPLE DATA" in text
+    assert "Bottom line:" in html
+    assert subject.startswith("Rates & Markets (weekly)") and "SAMPLE DATA" in html and "SAMPLE DATA" in text
 
 
 def test_parse_fdic_failures_and_headline():
@@ -150,7 +161,7 @@ def test_run_sample_writes_preview(tmp_path):
     spec = importlib.util.spec_from_file_location("rates_run", pathlib.Path(__file__).parents[1] / "run.py")
     run = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(run)
-    assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
+    assert run.main(["--sample", "--full", "--out-dir", str(tmp_path)]) == 0
     assert (tmp_path / "newsletter.html").exists() and (tmp_path / "chart1.png").exists()
 
 
@@ -163,6 +174,16 @@ def test_stablecoins_parse_reading_and_section():
     r = stablecoin_reading(pts, pts[-1][0])
     assert r.display_value == "$310 billion"
     assert current_zone(ITEMS["STABLECOINS"], r).label.startswith("Above 75%")
-    html, _, _, _ = render(sample_bundle(TODAY))
+    html, _, _, _ = render(sample_bundle(TODAY), full=True)
     assert "Stablecoins in circulation" in html and "GENIUS Act" in html
     assert not stablecoin_reading([], TODAY, "HTTP 500").ok
+
+
+def test_bottom_lines_are_specific():
+    from rates_digest.newsletter import bottom_line
+    readings = analysis.build_all(sample_observations(TODAY), TODAY)
+    b = Bundle(TODAY, readings, [])
+    bl, tone = bottom_line("VIXCLS", readings["VIXCLS"], b)
+    assert "range" in bl and tone in ("ok", "watch", "risk")
+    bl, _ = bottom_line("SOFR", readings["SOFR"], b)
+    assert "reserves" in bl

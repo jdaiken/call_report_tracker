@@ -1,19 +1,18 @@
-# Weekly Rates & Markets
+# Rates & Markets
 
-One email every Monday morning with the essential rates and market measures,
-charts for each area, and for every item:
+Weekday morning emails (about 8:45am Eastern) with the essential rates and
+market measures:
 
-- **What it is**: one plain-English sentence
-- **What it means now**: today's reading, its trend, and what it signals
-- **Risk to watch**: why it matters for banks and IntraFi's network
-- **Ranges to know**: rule-of-thumb zones (Normal / Watch / Risk) with the
-  current one highlighted, plus the actual past-year range
+- **Tuesday–Friday, short:** "Today at a glance," 11 charts each headed by a
+  plain-English takeaway, and a compact card per item: value, **Bottom line**,
+  recent changes, and its ranges on one line with the current one highlighted.
+- **Monday, full edition:** all 14 charts, plus **What it is**, **What it means
+  now** and **Risk to watch** for every item, with the ranges shown in full.
 
-The top of the email, "The week in one page," lists anything sitting in a Watch
-or Risk range, Fed actions, bank failures, and how markets moved.
-
-Ranges are general rules of thumb for context, not official thresholds. They
-live in `ITEMS` in `rates_digest/newsletter.py` and are easy to adjust.
+Charts shade the Watch (amber) and Risk (red) ranges, so you can see how close a
+reading is to trouble, and label every line at its end. Ranges are general
+rules of thumb for context, not official thresholds; they live in `ITEMS` in
+`rates_digest/newsletter.py` and are easy to adjust.
 
 ## What it tracks
 
@@ -46,7 +45,7 @@ Secrets on this repo (Settings → Secrets and variables → Actions):
 `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` (shared with the FFIEC monitor),
 `FRED_API_KEY`, and optionally `ALERT_RECIPIENT`.
 
-Actions → *Weekly Rates & Markets* → *Run workflow*:
+Actions → *Rates & Markets* → *Run workflow* (pick the edition: auto, short or full):
 - `check_series`: lists every source as OK or failed (also shown as notes on the run page)
 - `dry_run`: builds the email and attaches it as a downloadable artifact
 - `send`: emails it now
@@ -55,7 +54,8 @@ Actions → *Weekly Rates & Markets* → *Run workflow*:
 
 ```bash
 pip install -r requirements.txt
-python run.py --sample          # made-up data, no network; writes newsletter.html + charts
+python run.py --sample --short  # made-up data, no network; writes newsletter.html + charts
+python run.py --sample --full   # the Monday edition
 python run.py --check-series    # live: does every source load?
 python -m pytest -q
 ```

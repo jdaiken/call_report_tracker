@@ -1,6 +1,8 @@
-"""Weekly rates & markets newsletter (sent Monday mornings).
+"""Rates & markets newsletter: short weekday email, full edition on Mondays.
 
-  python run.py                 build from live data and email it
+  python run.py                 build from live data and email it (full edition if Monday)
+  python run.py --full          force the full edition (all charts + explanations)
+  python run.py --short         force the short daily edition
   python run.py --dry-run       build from live data, write HTML/text/PNGs, don't email
   python run.py --sample        made-up sample data (no network), write preview files
   python run.py --check-series  test that every data source loads, then exit
@@ -66,6 +68,8 @@ def check_sources(b: Bundle) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--full", action="store_true", help="full edition (default on Mondays)")
+    ap.add_argument("--short", action="store_true", help="short daily edition (default Tuesday-Friday)")
     ap.add_argument("--dry-run", action="store_true", help="write files instead of emailing")
     ap.add_argument("--sample", action="store_true", help="use made-up sample data (implies --dry-run)")
     ap.add_argument("--check-series", action="store_true", help="report which sources load, then exit")
@@ -88,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Only %d of %d readings loaded -- not sending a mostly empty email.", loaded, len(b.readings))
         return 1
 
-    html_body, text_body, images, subject = render(b)
+    full = args.full or (not args.short and today.weekday() == 0)
+    html_body, text_body, images, subject = render(b, full=full)
 
     if args.dry_run or args.sample:
         out = Path(args.out_dir)
