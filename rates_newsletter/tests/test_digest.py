@@ -202,3 +202,19 @@ def test_published_failed_bank_list_fills_api_lag():
                                              "FAILDATE": "7/17/2026", "QBFDEP": "100000"}}]})
     merged = merge_failures(api, listed)
     assert len(merged) == 2 and merged[0].name == "Nano Banc" and merged[1].deposits_thousands == 100000
+
+
+def test_every_chart_links_all_its_sources_in_pdf_and_email():
+    from pypdf import PdfReader
+    import io
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    html = render_html(rep, b)
+    pdf = render_pdf(rep)
+    uris = {a.get_object()["/A"]["/URI"] for pg in PdfReader(io.BytesIO(pdf)).pages
+            for a in pg.get("/Annots", []) if "/A" in a.get_object()}
+    for p in rep.all_panels:
+        assert p.sources
+        for _, u in p.sources:
+            assert u in uris and u in html, (p.title, u)
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5

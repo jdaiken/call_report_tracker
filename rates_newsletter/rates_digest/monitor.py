@@ -20,7 +20,7 @@ from .charts import Band, Line, index_to_100, line_chart
 from .email_report import Bundle, _esc
 from .extras import FOMC_DECISION_DAYS, Event, Failure, deposits_note, fmt_thousands
 from .newsletter import (FDIC_FAILURES_URL, ITEMS, OK_C, RISK_C, TONE_COLOR, TONE_WORD, WATCH_C,
-                         _pct, _r, current_zone, metric_value, sources_for)
+                         _pct, _r, current_zone, metric_value, sources_for, DEFILLAMA_URL)
 
 NAME = "Rates & Deposit Risk Monitor"
 INK, MUTED, RULE, PANEL_BG, PAGE_BG, LINK = "#14181f", "#5b626c", "#dde0e4", "#ffffff", "#eef0f3", "#1d5fbf"
@@ -90,7 +90,7 @@ class PanelSpec:
     step: bool = False
     fed_band: bool = False
     ref: Optional[tuple[float, str]] = None
-    height: float = 4.05              # chart height in inches (page 5 runs shorter)
+    height: float = 3.8               # chart height in inches (page 5 runs shorter)
 
 
 @dataclass
@@ -130,9 +130,9 @@ CHART_PAGES = [
     ]),
 ]
 LAST_PAGE_PANELS = [
-    PanelSpec("DGS10", "10-year Treasury", [("10-year", "DGS10")], "pct", 3, height=3.45),
-    PanelSpec("curve_10y_2y", "Yield curve (10y − 2y)", [("Curve", "curve_10y_2y")], "points", 3, zero=True, height=3.45),
-    PanelSpec("VIXCLS", "Market volatility (VIX)", [("VIX", "VIXCLS")], "level", 2, height=3.45),
+    PanelSpec("DGS10", "10-year Treasury", [("10-year", "DGS10")], "pct", 3, height=3.2),
+    PanelSpec("curve_10y_2y", "Yield curve (10y − 2y)", [("Curve", "curve_10y_2y")], "points", 3, zero=True, height=3.2),
+    PanelSpec("VIXCLS", "Market volatility (VIX)", [("VIX", "VIXCLS")], "level", 2, height=3.2),
 ]
 
 # Summary table order, grouped as the pages are.
@@ -181,6 +181,19 @@ class Panel:
     signal: str
     png: Optional[bytes]
     url: Optional[str]
+    sources: list[tuple[str, str]] = field(default_factory=list)   # (short label, url) for every series charted
+
+
+def panel_sources(spec: PanelSpec) -> list[tuple[str, str]]:
+    """Every series behind a panel's number and chart, as (FRED id or 'DeFiLlama', url), no repeats."""
+    out: list[tuple[str, str]] = []
+    keys = [spec.key] + [k for _, k in spec.lines] + (["DFEDTARL"] if spec.fed_band else [])
+    for k in keys:
+        for label, url in sources_for(k):
+            short = "DeFiLlama" if url == DEFILLAMA_URL else label.rsplit("(", 1)[-1].rstrip(")")
+            if (short, url) not in out:
+                out.append((short, url))
+    return out
 
 
 @dataclass
@@ -263,7 +276,7 @@ def _chart(spec: PanelSpec, b: Bundle) -> Optional[bytes]:
 
 def _panel(spec: PanelSpec, b: Bundle, n: int) -> Panel:
     row = _row(spec.key, b)
-    return Panel(spec.key, f"chart{n}", spec.title, row.reading, row.tone, row.signal, _chart(spec, b), row.url)
+    return Panel(spec.key, f"chart{n}", spec.title, row.reading, row.tone, row.signal, _chart(spec, b), row.url, panel_sources(spec))
 
 
 def build_report(b: Bundle) -> Report:
@@ -350,7 +363,10 @@ def _panel_html(p: Panel, image_src: Callable[[str], str]) -> str:
             f'<td style="font-size:12.5px;font-weight:700;color:{INK}">{_esc(p.title)}</td>'
             f'<td align="right">{_badge(p.tone)}</td></tr></table>'
             f'<div style="font-size:22px;font-weight:700;color:{INK};margin-top:4px;letter-spacing:-.01em">{_link(p.reading, p.url)}</div>'
-            f'<div style="font-size:11.5px;color:{MUTED};margin-top:2px;line-height:1.35">{_esc(p.signal)}</div>{img}</td>')
+            f'<div style="font-size:11.5px;color:{MUTED};margin-top:2px;line-height:1.35">{_esc(p.signal)}</div>{img}'
+            + (f'<div style="font-size:10.5px;color:{MUTED};margin-top:4px">Source: '
+               + " · ".join(_link(lbl, u, LINK) for lbl, u in p.sources) + "</div>" if p.sources else "")
+            + "</td>")
 
 
 def _grid(panels: list[Panel], image_src: Callable[[str], str]) -> str:

@@ -64,8 +64,13 @@ def _p(text: str, style: str) -> Paragraph:
     return Paragraph(text, S[style])
 
 
-def _link(text: str, url: str | None, color: str = "#14181f") -> str:
-    return f'<link href="{escape(url)}" color="{color}">{escape(text)}</link>' if url else escape(text)
+def _link(text: str, url: str | None, color: str = LINK, underline: bool = True) -> str:
+    """Clickable text, blue so it is obvious it opens the source."""
+    if not url:
+        return escape(text)
+    body = f"<u>{escape(text)}</u>" if underline else escape(text)
+    return f'<link href="{escape(url)}" color="{color}">{body}</link>'
+
 
 
 def _badge(tone: str) -> Table:
@@ -97,8 +102,10 @@ def _panel(p: Panel, width: float = CELL_W, scale: float = 1.0) -> Table:
     head = Table([[_p(escape(p.title), "ptitle"), _badge(p.tone)]], colWidths=[inner - 0.62 * inch, 0.62 * inch])
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
                               ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    content = [head, Spacer(1, 3), _p(_link(p.reading, p.url), "big"), _p(escape(p.signal), "sig"), Spacer(1, 4)]
+    content = [head, Spacer(1, 3), _p(_link(p.reading, p.url, underline=False), "big"), _p(escape(p.signal), "sig"), Spacer(1, 4)]
     content.append(_img(p.png, inner, scale) if p.png else _p("Chart unavailable", "small"))
+    if p.sources:
+        content += [Spacer(1, 2), _p("Source: " + " · ".join(_link(lbl, u) for lbl, u in p.sources), "small")]
     t = Table([[content]], colWidths=[width])
     t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
