@@ -54,7 +54,7 @@ S = {
     "num": _st("num", 8.5, alignment=TA_RIGHT),
     "numb": _st("numb", 8.5, bold=True, alignment=TA_RIGHT),
     "badge": _st("badge", 6.5, colors.white, bold=True),
-    "tile_n": _st("tile_n", 18, bold=True),
+    "tile_n": _st("tile_n", 16, bold=True),
     "body": _st("body", 9),
     "small": _st("small", 7.5, MUTED),
 }
@@ -134,13 +134,27 @@ def _summary(rep: Report) -> list:
                                        ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
     row = Table([[tiles[0], "", tiles[1], "", tiles[2]]], colWidths=[(WIDTH - 2 * GAP) / 3, GAP] * 2 + [(WIDTH - 2 * GAP) / 3])
     row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    story += [row, Spacer(1, 9), _p("KEY SIGNALS", "label"), Spacer(1, 2)]
-    if rep.signals:
+    story += [row, Spacer(1, 9)]
+    if rep.summary:
+        inner = [_p("WHAT'S GOING ON", "label"), Spacer(1, 2), Paragraph(escape(rep.summary), ParagraphStyle("summ", parent=S["body"], fontSize=8.7, leading=11.6))]
+        if rep.summary_by == "Claude":
+            inner += [Spacer(1, 2), _p("Written by Claude from the figures in this report.", "small")]
+        box = Table([[inner]], colWidths=[WIDTH])
+        box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f6f8")),
+                                 ("LINEBEFORE", (0, 0), (0, -1), 2.5, INK),
+                                 ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                                 ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+        story += [box, Spacer(1, 8)]
+    # With the plain-English summary on the page, the separate signal list is left to the email (space).
+    if not rep.summary:
+        story += [_p("KEY SIGNALS", "label"), Spacer(1, 2)]
+    if rep.signals and not rep.summary:
         for t, x in rep.signals[:5]:
             story.append(Paragraph(f'<font color="{TONE_COLOR[t]}">●</font>  {escape(x)}', _st(f"s{t}", 8.5, leftIndent=2, spaceAfter=1)))
-    else:
+    elif not rep.summary:
         story.append(_p("No measures in a Watch or Risk range.", "body"))
-    story.append(Spacer(1, 8))
+    if not rep.summary:
+        story.append(Spacer(1, 8))
 
     hdr = [_p("MEASURE", "label"), _p("LATEST", "label"), _p("LAST", "label"), _p("1 MO", "label"), _p("1 YR", "label"),
            _p("STATUS", "label")]
@@ -148,7 +162,7 @@ def _summary(rep: Report) -> list:
         c.style = ParagraphStyle("lr", parent=S["label"], alignment=TA_RIGHT)
     rows, styles = [hdr], [("LINEBELOW", (0, 0), (-1, 0), 1, INK), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                            ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                           ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                           ("TOPPADDING", (0, 0), (-1, -1), 1.4), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.4),
                            ("ALIGN", (5, 1), (5, -1), "RIGHT")]
     for title, grp in rep.groups:
         rows.append([_p(escape(title.upper()), "label"), "", "", "", "", ""])

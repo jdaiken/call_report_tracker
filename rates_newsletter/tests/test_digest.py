@@ -218,3 +218,29 @@ def test_every_chart_links_all_its_sources_in_pdf_and_email():
         for _, u in p.sources:
             assert u in uris and u in html, (p.title, u)
     assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5
+
+
+def test_plain_english_summary():
+    from unittest import mock
+    from rates_digest import narrative
+    b = sample_bundle(TODAY)
+    rep = build_report(b)
+    assert rep.summary and rep.summary_by == "rules"          # sample data never calls the API
+    assert rep.summary in render_html(rep, b) or rep.summary.replace("'", "&#x27;") in render_html(rep, b)
+    data = narrative.facts(rep)
+    # Claude's paragraph is used only when every number in it is in today's data
+    good = f"The Fed's range is {rep.groups[0][1][0].reading}. Things look calm."
+    bad = "Deposits fell 37.25% this week."
+    for text, expect in ((good, good), (bad, None)):
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"content": [{"type": "text", "text": text}]}
+        resp.raise_for_status.return_value = None
+        with mock.patch.object(narrative.requests, "post", return_value=resp) as post:
+            assert narrative.claude_summary(rep, "key") == expect
+            assert post.call_args.kwargs["headers"]["x-api-key"] == "key"
+            assert data in post.call_args.kwargs["json"]["messages"][0]["content"]
+    with mock.patch.object(narrative.requests, "post", side_effect=OSError("down")):
+        assert narrative.claude_summary(rep, "key") is None
+    # the longest allowed summary still fits the five pages
+    rep.summary, rep.summary_by = "Word " * (narrative.MAX_CHARS // 5), "Claude"
+    assert len(re.findall(rb"/Type /Page[^s]", render_pdf(rep))) == 5

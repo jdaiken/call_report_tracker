@@ -214,6 +214,8 @@ class Report:
     sources: list[tuple[str, list[tuple[str, str]]]]
     sample: bool
     missing: list[str] = field(default_factory=list)
+    summary: str = ""                 # plain-English paragraph for page 1
+    summary_by: str = ""              # "Claude" or "rules"
 
     @property
     def all_panels(self) -> list[Panel]:
@@ -331,8 +333,11 @@ def build_report(b: Bundle) -> Report:
               else f"{counts['watch']} watch" if counts["watch"] else "all normal")
     missing = [r.name for r in rows if not r.loaded]
     missing += [lbl for lbl, err in (("bank failures", b.failures.error), ("calendar", b.calendar.error)) if err]
-    return Report(b.today, through, f"{NAME} · {b.today:%a %b %-d} · {status}", counts, signals, groups, rates,
-                  rates_panels, pages, last_panels, ytd, recent, b.calendar.events[:5], sources, b.sample, missing)
+    rep = Report(b.today, through, f"{NAME} · {b.today:%a %b %-d} · {status}", counts, signals, groups, rates,
+                 rates_panels, pages, last_panels, ytd, recent, b.calendar.events[:5], sources, b.sample, missing)
+    from .narrative import write_summary
+    rep.summary, rep.summary_by = write_summary(rep)
+    return rep
 
 
 # --------------------------------------------------------------------- email
@@ -411,6 +416,12 @@ def render_html(rep: Report, b: Bundle, image_src: Callable[[str], str] = lambda
     body += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
              f'{_tile("RISK", rep.counts["risk"], "risk")}<td width="10"></td>{_tile("WATCH", rep.counts["watch"], "watch")}'
              f'<td width="10"></td>{_tile("NORMAL", rep.counts["ok"], "ok")}</tr></table></td></tr>')
+    if rep.summary:
+        by = (f'<div style="font-size:10.5px;color:{MUTED};margin-top:6px">Written by Claude from the figures in this report.</div>'
+              if rep.summary_by == "Claude" else "")
+        body += (f'<tr><td style="padding:16px 0 0"><div style="background:#f5f6f8;border-left:3px solid {INK};padding:10px 12px">'
+                 f'<div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
+                 f'<div style="font-size:13.5px;line-height:1.5;color:{INK};margin-top:4px">{_esc(rep.summary)}</div>{by}</div></td></tr>')
     body += (f'<tr><td style="padding:16px 0 4px;font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">KEY SIGNALS</td></tr>'
              f'<tr><td><table role="presentation" cellpadding="0" cellspacing="0">{sig}</table></td></tr>')
     body += f'<tr><td style="padding-top:14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{table}</table></td></tr>'
@@ -485,6 +496,8 @@ def render_text(rep: Report) -> str:
         out.append("SAMPLE DATA - NOT REAL RATES\n")
     out += [f"{NAME.upper()} - {rep.today:%A, %B %-d, %Y}", "",
             f"Risk {rep.counts['risk']} | Watch {rep.counts['watch']} | Normal {rep.counts['ok']}", ""]
+    if rep.summary:
+        out += ["WHAT'S GOING ON", rep.summary, ""]
     out += [f"* {TONE_WORD[t]}: {x}" for t, x in rep.signals[:6]] or ["No measures in a Watch or Risk range."]
     for title, rows in rep.groups:
         out += ["", title.upper()]

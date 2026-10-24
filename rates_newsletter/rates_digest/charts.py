@@ -193,8 +193,21 @@ def line_chart(lines: list[Line], kind: str, start: date, *, zero_line: bool = F
     ax.set_xlim(first_x, last_x + timedelta(days=int(span_days * room)))
 
     fig.canvas.draw()
+    # Always label the latest data point's date at the right end, so the chart visibly runs
+    # to the current date (regular ticks alone can make it look like data stops months ago).
     cutoff = mdates.date2num(last_x)
-    ax.set_xticks([t for t in ax.get_xticks() if t <= cutoff])
+    gap = span_days * (0.16 if compact else 0.1)
+    ticks = [t for t in ax.get_xticks() if t <= cutoff - gap]
+    fmt_regular = ax.xaxis.get_major_formatter()
+    labels = [fmt_regular(t) for t in ticks]
+    ticks.append(cutoff)
+    # Monthly/quarterly data is dated the 1st of its period, so show the month, not a day.
+    pts = sorted(lines[0].points)
+    coarse = len(pts) > 2 and (pts[-1][0] - pts[-3][0]).days > 40
+    labels.append(last_x.strftime("%b '%y") if span_days > 1500 or coarse else f"{last_x:%b} {last_x.day}")
+    ax.set_xticks(ticks)
+    ax.set_xticklabels(labels)
+    ax.get_xticklabels()[-1].set_fontweight("bold")
     fig.tight_layout(pad=0.4 if compact else 0.7)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=SURFACE)
