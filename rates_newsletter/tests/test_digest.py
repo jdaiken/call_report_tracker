@@ -19,7 +19,7 @@ def obs(sid, pts):
 def test_catalog_is_consistent():
     ids = [s.id for s in SERIES]
     assert len(ids) == len(set(ids))
-    known = set(ids) | {sp.key for sp in SPREADS}
+    known = set(ids) | {sp.key for sp in SPREADS} | {"STABLECOINS"}   # stablecoins come from DeFiLlama
     for sp in SPREADS:
         assert sp.a in SERIES_BY_ID and sp.b in SERIES_BY_ID
     for sec in SECTIONS:
@@ -152,3 +152,17 @@ def test_run_sample_writes_preview(tmp_path):
     spec.loader.exec_module(run)
     assert run.main(["--sample", "--out-dir", str(tmp_path)]) == 0
     assert (tmp_path / "newsletter.html").exists() and (tmp_path / "chart1.png").exists()
+
+
+def test_stablecoins_parse_reading_and_section():
+    from rates_digest.extras import parse_stablecoins
+    from rates_digest.newsletter import stablecoin_reading
+    pts = parse_stablecoins([{"date": "1761264000", "totalCirculatingUSD": {"peggedUSD": 3.1e11}},
+                             {"date": 1729728000, "totalCirculatingUSD": {"peggedUSD": 1.7e11}}, {"bad": 1}])
+    assert len(pts) == 2 and abs(pts[-1][1] - 310.0) < 1e-9
+    r = stablecoin_reading(pts, pts[-1][0])
+    assert r.display_value == "$310 billion"
+    assert current_zone(ITEMS["STABLECOINS"], r).label.startswith("Above 75%")
+    html, _, _, _ = render(sample_bundle(TODAY))
+    assert "Stablecoins in circulation" in html and "GENIUS Act" in html
+    assert not stablecoin_reading([], TODAY, "HTTP 500").ok

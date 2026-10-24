@@ -1,5 +1,5 @@
-"""Data that doesn't come from FRED: bank failures (FDIC) and the economic
-calendar (FRED release dates + the Fed's published FOMC schedule).
+"""Data that doesn't come from FRED: bank failures (FDIC), stablecoin supply
+(DeFiLlama) and the economic calendar (FRED release dates + the Fed's published FOMC schedule).
 
 Every function here returns a result object with an `error` field instead of
 raising. A source being down only removes its section from the email.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from .fetch import _get, _session
@@ -92,6 +92,42 @@ def fmt_thousands(v: Optional[float]) -> str:
     if dollars >= 1e9:
         return f"${dollars / 1e9:,.1f} billion"
     return f"${dollars / 1e6:,.0f} million"
+
+
+# --------------------------------------------------------------- stablecoins
+STABLECOIN_URL = "https://stablecoins.llama.fi/stablecoincharts/all"
+
+
+@dataclass
+class StablecoinResult:
+    points: list[tuple[date, float]] = field(default_factory=list)   # (date, $ billions)
+    error: Optional[str] = None
+
+
+def parse_stablecoins(payload: list) -> list[tuple[date, float]]:
+    """DeFiLlama: [{"date": unix seconds, "totalCirculatingUSD": {"peggedUSD": n}}, ...]"""
+    out = []
+    for row in payload or []:
+        try:
+            d = datetime.fromtimestamp(int(row["date"]), tz=timezone.utc).date()
+            usd = float(row["totalCirculatingUSD"]["peggedUSD"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((d, usd / 1e9))
+    out.sort()
+    return out
+
+
+def fetch_stablecoins() -> StablecoinResult:
+    try:
+        r = _get(_session(), STABLECOIN_URL, {})
+        pts = parse_stablecoins(r.json())
+        if not pts:
+            return StablecoinResult(error="no data in response")
+        return StablecoinResult(pts)
+    except Exception as e:
+        log.warning("Stablecoin data unavailable: %s", e)
+        return StablecoinResult(error=str(e))
 
 
 # ------------------------------------------------------------------ calendar

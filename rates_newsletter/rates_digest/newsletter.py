@@ -154,6 +154,17 @@ def means_deposits_small(r: Reading, b: Bundle) -> str:
     return f"Small and large banks are growing at about the same pace ({sg:+.1f}% vs {lg:+.1f}%)."
 
 
+def means_stablecoins(r: Reading, b: Bundle) -> str:
+    small = _r(b, "DPSSCBW027SBOG")
+    parts = []
+    if small:
+        parts.append(f"That is equal to about {r.value / small.value * 100:.1f}% of all deposits at small banks.")
+        if r.changes.get("year") is not None and small.changes.get("year") is not None:
+            parts.append(f"Over the past year stablecoins grew {r.change_size('year'):+.0f}% while small-bank deposits "
+                         f"changed {small.change_size('year'):+.1f}%.")
+    return " ".join(parts)
+
+
 def means_cre(r: Reading, b: Bundle) -> str:
     if not r.as_of:
         return ""
@@ -195,6 +206,9 @@ ITEMS: dict[str, Item] = {i.key: i for i in [
     Item("WRMFNS", [_z(None, 0.0, "Shrinking (money returning to banks)"), _z(0.0, 8.0, "0% to 8%: normal growth"),
                     _z(8.0, 15.0, "8% to 15%: fast, money leaving banks", "watch"), _z(15.0, None, "Above 15%: very fast", "risk")],
          "yoy", "growth over the past year"),
+    Item("STABLECOINS", [_z(None, 0.0, "Shrinking"), _z(0.0, 25.0, "0% to 25%: moderate growth"),
+                         _z(25.0, 75.0, "25% to 75%: fast growth", "watch"), _z(75.0, None, "Above 75%: very fast growth", "risk")],
+         "yoy", "growth over the past year", means_stablecoins),
     Item("H8B3094NSMA", [_z(None, -5.0, "Falling more than 5%: deposits covering needs"), _z(-5.0, 10.0, "-5% to +10%: stable"),
                          _z(10.0, 25.0, "+10% to +25%: rising reliance on borrowing", "watch"),
                          _z(25.0, None, "Above +25%: rapid rise", "risk")],
@@ -271,6 +285,9 @@ SECTIONS = [
                        [("Small banks", "DPSSCBW027SBOG"), ("Large banks", "DPSLCBW027SBOG"), ("Money market funds", "WRMFNS")],
                        "index", 1, index=True, ref=(100.0, ""))],
             ["DPSSCBW027SBOG", "DPSLCBW027SBOG", "WRMFNS"]),
+    Section("Stablecoins", "Digital dollars: the newest competitor for bank deposits.",
+            [ChartSpec("Stablecoins in circulation", [("Stablecoin supply", "STABLECOINS")], "billions", 3)],
+            ["STABLECOINS"]),
     Section("Bank funding stress",
             "Early warnings that banks are short of cash. Usually quiet; they matter when they move.",
             [ChartSpec("Small banks' borrowing (mostly FHLB advances)", [("Borrowings", "H8B3094NSMA")], "billions", 3),
@@ -293,8 +310,23 @@ SECTIONS = [
 ]
 
 
+STABLECOIN_WHAT = ("Total value of dollar-pegged stablecoins (such as USDT and USDC) in circulation, from DeFiLlama. "
+                   "They are crypto tokens backed mostly by Treasuries and cash, used like digital dollars.")
+STABLECOIN_RISK = ("Every dollar in a stablecoin is a dollar not sitting in a bank deposit. The GENIUS Act made them mainstream; "
+                   "if they start paying yield (directly or through loopholes), deposits could leak from community banks, "
+                   "shrinking the pool IntraFi's network moves.")
+
+
+def stablecoin_reading(points: list[tuple[date, float]], today: date, error: Optional[str] = None) -> Reading:
+    from .analysis import reading_from_points
+    return reading_from_points("STABLECOINS", "Stablecoins in circulation", "level", "$B", STABLECOIN_WHAT,
+                               STABLECOIN_RISK, points, today, "daily", notable_month_move=5.0, error=error)
+
+
 def _meta(key: str) -> tuple[str, str]:
     """(what it is, risk) for a series or spread."""
+    if key == "STABLECOINS":
+        return STABLECOIN_WHAT, STABLECOIN_RISK
     s = SERIES_BY_ID.get(key)
     if s:
         return s.what_it_is, s.risk

@@ -237,6 +237,17 @@ def build_reading(s: Series, obs: Optional[Observations], today: date) -> Readin
     return _fill(r, pts, today, s.frequency)
 
 
+def reading_from_points(key: str, name: str, kind: str, unit: str, what: str, risk: str,
+                        points: list[tuple[date, float]], today: date, frequency: str = "daily",
+                        notable_month_move: float = 3.0, error: Optional[str] = None) -> Reading:
+    """A Reading for data that doesn't come from FRED (e.g. stablecoin supply)."""
+    r = Reading(key, name, "", kind, unit, what, risk, notable_month_move=notable_month_move)
+    if error or not points:
+        r.error = error or "no data"
+        return r
+    return _fill(r, sorted(points), today, frequency)
+
+
 def build_spread(sp: Spread, data: dict[str, Observations], today: date) -> Reading:
     r = Reading(sp.key, sp.name, "spreads", "spread", "%", sp.what_it_is, sp.reading,
                 notable_month_move=sp.notable_month_move)

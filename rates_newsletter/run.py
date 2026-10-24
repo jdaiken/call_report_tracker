@@ -16,7 +16,7 @@ from pathlib import Path
 
 from rates_digest import analysis, extras, fetch
 from rates_digest.email_report import Bundle, EmailConfig, send_email
-from rates_digest.newsletter import render
+from rates_digest.newsletter import render, stablecoin_reading
 from rates_digest.series import SERIES, SERIES_BY_ID, SPREADS
 
 log = logging.getLogger("rates_digest")
@@ -28,6 +28,8 @@ def collect(today) -> Bundle:
     data = fetch.fetch_all([i for i in ids if i not in long_ids], start=today - timedelta(days=5 * 366))
     data.update(fetch.fetch_all(long_ids, start=today - timedelta(days=13 * 366)))
     readings = analysis.build_all(data, today)
+    sc = extras.fetch_stablecoins()
+    readings["STABLECOINS"] = stablecoin_reading(sc.points, today, sc.error)
     return Bundle(
         today=today, readings=readings, flags=analysis.watch_flags(readings),
         failures=extras.fetch_failures(),

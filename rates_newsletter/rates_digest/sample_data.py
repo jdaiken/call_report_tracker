@@ -77,7 +77,13 @@ def sample_observations(today: date, days: int = 1830, seed: int = 7) -> dict[st
 
 def sample_bundle(today: date):
     from .email_report import Bundle
+    from .newsletter import stablecoin_reading
     readings = build_all(sample_observations(today), today)
+    sc, v = [], 180.0
+    for i in range(1100, 0, -1):
+        v *= 1.0011                                   # a fictional ~50% a year
+        sc.append((today - timedelta(days=i), round(v, 2)))
+    readings["STABLECOINS"] = stablecoin_reading(sc, today)
     cal = CalendarResult(events=fomc_events(today, today + timedelta(days=7))
                          + [Event(today + timedelta(days=3), "Inflation report (CPI)")])
     cal.events.sort(key=lambda e: e.when)
