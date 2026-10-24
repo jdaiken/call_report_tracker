@@ -196,6 +196,7 @@ def test_published_failed_bank_list_fills_api_lag():
                 'Nano Banc,Irvine,CA,57263,Sunwest Bank,25-Sep-26,10550\n'
                 'Small Business Bank,Lenexa,KS,58000,Some Bank,17-Jul-26,10549\n')
     listed = parse_failed_bank_list(csv_text)
+    assert len(parse_failed_bank_list(csv_text.replace('\xa0', '\ufffd'))) == 2
     assert [f.name for f in listed] == ["Nano Banc", "Small Business Bank"]
     api = parse_failures({"data": [{"data": {"NAME": "SMALL BUSINESS BANK", "CITYST": "LENEXA, KS",
                                              "FAILDATE": "7/17/2026", "QBFDEP": "100000"}}]})

@@ -96,10 +96,13 @@ def parse_failed_bank_list(text: str) -> list[Failure]:
     """The FDIC's failed bank list CSV: Bank Name, City, State, Cert, Acquiring Institution, Closing Date, Fund."""
     import csv
     import io
+    import re
     out = []
     rows = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
     for rec in rows:
-        rec = {(k or "").strip().lower().replace("\xa0", " "): (v or "").strip() for k, v in rec.items()}
+        # Headers carry stray non-breaking spaces (sometimes mis-decoded); keep letters and spaces only.
+        rec = {" ".join(re.sub(r"[^a-z ]", " ", (k or "").lower()).split()): v.strip()
+               for k, v in rec.items() if isinstance(v, str)}
         d = _parse_list_date(rec.get("closing date", ""))
         name = rec.get("bank name") or rec.get("bank")
         if not d or not name:
@@ -142,11 +145,14 @@ def fetch_failures() -> FailureResult:
     for url in FDIC_LIST_CSV_URLS:
         try:
             r = _get(_session(), url, None)
-            r.encoding = r.encoding or "latin-1"
-            listed = parse_failed_bank_list(r.text)
+            try:
+                text = r.content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = r.content.decode("latin-1")
+            listed = parse_failed_bank_list(text)
             if listed:
                 break
-            errors.append(f"{url}: no rows ({r.headers.get('content-type')}, {r.text[:80]!r})")
+            errors.append(f"{url}: no rows ({text[:80]!r})")
         except Exception as e:
             errors.append(f"{url}: {e}")
     if not api and not listed:
