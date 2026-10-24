@@ -1,4 +1,4 @@
-"""Pull observations from FRED and headlines from the Fed's RSS feeds.
+"""Pull observations from FRED.
 
 FRED access, in order of preference:
   1. The official API (needs a free key in FRED_API_KEY). Most reliable from
@@ -16,10 +16,8 @@ import io
 import logging
 import os
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import requests
@@ -31,10 +29,6 @@ API_URL = "https://api.stlouisfed.org/fred/series/observations"
 META_URL = "https://api.stlouisfed.org/fred/series"
 CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
-FED_FEEDS = {
-    "Monetary policy": "https://www.federalreserve.gov/feeds/press_monetary.xml",
-    "Bank regulation": "https://www.federalreserve.gov/feeds/press_bcreg.xml",
-}
 
 
 @dataclass
@@ -43,14 +37,6 @@ class Observations:
     points: list[tuple[date, float]]   # sorted oldest -> newest, missing values dropped
     units: Optional[str] = None        # FRED's units text, when known
     error: Optional[str] = None
-
-
-@dataclass
-class Headline:
-    feed: str
-    title: str
-    link: str
-    published: date
 
 
 def _session() -> requests.Session:
@@ -149,43 +135,6 @@ def fetch_all(series_ids: list[str], start: date, fetcher=None) -> dict[str, Obs
         out[sid] = fetcher(sid)
         time.sleep(0.25)  # stay well under FRED's 120 requests/minute
     return out
-
-
-def parse_rss(xml_text: str, feed_name: str, since: date) -> list[Headline]:
-    items = []
-    # federalreserve.gov feeds start with a byte-order mark, which ElementTree
-    # rejects ("XML declaration not at start"); strip it and any leading space.
-    root = ET.fromstring(xml_text.lstrip("\ufeff \r\n\t").encode("utf-8"))
-    for item in root.iter("item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub_raw = (item.findtext("pubDate") or "").strip()
-        try:
-            published = parsedate_to_datetime(pub_raw).date()
-        except (TypeError, ValueError):
-            continue
-        if title and published >= since:
-            items.append(Headline(feed_name, title, link, published))
-    return items
-
-
-def fetch_headlines(since: date) -> tuple[list[Headline], list[str]]:
-    session = _session()
-    out: list[Headline] = []
-    errors: list[str] = []
-    for name, url in FED_FEEDS.items():
-        try:
-            r = _get(session, url, {})
-            out.extend(parse_rss(r.content.decode("utf-8-sig", errors="replace"), name, since))
-        except Exception as e:
-            log.warning("Could not load feed %s: %s", name, e)
-            errors.append(f"{name} ({str(e)[:120]})")
-    seen, unique = set(), []
-    for h in sorted(out, key=lambda h: h.published, reverse=True):
-        if h.link not in seen:
-            seen.add(h.link)
-            unique.append(h)
-    return unique, errors
 
 
 def today_eastern() -> date:

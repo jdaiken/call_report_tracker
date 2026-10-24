@@ -1,15 +1,13 @@
-name: Rates & Markets Newsletter
+name: Weekly Rates & Markets
 
 # Lives in this repo (not its own) so it can use the same EMAIL_ADDRESS /
 # EMAIL_APP_PASSWORD secrets as the FFIEC monitor. Code is in rates_newsletter/.
-# Mondays send the weekly look book (charts + analysis); Tuesday-Friday send the
-# short daily email.
+# One email a week, Monday morning.
 
 on:
   schedule:
-    # Weekdays 12:43 UTC = 8:43am EDT / 7:43am EST, after the NY Fed publishes
-    # EFFR/SOFR and FRED has the prior day's Treasury yields.
-    - cron: "43 12 * * 1-5"
+    # Mondays 12:43 UTC = 8:43am EDT / 7:43am EST.
+    - cron: "43 12 * * 1"
   workflow_dispatch:
     inputs:
       mode:
@@ -17,11 +15,6 @@ on:
         type: choice
         options: [send, dry_run, check_series]
         default: send
-      edition:
-        description: "auto = look book on Mondays, daily email other days"
-        type: choice
-        options: [auto, daily, weekly]
-        default: auto
 
 permissions:
   contents: read
@@ -49,17 +42,16 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
           MODE: ${{ inputs.mode }}
-          EDITION: ${{ inputs.edition }}
         run: |
           case "${MODE:-send}" in
             check_series) python run.py --check-series ;;
-            dry_run)      python run.py --edition "${EDITION:-auto}" --dry-run --out-dir out ;;
-            *)            python run.py --edition "${EDITION:-auto}" ;;
+            dry_run)      python run.py --dry-run --out-dir out ;;
+            *)            python run.py ;;
           esac
 
       - name: Upload preview (dry run only)
         if: ${{ inputs.mode == 'dry_run' }}
         uses: actions/upload-artifact@v4
         with:
-          name: digest-preview
+          name: newsletter-preview
           path: rates_newsletter/out/

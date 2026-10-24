@@ -1,11 +1,9 @@
-"""Rates & markets newsletter: a short weekday email and a Monday look book.
+"""Weekly rates & markets newsletter (sent Monday mornings).
 
-  python run.py                       auto: Monday -> weekly look book, Tue-Fri -> daily email
-  python run.py --edition daily       force the daily email
-  python run.py --edition weekly      force the look book
-  python run.py --dry-run             build it from live data, write HTML/text/PNGs, don't email
-  python run.py --sample              made-up sample data (no network), write preview files
-  python run.py --check-series        test that every data source loads, then exit
+  python run.py                 build from live data and email it
+  python run.py --dry-run       build from live data, write HTML/text/PNGs, don't email
+  python run.py --sample        made-up sample data (no network), write preview files
+  python run.py --check-series  test that every data source loads, then exit
 """
 from __future__ import annotations
 
@@ -17,93 +15,55 @@ from datetime import timedelta
 from pathlib import Path
 
 from rates_digest import analysis, extras, fetch
-from rates_digest.email_report import (Bundle, EmailConfig, daily_subject, render_daily_html, render_daily_text,
-                                       send_email)
+from rates_digest.email_report import Bundle, EmailConfig, send_email
+from rates_digest.newsletter import render
 from rates_digest.series import SERIES, SERIES_BY_ID, SPREADS
 
 log = logging.getLogger("rates_digest")
 
 
-def collect(today, weekly: bool) -> Bundle:
+def collect(today) -> Bundle:
     ids = sorted({s.id for s in SERIES} | {sp.a for sp in SPREADS} | {sp.b for sp in SPREADS})
-    long_ids = [i for i in ids if SERIES_BY_ID.get(i) and SERIES_BY_ID[i].frequency == "quarterly"]
-    data = fetch.fetch_all([i for i in ids if i not in long_ids], start=today - timedelta(days=800))
-    data.update(fetch.fetch_all(long_ids, start=today - timedelta(days=2000)))
-    headlines, feed_errors = fetch.fetch_headlines(since=today - timedelta(days=7))
+    long_ids = [i for i in ids if SERIES_BY_ID[i].frequency == "quarterly"]
+    data = fetch.fetch_all([i for i in ids if i not in long_ids], start=today - timedelta(days=5 * 366))
+    data.update(fetch.fetch_all(long_ids, start=today - timedelta(days=13 * 366)))
     readings = analysis.build_all(data, today)
     return Bundle(
         today=today, readings=readings, flags=analysis.watch_flags(readings),
-        headlines=headlines, feed_errors=feed_errors,
         failures=extras.fetch_failures(),
-        stablecoins=extras.fetch_stablecoins() if weekly else extras.StablecoinResult(),
-        calendar=extras.fetch_calendar(today, days=8),
-        # Finviz is off by default: its redesigned screener can't be read by
-        # finvizfinance yet. Set ENABLE_FINVIZ=1 to try it again.
-        regional=(extras.fetch_regional_banks(with_performance=weekly)
-                  if os.environ.get("ENABLE_FINVIZ", "").strip() == "1" else extras.RegionalBanks()),
+        calendar=extras.fetch_calendar(today, days=7),
         used_api=bool(os.environ.get("FRED_API_KEY", "").strip()),
     )
 
 
-def _finviz_probe() -> str:
-    """When the Finviz screen fails, fetch the page directly and describe what came back."""
-    try:
-        import requests
-        from finvizfinance.util import headers
-        r = requests.get("https://finviz.com/screener.ashx", params={"v": "111", "f": "ind_banksregional"},
-                         headers=headers, timeout=30)
-        redesign = '"hasRedesignEnabled":true' in r.text
-        return (f"HTTP {r.status_code}, {len(r.text):,} bytes"
-                + ("; Finviz's redesigned screener draws rows with JavaScript, which finvizfinance can't read yet"
-                   if redesign else ""))
-    except Exception as e:
-        return f"probe error: {e}"
-
-
 def check_sources(b: Bundle) -> int:
-    bad = 0
+    bad = []
     for key, r in sorted(b.readings.items()):
         if r.ok:
             print(f"OK    {key:16} latest {r.as_of} = {r.display_value}{'  (STALE)' if r.stale else ''}")
         else:
-            bad += 1
+            bad.append(f"{key}: {r.error}")
             print(f"FAIL  {key:16} {r.error}")
-    extra_checks = [
-        ("FDIC bank failures", b.failures.error, f"{len(b.failures.failures)} records, newest "
-         f"{b.failures.failures[0].fail_date if b.failures.failures else 'n/a'}"),
-        ("Stablecoins", b.stablecoins.error, f"{len(b.stablecoins.points)} days, latest "
-         f"${b.stablecoins.points[-1][1]:,.0f}B" if b.stablecoins.points else ""),
-        ("Release calendar", b.calendar.error, f"{len(b.calendar.events)} events in the next 8 days"),
-        ("Regional banks (Finviz)", b.regional.error,
-         f"{len(b.regional.quotes)} banks" if b.regional.quotes else "turned off (set ENABLE_FINVIZ=1 to try)"),
-        ("Fed headlines", ", ".join(b.feed_errors) or None, f"{len(b.headlines)} in the past week"),
-    ]
-    if b.regional.error:
-        extra_checks.append(("Finviz diagnostic", _finviz_probe(), ""))
-    for name, err, ok_text in extra_checks:
-        print(f"{'FAIL' if err else 'OK  '}  {name:24} {err or ok_text}")
-        bad += 1 if err else 0
-    print(f"\n{bad} source(s) failed.")
+    for name, err, ok_text in (
+        ("FDIC bank failures", b.failures.error, f"{len(b.failures.failures)} records"),
+        ("Release calendar", b.calendar.error, f"{len(b.calendar.events)} events in the next 7 days"),
+    ):
+        print(f"{'FAIL' if err else 'OK  '}  {name:20} {err or ok_text}")
+        if err:
+            bad.append(f"{name}: {err}")
+    print(f"\n{len(bad)} source(s) failed.")
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        # Also post results as run annotations, visible on the run page without opening the log.
-        fails = [f"{k}: {r.error}" for k, r in sorted(b.readings.items()) if not r.ok]
-        fails += [f"{n}: {e}" for n, e, _ in extra_checks if e]
-        oks = [k for k, r in sorted(b.readings.items()) if r.ok] + [n for n, e, _ in extra_checks if not e]
-        def esc(t: str) -> str:
-            return t.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-        print(f"::notice title=Sources OK ({len(oks)})::{esc(', '.join(oks))}")
-        for line in fails[:9]:
-            print(f"::warning title=Source failed::{esc(line[:400])}")
-        if len(fails) > 9:
-            print(f"::warning title=More failures::{len(fails) - 9} more; see the log.")
-    # Only the core rate data should turn the run red; an optional source failing is a warning.
+        # Results as run annotations, visible on the run page without opening the log.
+        oks = [k for k, r in sorted(b.readings.items()) if r.ok]
+        print(f"::notice title=Sources OK ({len(oks)})::{', '.join(oks)}")
+        for line in bad[:9]:
+            print(f"::warning title=Source failed::{line[:400].replace('%', '%25')}")
     core_ok = sum(1 for r in b.readings.values() if r.ok) >= len(b.readings) * 0.8
     return 0 if core_ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--edition", choices=["auto", "daily", "weekly"], default="auto")
     ap.add_argument("--dry-run", action="store_true", help="write files instead of emailing")
     ap.add_argument("--sample", action="store_true", help="use made-up sample data (implies --dry-run)")
     ap.add_argument("--check-series", action="store_true", help="report which sources load, then exit")
@@ -112,16 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     today = fetch.today_eastern()
-    edition = args.edition
-    if edition == "auto":
-        edition = "weekly" if today.weekday() == 0 else "daily"
-    weekly = edition == "weekly" or args.check_series
-
     if args.sample:
         from rates_digest.sample_data import sample_bundle
-        b = sample_bundle(today, weekly=weekly)
+        b = sample_bundle(today)
     else:
-        b = collect(today, weekly)
+        b = collect(today)
 
     if args.check_series:
         return check_sources(b)
@@ -131,28 +86,22 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Only %d of %d readings loaded -- not sending a mostly empty email.", loaded, len(b.readings))
         return 1
 
-    images: dict[str, bytes] = {}
-    if edition == "weekly":
-        from rates_digest.lookbook import render_lookbook
-        html_body, text_body, images, subject = render_lookbook(b)
-    else:
-        html_body, text_body, subject = render_daily_html(b), render_daily_text(b), daily_subject(b)
+    html_body, text_body, images, subject = render(b)
 
     if args.dry_run or args.sample:
         out = Path(args.out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        stem = "lookbook" if edition == "weekly" else "digest"
         preview = html_body
-        for cid in images:   # point the saved HTML at the saved PNGs so it opens in a browser
-            (out / f"{cid}.png").write_bytes(images[cid])
+        for cid, png in images.items():   # point the saved HTML at the saved PNGs so it opens in a browser
+            (out / f"{cid}.png").write_bytes(png)
             preview = preview.replace(f'"cid:{cid}"', f'"{cid}.png"')
-        (out / f"{stem}.html").write_text(preview, encoding="utf-8")
-        (out / f"{stem}.txt").write_text(text_body, encoding="utf-8")
-        print(f"Subject: {subject}\nWrote {out / (stem + '.html')} (+ {len(images)} chart images)")
+        (out / "newsletter.html").write_text(preview, encoding="utf-8")
+        (out / "newsletter.txt").write_text(text_body, encoding="utf-8")
+        print(f"Subject: {subject}\nWrote {out / 'newsletter.html'} (+ {len(images)} charts)")
         return 0
 
     send_email(EmailConfig.from_env(), subject, text_body, html_body, images)
-    log.info("Sent %s edition: %s", edition, subject)
+    log.info("Sent: %s", subject)
     return 0
 
 

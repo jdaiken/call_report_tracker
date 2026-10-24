@@ -1,7 +1,5 @@
-"""Data that doesn't come from FRED: bank failures (FDIC), stablecoin supply
-(DeFiLlama), the economic calendar (FRED release dates + the Fed's published
-FOMC schedule) and regional bank stocks (Finviz, via the unofficial
-finvizfinance package).
+"""Data that doesn't come from FRED: bank failures (FDIC) and the economic
+calendar (FRED release dates + the Fed's published FOMC schedule).
 
 Every function here returns a result object with an `error` field instead of
 raising. A source being down only removes its section from the email.
@@ -11,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from .fetch import _get, _session
@@ -96,41 +94,6 @@ def fmt_thousands(v: Optional[float]) -> str:
     return f"${dollars / 1e6:,.0f} million"
 
 
-# --------------------------------------------------------------- stablecoins
-STABLECOIN_URL = "https://stablecoins.llama.fi/stablecoincharts/all"
-
-
-@dataclass
-class StablecoinResult:
-    points: list[tuple[date, float]] = field(default_factory=list)   # (date, $ billions)
-    error: Optional[str] = None
-
-
-def parse_stablecoins(payload: list) -> list[tuple[date, float]]:
-    out = []
-    for row in payload or []:
-        try:
-            d = datetime.fromtimestamp(int(row["date"]), tz=timezone.utc).date()
-            usd = float(row["totalCirculatingUSD"]["peggedUSD"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        out.append((d, usd / 1e9))
-    out.sort()
-    return out
-
-
-def fetch_stablecoins() -> StablecoinResult:
-    try:
-        r = _get(_session(), STABLECOIN_URL, {})
-        pts = parse_stablecoins(r.json())
-        if not pts:
-            return StablecoinResult(error="no data in response")
-        return StablecoinResult(pts)
-    except Exception as e:
-        log.warning("Stablecoin data unavailable: %s", e)
-        return StablecoinResult(error=str(e))
-
-
 # ------------------------------------------------------------------ calendar
 # From federalreserve.gov/monetarypolicy/fomccalendars.htm (decision day = 2nd day).
 # The Fed marks 2027 dates as tentative. Add the next year's dates each fall;
@@ -151,9 +114,6 @@ KEY_RELEASES = [
     ("employment situation", "Jobs report"),
     ("gross domestic product", "GDP report"),
     ("personal income and outlays", "Fed's preferred inflation gauge (PCE)"),
-    ("producer price index", "Wholesale inflation (PPI)"),
-    ("advance monthly sales for retail", "Retail sales"),
-    ("h.8 assets and liabilities of commercial banks", "Fed's weekly bank deposits report (H.8)"),
     ("senior loan officer opinion survey", "Fed's bank lending survey (SLOOS)"),
     ("fomc meeting minutes", "Minutes of the last Fed meeting"),
 ]
@@ -224,113 +184,3 @@ def fetch_calendar(today: date, days: int = 8) -> CalendarResult:
             res.error = str(e)
     res.events.sort(key=lambda e: (e.when, e.label))
     return res
-
-
-# ------------------------------------------------------------ regional banks
-@dataclass
-class BankQuote:
-    ticker: str
-    company: str
-    market_cap: Optional[float]     # dollars
-    change_pct: Optional[float]     # today's % change, e.g. -1.2
-    perf_week_pct: Optional[float] = None
-    perf_month_pct: Optional[float] = None
-
-
-@dataclass
-class RegionalBanks:
-    quotes: list[BankQuote] = field(default_factory=list)
-    error: Optional[str] = None
-
-    @property
-    def ok(self) -> bool:
-        return len(self.quotes) >= 20
-
-    def _w_avg(self, attr: str) -> Optional[float]:
-        rows = [(q.market_cap, getattr(q, attr)) for q in self.quotes
-                if q.market_cap and getattr(q, attr) is not None]
-        total = sum(c for c, _ in rows)
-        return sum(c * v for c, v in rows) / total if total else None
-
-    @property
-    def cap_weighted_change(self) -> Optional[float]:
-        return self._w_avg("change_pct")
-
-    @property
-    def cap_weighted_week(self) -> Optional[float]:
-        return self._w_avg("perf_week_pct")
-
-    @property
-    def cap_weighted_month(self) -> Optional[float]:
-        return self._w_avg("perf_month_pct")
-
-    @property
-    def share_down(self) -> Optional[float]:
-        vals = [q.change_pct for q in self.quotes if q.change_pct is not None]
-        return 100 * sum(1 for v in vals if v < 0) / len(vals) if vals else None
-
-    def worst(self, n: int = 5, attr: str = "change_pct") -> list[BankQuote]:
-        rows = [q for q in self.quotes if getattr(q, attr) is not None]
-        return sorted(rows, key=lambda q: getattr(q, attr))[:n]
-
-
-def _col(row, *names):
-    for n in names:
-        if n in row and row[n] is not None and row[n] == row[n]:   # skip NaN
-            return row[n]
-    return None
-
-
-def _pct(v) -> Optional[float]:
-    """finvizfinance turns '-1.23%' into -0.0123; show it as -1.23."""
-    if v is None:
-        return None
-    if isinstance(v, str):
-        v = v.strip().rstrip("%")
-        try:
-            return float(v)
-        except ValueError:
-            return None
-    try:
-        return float(v) * 100
-    except (TypeError, ValueError):
-        return None
-
-
-def fetch_regional_banks(with_performance: bool = False) -> RegionalBanks:
-    """Regional banks over $300M market cap from Finviz's screener. Uses the
-    unofficial finvizfinance package, which reads Finviz's public pages; it can
-    break when Finviz changes its site or blocks automated requests."""
-    try:
-        from finvizfinance.screener.overview import Overview
-        filters = {"Industry": "Banks - Regional", "Market Cap.": "+Small (over $300mln)"}
-        ov = Overview()
-        ov.set_filter(filters_dict=filters)
-        df = ov.screener_view(verbose=0, sleep_sec=1)
-        if df is None or df.empty:
-            return RegionalBanks(error="Finviz returned no rows")
-        quotes = {}
-        for _, row in df.iterrows():
-            t = _col(row, "Ticker")
-            if not t:
-                continue
-            quotes[t] = BankQuote(t, str(_col(row, "Company") or t),
-                                  _num(_col(row, "Market Cap")), _pct(_col(row, "Change")))
-        if with_performance:
-            try:
-                from finvizfinance.screener.performance import Performance
-                pf = Performance()
-                pf.set_filter(filters_dict=filters)
-                pdf = pf.screener_view(verbose=0, sleep_sec=1)
-                if pdf is not None:
-                    for _, row in pdf.iterrows():
-                        q = quotes.get(_col(row, "Ticker"))
-                        if q:
-                            q.perf_week_pct = _pct(_col(row, "Perf Week"))
-                            q.perf_month_pct = _pct(_col(row, "Perf Month"))
-            except Exception as e:   # weekly extras are optional
-                log.warning("Finviz performance view unavailable: %s", e)
-        return RegionalBanks(list(quotes.values()))
-    except Exception as e:
-        log.warning("Regional bank data unavailable: %s", e)
-        return RegionalBanks(error=str(e))

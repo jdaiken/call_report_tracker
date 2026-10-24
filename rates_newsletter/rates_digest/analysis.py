@@ -226,7 +226,7 @@ def _fill(reading: Reading, points: list[tuple[date, float]], today: date, frequ
 
 
 def build_reading(s: Series, obs: Optional[Observations], today: date) -> Reading:
-    r = Reading(s.id, s.name, s.section, s.kind, s.unit, s.what_it_is, s.why_it_matters,
+    r = Reading(s.id, s.name, "", s.kind, s.unit, s.what_it_is, s.why_it_matters,
                 notable_month_move=s.notable_month_move)
     if obs is None or obs.error or not obs.points:
         r.error = (obs.error if obs else None) or "no data"
@@ -369,54 +369,6 @@ def watch_flags(readings: dict[str, Reading]) -> list[Flag]:
         flags.append(Flag("watch", f"Commercial real estate delinquencies rose to {cre.display_value} last quarter "
                                    f"({cre.change_text('last')}). CRE is the main credit risk for community banks.", ("DRCRELEXFACBS",)))
     return flags
-
-
-def notable_moves(readings: dict[str, Reading], limit: int = 5,
-                  covered: frozenset[str] = frozenset()) -> list[Reading]:
-    """Readings whose one-month move is large relative to that series' normal size,
-    skipping anything a watch flag already talks about."""
-    scored = []
-    for r in readings.values():
-        # Fed target moves get their own flag; listing them again as "moves" is noise.
-        if not r.ok or r.stale or r.key in ("DFEDTARU", "DFEDTARL") or r.key in covered:
-            continue
-        size = abs(r.change_size("month"))
-        if r.notable_month_move and size >= r.notable_month_move:
-            scored.append((size / r.notable_month_move, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[:limit]]
-
-
-def notable_today(readings: dict[str, Reading], today: date, limit: int = 3,
-                  covered: frozenset[str] = frozenset()) -> list[Reading]:
-    """What moved since the previous reading, for the short daily email. Only
-    fresh data counts, so a big move doesn't repeat every day for a month."""
-    scored = []
-    for r in readings.values():
-        if (not r.ok or r.stale or r.as_of is None or (today - r.as_of).days > 4
-                or r.key in ("DFEDTARU", "DFEDTARL") or r.key in covered):
-            continue
-        size = abs(r.change_size("last"))
-        threshold = r.notable_month_move * 0.5
-        if threshold and size >= threshold:
-            scored.append((size / threshold, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[:limit]]
-
-
-def notable_week(readings: dict[str, Reading], limit: int = 6,
-                 covered: frozenset[str] = frozenset()) -> list[Reading]:
-    """Biggest moves over the past week, for the weekly look book."""
-    scored = []
-    for r in readings.values():
-        if not r.ok or r.stale or r.key in ("DFEDTARL",) or r.key in covered:
-            continue
-        size = abs(r.change_size("week"))
-        threshold = r.notable_month_move * 0.6
-        if threshold and size >= threshold:
-            scored.append((size / threshold, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[:limit]]
 
 
 def build_all(data: dict[str, Observations], today: date) -> dict[str, Reading]:

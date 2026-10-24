@@ -9,9 +9,8 @@ import random
 from datetime import date, timedelta
 
 from .analysis import build_all, watch_flags
-from .extras import (BankQuote, CalendarResult, Event, Failure, FailureResult, RegionalBanks,
-                     StablecoinResult, fomc_events)
-from .fetch import Headline, Observations
+from .extras import CalendarResult, Event, Failure, FailureResult, fomc_events
+from .fetch import Observations
 from .series import SERIES, SPREADS
 
 # Rough starting level and daily wobble for each series (fictional). Values for
@@ -52,7 +51,7 @@ def _dates(today: date, freq: str, days: int) -> list[date]:
     return out
 
 
-def sample_observations(today: date, days: int = 800, seed: int = 7) -> dict[str, Observations]:
+def sample_observations(today: date, days: int = 1830, seed: int = 7) -> dict[str, Observations]:
     rng = random.Random(seed)
     ids = sorted({s.id for s in SERIES} | {sp.a for sp in SPREADS} | {sp.b for sp in SPREADS})
     out = {}
@@ -60,11 +59,11 @@ def sample_observations(today: date, days: int = 800, seed: int = 7) -> dict[str
         start, wobble = _PROFILE.get(sid, (1.0, 0.01))
         freq = _FREQ.get(sid, "daily")
         pts, v = [], start
-        for i, d in enumerate(_dates(today, freq, 2000 if freq == "quarterly" else days)):
+        for i, d in enumerate(_dates(today, freq, 4600 if freq == "quarterly" else days)):
             if sid == "CPIAUCSL":
                 v = start * (1.028 ** (i / 12))          # ~2.8% a year
             elif sid == "DRCRELEXFACBS":
-                v = start + 0.06 * i                     # a slow fictional climb
+                v = start + 0.02 * i                     # a slow fictional climb
             elif wobble:
                 v = max(0.0, v + rng.gauss(0, wobble) + 0.03 * (start - v))  # wanders, then drifts back
             pts.append((d, round(v, 4)))
@@ -76,46 +75,14 @@ def sample_observations(today: date, days: int = 800, seed: int = 7) -> dict[str
     return out
 
 
-def sample_headlines(today: date) -> list[Headline]:
-    return [
-        Headline("Monetary policy", "SAMPLE: Federal Reserve issues FOMC statement", "https://www.federalreserve.gov/",
-                 today - timedelta(days=5)),
-        Headline("Bank regulation", "SAMPLE: Agencies request comment on proposed rule", "https://www.federalreserve.gov/",
-                 today - timedelta(days=2)),
-    ]
-
-
-def sample_regional(seed: int = 3) -> RegionalBanks:
-    rng = random.Random(seed)
-    quotes = []
-    for i in range(120):
-        cap = rng.uniform(0.3e9, 40e9)
-        quotes.append(BankQuote(f"SMP{i:03d}", f"Sample Bancorp {i}", cap,
-                                round(rng.gauss(-0.4, 1.2), 2), round(rng.gauss(-1.0, 2.5), 2), round(rng.gauss(0.5, 4), 2)))
-    return RegionalBanks(quotes)
-
-
-def sample_stablecoins(today: date) -> StablecoinResult:
-    pts, v = [], 210.0
-    for i in range(730, 0, -1):
-        v *= 1.0006
-        pts.append((today - timedelta(days=i), round(v, 2)))
-    return StablecoinResult(pts)
-
-
-def sample_bundle(today: date, weekly: bool = False):
+def sample_bundle(today: date):
     from .email_report import Bundle
-    data = sample_observations(today)
-    readings = build_all(data, today)
-    cal = CalendarResult(events=fomc_events(today, today + timedelta(days=8)) + [
-        Event(today + timedelta(days=3), "Inflation report (CPI)"),
-        Event(today + timedelta(days=4), "Fed's weekly bank deposits report (H.8)")])
+    readings = build_all(sample_observations(today), today)
+    cal = CalendarResult(events=fomc_events(today, today + timedelta(days=7))
+                         + [Event(today + timedelta(days=3), "Inflation report (CPI)")])
     cal.events.sort(key=lambda e: e.when)
     return Bundle(
         today=today, readings=readings, flags=watch_flags(readings),
-        headlines=sample_headlines(today),
         failures=FailureResult([Failure("Sample Community Bank", "Anytown, ST", today - timedelta(days=40), 210_000, 260_000)]),
-        stablecoins=sample_stablecoins(today) if weekly else StablecoinResult(),
-        calendar=cal, regional=sample_regional(), sample=True,
+        calendar=cal, sample=True,
     )
-
