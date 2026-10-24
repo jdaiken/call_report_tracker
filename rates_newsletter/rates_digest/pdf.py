@@ -1,5 +1,8 @@
-"""The PDF attachment: the same Report as the email, laid out for printing or
-forwarding (US Letter)."""
+"""The five-page PDF (US Letter), drawn from the same Report as the email.
+
+Every page is a fixed layout with an explicit page break, so the document is
+always exactly five pages.
+"""
 from __future__ import annotations
 
 import io
@@ -14,37 +17,46 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (CondPageBreak, Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table,
-                                TableStyle)
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .newsletter import FDIC_FAILURES_URL, TONE_COLOR, TONE_WORD, ItemContent, Report
+from .extras import fmt_thousands
+from .monitor import NAME, Panel, Report
+from .newsletter import FDIC_FAILURES_URL, TONE_COLOR, TONE_WORD
 
-# DejaVu ships with matplotlib, so the PDF needs no system fonts and renders
-# symbols like the minus sign that the built-in PDF fonts lack.
 _FONT_DIR = os.path.join(os.path.dirname(matplotlib.__file__), "mpl-data", "fonts", "ttf")
 pdfmetrics.registerFont(TTFont("DejaVu", os.path.join(_FONT_DIR, "DejaVuSans.ttf")))
 pdfmetrics.registerFont(TTFont("DejaVu-Bold", os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")))
 pdfmetrics.registerFontFamily("DejaVu", normal="DejaVu", bold="DejaVu-Bold", italic="DejaVu", boldItalic="DejaVu-Bold")
 
-INK, QUIET, RULE, SHADE = colors.HexColor("#1f2328"), colors.HexColor("#5f6670"), colors.HexColor("#d9dce0"), colors.HexColor("#f4f5f7")
+INK, MUTED, RULE = colors.HexColor("#14181f"), colors.HexColor("#5b626c"), colors.HexColor("#dde0e4")
+LINK = "#1d5fbf"
+PAGE_W, PAGE_H = letter
+MARGIN = 0.55 * inch
+WIDTH = PAGE_W - 2 * MARGIN
+GAP = 0.18 * inch
+CELL_W = (WIDTH - GAP) / 2
 
 
-def _style(name, size=9.5, leading=None, color=INK, bold=False, **kw) -> ParagraphStyle:
+def _st(name, size, color=INK, bold=False, **kw) -> ParagraphStyle:
     return ParagraphStyle(name, fontName="DejaVu-Bold" if bold else "DejaVu", fontSize=size,
-                          leading=leading or size * 1.35, textColor=color, **kw)
+                          leading=size * 1.3, textColor=color, **kw)
 
 
 S = {
-    "kicker": _style("kicker", 8, color=QUIET),
-    "title": _style("title", 17, bold=True, spaceAfter=6),
-    "h2": _style("h2", 13, bold=True, spaceBefore=10, spaceAfter=2),
-    "q": _style("q", 9, color=QUIET, spaceAfter=4),
-    "body": _style("body", 9.5),
-    "small": _style("small", 8, color=QUIET),
-    "take": _style("take", 10.5, bold=True, spaceBefore=6),
-    "name": _style("name", 10.5, bold=True),
-    "reading": _style("reading", 11, bold=True, alignment=TA_RIGHT),
-    "badge": _style("badge", 7.5, bold=True, color=colors.white),
+    "page": _st("page", 15, bold=True),
+    "pno": _st("pno", 8, MUTED, alignment=TA_RIGHT),
+    "label": _st("label", 7.5, MUTED, bold=True),
+    "ptitle": _st("ptitle", 9.5, bold=True),
+    "big": _st("big", 17, bold=True),
+    "sig": _st("sig", 8, MUTED),
+    "cell": _st("cell", 8.2),
+    "cellm": _st("cellm", 7.5, MUTED),
+    "num": _st("num", 8.5, alignment=TA_RIGHT),
+    "numb": _st("numb", 8.5, bold=True, alignment=TA_RIGHT),
+    "badge": _st("badge", 6.5, colors.white, bold=True),
+    "tile_n": _st("tile_n", 18, bold=True),
+    "body": _st("body", 9),
+    "small": _st("small", 7.5, MUTED),
 }
 
 
@@ -52,127 +64,164 @@ def _p(text: str, style: str) -> Paragraph:
     return Paragraph(text, S[style])
 
 
+def _link(text: str, url: str | None, color: str = "#14181f") -> str:
+    return f'<link href="{escape(url)}" color="{color}">{escape(text)}</link>' if url else escape(text)
+
+
 def _badge(tone: str) -> Table:
-    t = Table([[_p(TONE_WORD[tone].upper(), "badge")]], colWidths=[0.62 * inch])
+    t = Table([[_p(TONE_WORD[tone].upper(), "badge")]], colWidths=[0.58 * inch])
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(TONE_COLOR[tone])),
-                           ("TOPPADDING", (0, 0), (-1, -1), 1.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-                           ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4)]))
+                           ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                           ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
     return t
 
 
-def _png(png: bytes, width: float) -> Image:
+def _header(title: str, n: int) -> list:
+    t = Table([[_p(escape(title), "page"), _p(f"{n} / 5", "pno")]], colWidths=[WIDTH * 0.8, WIDTH * 0.2])
+    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, 0), 1.5, INK), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                           ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+    return [t, Spacer(1, 10)]
+
+
+def _img(png: bytes, width: float) -> Image:
     img = Image(io.BytesIO(png))
-    ratio = img.imageHeight / img.imageWidth
-    img.drawWidth, img.drawHeight = width, width * ratio
+    img.drawWidth, img.drawHeight = width, width * img.imageHeight / img.imageWidth
     return img
 
 
-def _link(label: str, url: str) -> str:
-    return f'<link href="{escape(url)}" color="#1d5fbf"><u>{escape(label)}</u></link>'
+def _panel(p: Panel, width: float = CELL_W) -> Table:
+    inner = width - 14
+    head = Table([[_p(escape(p.title), "ptitle"), _badge(p.tone)]], colWidths=[inner - 0.62 * inch, 0.62 * inch])
+    head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    content = [head, Spacer(1, 3), _p(_link(p.reading, p.url), "big"), _p(escape(p.signal), "sig"), Spacer(1, 4)]
+    content.append(_img(p.png, inner) if p.png else _p("Chart unavailable", "small"))
+    t = Table([[content]], colWidths=[width])
+    t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                           ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+    return t
 
 
-def _reading(i: ItemContent) -> Paragraph:
-    return _p(_link(i.reading, i.sources[0][1]) if i.sources else escape(i.reading), "reading")
+def _grid(panels: list[Panel]) -> Table:
+    rows = [[_panel(panels[i]), "", _panel(panels[i + 1]) if i + 1 < len(panels) else ""] for i in range(0, len(panels), 2)]
+    t = Table(rows, colWidths=[CELL_W, GAP, CELL_W])
+    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                           ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0),
+                           ("BOTTOMPADDING", (0, 0), (-1, -1), GAP)]))
+    return t
 
 
-def _item(i: ItemContent, width: float) -> KeepTogether:
-    color = TONE_COLOR[i.tone] if i.tone in ("watch", "risk") else "#1f2328"
-    head = Table([[_badge(i.tone), _p(escape(i.name), "name"), _reading(i)]],
-                 colWidths=[0.72 * inch, width - 2.2 * inch, 1.48 * inch])
-    head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                              ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    parts = [Spacer(1, 6), head]
-    meta = " · ".join(x for x in (f"as of {i.as_of}" if i.as_of else "", i.changes,
-                                   f"Past year: {i.past_year}" if i.past_year else "") if x)
-    if meta:
-        parts.append(_p(escape(meta), "small"))
-    insight = Table([[Paragraph(f"Insight: {escape(i.insight)}", _style("ins", 10, bold=True, color=colors.HexColor(color)))]],
-                    colWidths=[width])
-    insight.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SHADE),
-                                 ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(color)),
-                                 ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    parts += [Spacer(1, 3), insight, Spacer(1, 3),
-              _p(f"<b>Why IntraFi cares:</b> {escape(i.why)}", "body"), Spacer(1, 2),
-              _p(f"<b>What it is:</b> {escape(i.what)}", "body")]
-    if i.ranges:
-        chips = " · ".join(f'<font color="{TONE_COLOR[c.tone]}"><b>» {escape(c.label)}</b></font>' if c.current
-                           else escape(c.label) for c in i.ranges)
-        basis = f" ({escape(i.basis)})" if i.basis else ""
-        parts += [Spacer(1, 2), _p(f"<b>Ranges{basis}:</b> {chips}", "small")]
-    if i.sources:
-        parts += [Spacer(1, 2), _p("<b>Check the data:</b> " + " · ".join(_link(lbl, u) for lbl, u in i.sources), "small")]
-    parts.append(Spacer(1, 4))
-    line = Table([[""]], colWidths=[width], rowHeights=[0.5])
-    line.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, -1), 0.5, RULE)]))
-    return KeepTogether([line] + parts)
+def _summary(rep: Report) -> list:
+    story = _header("Summary", 1)
+    tiles = []
+    for label, tone in (("RISK", "risk"), ("WATCH", "watch"), ("NORMAL", "ok")):
+        tiles.append(Table([[_p(str(rep.counts[tone]), "tile_n")], [_p(label, "label")]], colWidths=[(WIDTH - 2 * GAP) / 3]))
+        tiles[-1].setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE),
+                                       ("LINEABOVE", (0, 0), (-1, 0), 3.5, colors.HexColor(TONE_COLOR[tone])),
+                                       ("LEFTPADDING", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (0, 0), 6),
+                                       ("BOTTOMPADDING", (0, 0), (0, 0), 0), ("TOPPADDING", (0, -1), (-1, -1), 0),
+                                       ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
+    row = Table([[tiles[0], "", tiles[1], "", tiles[2]]], colWidths=[(WIDTH - 2 * GAP) / 3, GAP] * 2 + [(WIDTH - 2 * GAP) / 3])
+    row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story += [row, Spacer(1, 9), _p("KEY SIGNALS", "label"), Spacer(1, 2)]
+    if rep.signals:
+        for t, x in rep.signals[:5]:
+            story.append(Paragraph(f'<font color="{TONE_COLOR[t]}">●</font>  {escape(x)}', _st(f"s{t}", 8.5, leftIndent=2, spaceAfter=1)))
+    else:
+        story.append(_p("No measures in a Watch or Risk range.", "body"))
+    story.append(Spacer(1, 8))
+
+    hdr = [_p("MEASURE", "label"), _p("LATEST", "label"), _p("LAST", "label"), _p("1 MO", "label"), _p("1 YR", "label"),
+           _p("STATUS", "label")]
+    for c in hdr[1:]:
+        c.style = ParagraphStyle("lr", parent=S["label"], alignment=TA_RIGHT)
+    rows, styles = [hdr], [("LINEBELOW", (0, 0), (-1, 0), 1, INK), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                           ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                           ("ALIGN", (5, 1), (5, -1), "RIGHT")]
+    for title, grp in rep.groups:
+        rows.append([_p(escape(title.upper()), "label"), "", "", "", "", ""])
+        styles += [("SPAN", (0, len(rows) - 1), (-1, len(rows) - 1)), ("TOPPADDING", (0, len(rows) - 1), (-1, len(rows) - 1), 6)]
+        for r in grp:
+            rows.append([_p(f"<b>{escape(r.name)}</b><br/><font size='6.5' color='#5b626c'>{escape(r.signal)}</font>", "cell"),
+                         _p(_link(r.reading, r.url), "numb"), _p(escape(r.last), "num"), _p(escape(r.month), "num"),
+                         _p(escape(r.year), "num"), _badge(r.tone)])
+            styles.append(("LINEBELOW", (0, len(rows) - 1), (-1, len(rows) - 1), 0.4, RULE))
+    table = Table(rows, colWidths=[WIDTH - 4.55 * inch, 1.15 * inch, 0.8 * inch, 0.8 * inch, 0.8 * inch, 1.0 * inch])
+    table.setStyle(TableStyle(styles))
+    story.append(table)
+    return story
+
+
+def _last_page(rep: Report) -> list:
+    story = _header("Market stress & calendar", 5)
+    fails = [_p("Bank failures", "ptitle"), Spacer(1, 3),
+             _p(str(rep.failures_ytd) if rep.failures_ytd is not None else "n/a", "big"),
+             _p(f"failures in {rep.today.year}", "sig"), Spacer(1, 6)]
+    if rep.recent_failures:
+        fails += [_p(f"<b>{f.fail_date:%b %-d}</b> · {escape(f.name)}, {escape(f.city_state)} · "
+                     f"{fmt_thousands(f.deposits_thousands)}", "cell") for f in rep.recent_failures[:5]]
+    else:
+        fails.append(_p("None in the past 30 days", "sig"))
+    fails += [Spacer(1, 6), _p(_link("FDIC failed bank list", FDIC_FAILURES_URL, LINK), "small")]
+    fcell = Table([[fails]], colWidths=[CELL_W])
+    fcell.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                               ("LEFTPADDING", (0, 0), (-1, -1), 7), ("TOPPADDING", (0, 0), (-1, -1), 7)]))
+    top = Table([[_panel(rep.vix), "", fcell]], colWidths=[CELL_W, GAP, CELL_W])
+    top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                             ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story += [top, Spacer(1, 14)]
+    if rep.coming_up:
+        story += [_p("COMING UP", "label"), Spacer(1, 3)]
+        ev = Table([[_p(f"<b>{e.when:%a %b %-d}</b>", "cell"), _p(escape(e.label), "cell")] for e in rep.coming_up],
+                   colWidths=[1.1 * inch, WIDTH - 1.1 * inch])
+        ev.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+                                ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
+        story += [ev, Spacer(1, 12)]
+    story += [_p("DATA SOURCES", "label"), Spacer(1, 3)]
+    src = Table([[_p(escape(name), "small"),
+                  _p(" · ".join(_link(lbl.split(": ", 1)[-1], u, LINK) for lbl, u in links), "small")]
+                 for name, links in rep.sources], colWidths=[2.1 * inch, WIDTH - 2.1 * inch])
+    src.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0.8),
+                             ("BOTTOMPADDING", (0, 0), (-1, -1), 0.8), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(src)
+    if rep.missing:
+        story += [Spacer(1, 8), _p(f"Unavailable today: {escape(', '.join(rep.missing))}", "small")]
+    return story
 
 
 def render_pdf(rep: Report) -> bytes:
     buf = io.BytesIO()
-    margin = 0.6 * inch
-    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=margin, rightMargin=margin, topMargin=margin,
-                            bottomMargin=0.65 * inch, title=f"IntraFi Risk Monitor {rep.today:%Y-%m-%d}",
-                            author="IntraFi Risk Monitor (automated)")
-    width = letter[0] - 2 * margin
-    story = []
-    if rep.sample:
-        story.append(_p("<b>SAMPLE DATA FOR PREVIEW ONLY. These numbers are made up, not real rates.</b>", "body"))
-    story += [_p("INTRAFI RISK MONITOR · RATES &amp; MARKETS", "kicker"), _p(f"{rep.today:%A, %B %-d, %Y}", "title")]
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
+                            bottomMargin=0.55 * inch, title=f"{NAME} {rep.today:%Y-%m-%d}", author=NAME)
+    story = _summary(rep)
+    for i, (title, panels) in enumerate(rep.pages, start=2):
+        story += [PageBreak()] + _header(title, i) + [_grid(panels)]
+    story += [PageBreak()] + _last_page(rep)
 
-    story.append(_p("Today's alerts", "h2"))
-    if rep.alerts:
-        for t, x in rep.alerts:
-            story.append(Paragraph(f"<b>{TONE_WORD[t]}:</b> {escape(x)}",
-                                   _style(f"al{t}", 9.5, color=colors.HexColor(TONE_COLOR[t]), leftIndent=8, spaceAfter=3)))
-    else:
-        story.append(_p("<b>All clear:</b> nothing is in a Watch or Risk range.", "body"))
-    story.append(_p(f"{escape(rep.failures_line)} {_link('Check the FDIC failed bank list', FDIC_FAILURES_URL)}", "body"))
+    through = f"  ·  Data through {rep.data_through:%b %-d, %Y}" if rep.data_through else ""
 
-    story.append(_p("Risk dashboard", "h2"))
-    story.append(_p("Green = Normal, amber = Watch, red = Risk, gray = for information. Click any reading to check it "
-                    "at the source. Ranges are rules of thumb, not official thresholds.", "small"))
-    rows, styles = [], [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 3)]
-    for a in rep.areas:
-        styles.append(("TOPPADDING", (0, len(rows)), (-1, len(rows)), 7))
-        rows.append([_p(f"<b>{escape(a.title.upper())}</b>", "small"), "", ""])
-        styles.append(("SPAN", (0, len(rows) - 1), (-1, len(rows) - 1)))
-        for i in a.items:
-            styles.append(("LINEBELOW", (0, len(rows)), (-1, len(rows)), 0.4, RULE))
-            rows.append([_badge(i.tone), _p(f"<b>{escape(i.name)}</b><br/><font color='#5f6670'>{escape(i.insight)}</font>", "body"),
-                         _reading(i)])
-    dash = Table(rows, colWidths=[0.72 * inch, width - 2.0 * inch, 1.28 * inch])
-    dash.setStyle(TableStyle(styles))
-    story.append(dash)
-
-    for a in rep.areas:
-        story.append(CondPageBreak(3.2 * inch))
-        story.append(_p(f'{escape(a.title)} <font size="9" color="{TONE_COLOR[a.tone]}">· {TONE_WORD[a.tone].upper()}</font>', "h2"))
-        story.append(_p(f"<i>{escape(a.question)}</i>", "q"))
-        for c in a.charts:
-            story.append(KeepTogether([_p(escape(c.takeaway), "take"), _p(escape(c.subtitle), "small"),
-                                       Spacer(1, 2), _png(c.png, width * 0.92)]))
-        for i in a.items:
-            if i.loaded:
-                story.append(_item(i, width))
-            else:
-                story.append(_p(f"<b>{escape(i.name)}</b>: {escape(i.insight)}", "body"))
-
-    if rep.coming_up:
-        story += [_p("Coming up", "h2")] + [_p(f"<b>{e.when:%a %b %-d}</b> · {escape(e.label)}", "body") for e in rep.coming_up]
-    if rep.missing:
-        story += [Spacer(1, 8), _p(f"Did not load today: {escape(', '.join(rep.missing))}.", "small")]
-    story += [Spacer(1, 10), _p("Data: FRED (Federal Reserve Bank of St. Louis) republishing the Federal Reserve, New York Fed, "
-                                "Treasury, FDIC and ICE BofA; FDIC BankFind; DeFiLlama; federalreserve.gov. Automated summary "
-                                "for personal reference, not investment advice.", "small")]
-
-    def footer(canvas, doc_):
+    def chrome(canvas, doc_):
         canvas.saveState()
-        canvas.setFont("DejaVu", 7.5)
-        canvas.setFillColor(QUIET)
-        canvas.drawString(margin, 0.4 * inch, f"IntraFi Risk Monitor · {rep.today:%B %-d, %Y}")
-        canvas.drawRightString(letter[0] - margin, 0.4 * inch, f"Page {doc_.page}")
+        canvas.setFillColor(INK)
+        canvas.rect(0, PAGE_H - 0.75 * inch, PAGE_W, 0.75 * inch, stroke=0, fill=1)
+        canvas.setFillColor(colors.white)
+        canvas.setFont("DejaVu-Bold", 13)
+        canvas.drawString(MARGIN, PAGE_H - 0.42 * inch, NAME)
+        canvas.setFont("DejaVu", 8.5)
+        canvas.setFillColor(colors.HexColor("#c8cdd3"))
+        canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.today:%A, %B %-d, %Y}{through}")
+        if rep.sample:
+            canvas.setFillColor(colors.HexColor("#ffd666"))
+            canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 0.42 * inch, "SAMPLE DATA · NOT REAL RATES")
+        canvas.setFillColor(MUTED)
+        canvas.setFont("DejaVu", 7)
+        canvas.drawString(MARGIN, 0.32 * inch, f"{NAME} · {rep.today:%B %-d, %Y}")
+        canvas.drawRightString(PAGE_W - MARGIN, 0.32 * inch, f"{doc_.page} / 5")
         canvas.restoreState()
 
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    doc.build(story, onFirstPage=chrome, onLaterPages=chrome)
     return buf.getvalue()

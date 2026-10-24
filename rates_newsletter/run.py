@@ -1,4 +1,4 @@
-"""IntraFi Risk Monitor: one daily email (with the same report attached as a PDF).
+"""Rates & Deposit Risk Monitor: one daily email, with the same five-page report attached as a PDF.
 
   python run.py                 build from live data and email it
   python run.py --dry-run       build from live data, write HTML/text/PNGs, don't email
@@ -16,7 +16,8 @@ from pathlib import Path
 
 from rates_digest import analysis, extras, fetch
 from rates_digest.email_report import Bundle, EmailConfig, send_email
-from rates_digest.newsletter import build_report, render_html, render_text, stablecoin_reading
+from rates_digest.monitor import build_report, render_html, render_text
+from rates_digest.newsletter import stablecoin_reading
 from rates_digest.pdf import render_pdf
 from rates_digest.series import SERIES, SERIES_BY_ID, SPREADS
 
@@ -90,10 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     rep = build_report(b)
-    images = {c.cid: c.png for a in rep.areas for c in a.charts}
+    images = {p.cid: p.png for _, panels in rep.pages for p in panels if p.png}
+    if rep.vix.png:
+        images[rep.vix.cid] = rep.vix.png
     html_body, text_body, subject = render_html(rep, b), render_text(rep), rep.subject
     pdf_bytes = render_pdf(rep)
-    pdf_name = f"IntraFi-Risk-Monitor-{today:%Y-%m-%d}.pdf"
+    pdf_name = f"Rates-Deposit-Risk-Monitor-{today:%Y-%m-%d}.pdf"
 
     if args.dry_run or args.sample:
         out = Path(args.out_dir)

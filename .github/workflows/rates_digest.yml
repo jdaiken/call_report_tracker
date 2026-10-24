@@ -1,8 +1,8 @@
-name: IntraFi Risk Monitor
+name: Rates & Deposit Risk Monitor
 
 # Lives in this repo (not its own) so it can use the same EMAIL_ADDRESS /
 # EMAIL_APP_PASSWORD secrets as the FFIEC monitor. Code is in rates_newsletter/.
-# One email every weekday morning, with the same report attached as a PDF.
+# One email every weekday morning, with the same five-page report attached as a PDF.
 
 on:
   schedule:
