@@ -12,7 +12,7 @@ from typing import Optional
 from .fetch import Observations
 from .series import SERIES, SPREADS, Series, Spread
 
-STALE_AFTER_DAYS = {"daily": 7, "weekly": 21, "monthly": 75}
+STALE_AFTER_DAYS = {"daily": 7, "weekly": 21, "monthly": 75, "quarterly": 240}  # FRED dates a quarter by its first day; data lands months later
 LOOKBACKS = [("week", 7), ("month", 30), ("year", 365)]
 
 
@@ -22,16 +22,17 @@ def value_on_or_before(points: list[tuple[date, float]], d: date) -> Optional[tu
     return points[idx - 1] if idx else None
 
 
-def to_billions(points: list[tuple[date, float]], units: Optional[str], unit: str) -> list[tuple[date, float]]:
+def to_billions(points: list[tuple[date, float]], units: Optional[str], unit: str,
+                known_millions: bool = False) -> list[tuple[date, float]]:
     """H.8 deposits are reported in billions; some Fed balance-sheet series are in
     millions. Use FRED's own units text when we have it, otherwise fall back to
     magnitude (no U.S. aggregate here is anywhere near $100 trillion)."""
     if unit != "$B" or not points:
         return points
-    millions = False
+    millions = known_millions
     if units:
         millions = "million" in units.lower()
-    elif points[-1][1] > 100_000:
+    elif not known_millions and points[-1][1] > 100_000:
         millions = True
     return [(d, v / 1000.0) for d, v in points] if millions else points
 
@@ -128,6 +129,7 @@ class Reading:
     error: Optional[str] = None
     notable_month_move: float = 0.25
     history: list[tuple[date, float]] = field(default_factory=list)      # last ~1y, for sparklines
+    points: list[tuple[date, float]] = field(default_factory=list)       # everything fetched, for charts
 
     @property
     def ok(self) -> bool:
@@ -144,6 +146,24 @@ class Reading:
         if d is None:
             return "n/a"
         return fmt_change(d, self.kind, self.bases.get(window))
+
+    def compact_change(self, window: str) -> str:
+        """Short form for tables: '-0.23 pts', '+0.3%', '+$4B', 'no chg'."""
+        d = self.changes.get(window)
+        if d is None:
+            return "—"
+        text = self.change_text(window)
+        if text == "unchanged":
+            return "no chg"
+        sign = "+" if d > 0 else "−"
+        if self.kind in ("rate", "yoy", "spread"):
+            return f"{sign}{abs(d):.2f} pts"
+        if self.kind == "points":
+            return f"{sign}{abs(d):.1f}"
+        if self.kind == "level_abs":
+            return f"{sign}${abs(d):,.0f}B"
+        base = self.bases.get(window)
+        return f"{sign}{abs(d / base * 100):.1f}%" if base else "—"
 
     def change_size(self, window: str) -> float:
         d = self.changes.get(window)
@@ -200,6 +220,7 @@ def _fill(reading: Reading, points: list[tuple[date, float]], today: date, frequ
     if window:
         reading.low_1y, reading.high_1y = min(window), max(window)
     reading.history = [(d, v) for d, v in points if d >= as_of - timedelta(days=365)]
+    reading.points = list(points)
     reading.stale = (today - as_of).days > STALE_AFTER_DAYS.get(frequency, 7)
     return reading
 
@@ -210,7 +231,7 @@ def build_reading(s: Series, obs: Optional[Observations], today: date) -> Readin
     if obs is None or obs.error or not obs.points:
         r.error = (obs.error if obs else None) or "no data"
         return r
-    pts = to_billions(obs.points, obs.units, s.unit)
+    pts = to_billions(obs.points, obs.units, s.unit, known_millions=s.millions)
     if s.kind == "yoy":
         pts = yoy_series(pts)
     return _fill(r, pts, today, s.frequency)
@@ -321,6 +342,32 @@ def watch_flags(readings: dict[str, Reading]) -> list[Flag]:
         if lg - dg >= 1.5:
             flags.append(Flag("info", f"Bank loans grew {lg:.1f}% over the past year but deposits only {dg:.1f}%. "
                                       "Banks need more funding, which can lift demand for one-way placements.", ("TOTLL", "DPSACBW027SBOG")))
+
+    # ---- bank stress signals
+    dw = g("WLCFLPCL")
+    if dw and not dw.stale:
+        jump = dw.changes.get("week") or 0
+        base = dw.bases.get("week") or 0
+        if jump >= 3 and (base <= 0 or jump / base >= 0.5):
+            flags.append(Flag("watch", f"Banks' emergency borrowing from the Fed's discount window jumped ${jump:,.0f} billion "
+                                       f"in a week, to {dw.display_value}. Some banks needed cash quickly.", ("WLCFLPCL",)))
+        elif dw.value >= 20:
+            flags.append(Flag("watch", f"Discount window borrowing is {dw.display_value}, well above normal levels.", ("WLCFLPCL",)))
+
+    bor = g("H8B3094NSMA")
+    if bor and not bor.stale and bor.change_size("month") >= 5:
+        flags.append(Flag("watch", f"Small banks' borrowings are {bor.change_text('month')} over the past month, to {bor.display_value}. "
+                                   "They are leaning harder on FHLB and other borrowed funding.", ("H8B3094NSMA",)))
+
+    tga = g("WTREGEN")
+    if tga and not tga.stale and (tga.changes.get("month") or 0) >= 150:
+        flags.append(Flag("info", f"The Treasury's cash account rose ${tga.changes['month']:,.0f} billion over the past month. "
+                                  "That money comes out of bank reserves and deposits.", ("WTREGEN",)))
+
+    cre = g("DRCRELEXFACBS")
+    if cre and (cre.changes.get("last") or 0) >= 0.15:
+        flags.append(Flag("watch", f"Commercial real estate delinquencies rose to {cre.display_value} last quarter "
+                                   f"({cre.change_text('last')}). CRE is the main credit risk for community banks.", ("DRCRELEXFACBS",)))
     return flags
 
 
@@ -336,6 +383,38 @@ def notable_moves(readings: dict[str, Reading], limit: int = 5,
         size = abs(r.change_size("month"))
         if r.notable_month_move and size >= r.notable_month_move:
             scored.append((size / r.notable_month_move, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[:limit]]
+
+
+def notable_today(readings: dict[str, Reading], today: date, limit: int = 3,
+                  covered: frozenset[str] = frozenset()) -> list[Reading]:
+    """What moved since the previous reading, for the short daily email. Only
+    fresh data counts, so a big move doesn't repeat every day for a month."""
+    scored = []
+    for r in readings.values():
+        if (not r.ok or r.stale or r.as_of is None or (today - r.as_of).days > 4
+                or r.key in ("DFEDTARU", "DFEDTARL") or r.key in covered):
+            continue
+        size = abs(r.change_size("last"))
+        threshold = r.notable_month_move * 0.5
+        if threshold and size >= threshold:
+            scored.append((size / threshold, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[:limit]]
+
+
+def notable_week(readings: dict[str, Reading], limit: int = 6,
+                 covered: frozenset[str] = frozenset()) -> list[Reading]:
+    """Biggest moves over the past week, for the weekly look book."""
+    scored = []
+    for r in readings.values():
+        if not r.ok or r.stale or r.key in ("DFEDTARL",) or r.key in covered:
+            continue
+        size = abs(r.change_size("week"))
+        threshold = r.notable_month_move * 0.6
+        if threshold and size >= threshold:
+            scored.append((size / threshold, r))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:limit]]
 

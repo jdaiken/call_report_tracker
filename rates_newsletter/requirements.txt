@@ -1,1 +1,4 @@
 requests>=2.31.0
+matplotlib>=3.8
+# Unofficial Finviz scraper for regional bank stocks; the newsletter works without it.
+finvizfinance>=1.0

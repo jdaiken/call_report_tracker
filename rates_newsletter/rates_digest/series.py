@@ -25,13 +25,16 @@ class Series:
     section: str
     kind: str              # rate | level | yoy | points
     unit: str              # display unit: "%", "$B", "$", "" (index)
-    frequency: str         # daily | weekly | monthly
+    frequency: str         # daily | weekly | monthly | quarterly
     what_it_is: str
     why_it_matters: str
     # A 1-month move at least this big (pp for rates, % for levels) counts as
     # "notable" and can make the top-of-email summary.
     notable_month_move: float = 0.25
     tags: tuple[str, ...] = field(default_factory=tuple)
+    # FRED reports some Fed balance-sheet items in millions; mark them so the
+    # numbers are right even when FRED's units text isn't available.
+    millions: bool = False
 
 
 SECTIONS = [
@@ -47,6 +50,8 @@ SECTIONS = [
      "How much money is sitting in U.S. banks and how tight funding is. This is the pool IntraFi's network moves."),
     ("spreads", "Spreads that matter for IntraFi",
      "The gap between two rates often says more than either rate alone."),
+    ("stress", "Bank stress signals",
+     "Early warnings that banks are short of cash or seeing credit problems. Usually quiet; they matter when they move."),
     ("markets", "General market trends",
      "The broader backdrop any banker should know: the yield curve, credit, stocks, inflation and jobs."),
 ]
@@ -199,6 +204,33 @@ SERIES: list[Series] = [
         "Cash money market funds and others park overnight at the Fed's reverse repo facility.",
         "A cushion of idle cash in the system. When it is near zero, extra Treasury borrowing pulls money out of bank reserves instead.",
         notable_month_move=25.0,
+    ),
+    # ---------------------------------------------------------------- stress
+    Series(
+        "WLCFLPCL", "Fed discount window borrowing", "stress", "level_abs", "$B", "weekly",
+        "Loans banks took from the Federal Reserve's discount window (primary credit), as of each Wednesday.",
+        "Banks only borrow here when they need cash fast. A sudden jump was the first public sign of trouble in March 2023.",
+        notable_month_move=5.0, millions=True,
+    ),
+    Series(
+        "H8B3094NSMA", "Borrowings at small banks", "stress", "level", "$B", "weekly",
+        "Money small banks have borrowed, mostly FHLB advances, from the Fed's weekly H.8 report (seasonally adjusted).",
+        "Rising borrowings mean small banks need more funding than their deposits provide. "
+        "It is the closest public read on FHLB demand, and that same need can be met with one-way placements.",
+        notable_month_move=3.0, millions=True,
+    ),
+    Series(
+        "WTREGEN", "Treasury's cash account at the Fed", "stress", "level_abs", "$B", "weekly",
+        "Cash the U.S. Treasury keeps at the Federal Reserve (the Treasury General Account).",
+        "When the Treasury builds up this account, the money comes out of the banking system, shrinking reserves and deposits.",
+        notable_month_move=150.0, millions=True,
+    ),
+    Series(
+        "DRCRELEXFACBS", "Commercial real estate loan delinquencies", "stress", "rate", "%", "quarterly",
+        "Share of commercial real estate loans at U.S. banks that are 30 or more days past due. Reported quarterly.",
+        "CRE is the biggest credit worry for community banks, which are most of IntraFi's network. "
+        "Rising delinquencies come before losses and bank stress.",
+        notable_month_move=0.15,
     ),
     # --------------------------------------------------------------- markets
     Series(

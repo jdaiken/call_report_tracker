@@ -1,17 +1,21 @@
-"""Made-up data for previewing the email layout and running tests offline.
+"""Made-up data for previewing the emails and running tests offline.
 
-None of these numbers are real. `run.py --sample` stamps every preview with a
-"SAMPLE DATA" banner so a preview can't be mistaken for a live digest.
+None of these numbers are real. Every preview built from them carries a
+"SAMPLE DATA" banner so it can't be mistaken for a live email.
 """
 from __future__ import annotations
 
 import random
 from datetime import date, timedelta
 
+from .analysis import build_all, watch_flags
+from .extras import (BankQuote, CalendarResult, Event, Failure, FailureResult, RegionalBanks,
+                     StablecoinResult, fomc_events)
 from .fetch import Headline, Observations
 from .series import SERIES, SPREADS
 
-# Rough starting level and daily wobble for each series (fictional).
+# Rough starting level and daily wobble for each series (fictional). Values for
+# series marked `millions` are in millions, as FRED reports them.
 _PROFILE = {
     "DFEDTARU": (4.25, 0), "DFEDTARL": (4.00, 0), "EFFR": (4.08, 0.005), "IORB": (4.15, 0),
     "SOFR": (4.10, 0.01), "DPRIME": (7.25, 0),
@@ -20,11 +24,14 @@ _PROFILE = {
     "DGS1MO": (4.05, 0.02), "DGS3MO": (3.95, 0.02), "DGS6MO": (3.80, 0.02), "DGS1": (3.65, 0.025),
     "WRMFNS": (2900.0, 6.0), "DPSACBW027SBOG": (18500.0, 25.0), "DPSLCBW027SBOG": (10400.0, 20.0),
     "DPSSCBW027SBOG": (5650.0, 10.0), "LTDSCBW027SBOG": (1150.0, 4.0), "WRESBAL": (3200.0, 30.0),
-    "RRPONTSYD": (40.0, 8.0), "DGS2": (3.55, 0.04), "DGS10": (4.15, 0.04), "MORTGAGE30US": (6.30, 0.05),
-    "BAMLH0A0HYM2": (3.10, 0.03), "BAMLC0A0CM": (0.85, 0.01), "VIXCLS": (17.0, 0.8), "SP500": (6500.0, 35.0), "DJIA": (45000.0, 220.0), "NASDAQCOM": (21500.0, 160.0),
-    "DGS5": (3.75, 0.04), "DGS30": (4.70, 0.04),
+    "RRPONTSYD": (40.0, 8.0), "DGS2": (3.55, 0.04), "DGS5": (3.75, 0.04), "DGS10": (4.15, 0.04),
+    "DGS30": (4.70, 0.04), "MORTGAGE30US": (6.30, 0.05),
+    "BAMLH0A0HYM2": (3.10, 0.03), "BAMLC0A0CM": (0.85, 0.01), "VIXCLS": (17.0, 0.8), "SP500": (6500.0, 35.0),
+    "DJIA": (45000.0, 220.0), "NASDAQCOM": (21500.0, 160.0),
     "DCOILWTICO": (68.0, 1.0), "DTWEXBGS": (121.0, 0.25), "CPIAUCSL": (320.0, 0.0), "UNRATE": (4.3, 0.05),
     "TOTLL": (12900.0, 15.0),
+    "WLCFLPCL": (6000.0, 400.0), "H8B3094NSMA": (285000.0, 900.0), "WTREGEN": (850000.0, 9000.0),
+    "DRCRELEXFACBS": (1.30, 0.05),
 }
 _FREQ = {s.id: s.frequency for s in SERIES}
 
@@ -39,6 +46,8 @@ def _dates(today: date, freq: str, days: int) -> list[date]:
             out.append(d)
         elif freq == "monthly" and d.day == 1:
             out.append(d)
+        elif freq == "quarterly" and d.day == 1 and d.month in (1, 4, 7, 10) and (today - d).days > 100:
+            out.append(d)   # quarterly data arrives ~3 months after the quarter starts
         d += timedelta(days=1)
     return out
 
@@ -51,10 +60,11 @@ def sample_observations(today: date, days: int = 800, seed: int = 7) -> dict[str
         start, wobble = _PROFILE.get(sid, (1.0, 0.01))
         freq = _FREQ.get(sid, "daily")
         pts, v = [], start
-        dates = _dates(today, freq, days)
-        for i, d in enumerate(dates):
+        for i, d in enumerate(_dates(today, freq, 2000 if freq == "quarterly" else days)):
             if sid == "CPIAUCSL":
                 v = start * (1.028 ** (i / 12))          # ~2.8% a year
+            elif sid == "DRCRELEXFACBS":
+                v = start + 0.06 * i                     # a slow fictional climb
             elif wobble:
                 v = max(0.0, v + rng.gauss(0, wobble) + 0.03 * (start - v))  # wanders, then drifts back
             pts.append((d, round(v, 4)))
@@ -62,7 +72,7 @@ def sample_observations(today: date, days: int = 800, seed: int = 7) -> dict[str
         if sid in ("DFEDTARU", "DFEDTARL", "IORB", "DPRIME", "EFFR", "SOFR"):
             cut_day = today - timedelta(days=5)
             pts = [(d, round(x - 0.25, 4) if d >= cut_day else x) for d, x in pts]
-        out[sid] = Observations(sid, pts, units="Billions of U.S. Dollars" if sid in ("WRESBAL",) else None)
+        out[sid] = Observations(sid, pts)
     return out
 
 
@@ -73,3 +83,39 @@ def sample_headlines(today: date) -> list[Headline]:
         Headline("Bank regulation", "SAMPLE: Agencies request comment on proposed rule", "https://www.federalreserve.gov/",
                  today - timedelta(days=2)),
     ]
+
+
+def sample_regional(seed: int = 3) -> RegionalBanks:
+    rng = random.Random(seed)
+    quotes = []
+    for i in range(120):
+        cap = rng.uniform(0.3e9, 40e9)
+        quotes.append(BankQuote(f"SMP{i:03d}", f"Sample Bancorp {i}", cap,
+                                round(rng.gauss(-0.4, 1.2), 2), round(rng.gauss(-1.0, 2.5), 2), round(rng.gauss(0.5, 4), 2)))
+    return RegionalBanks(quotes)
+
+
+def sample_stablecoins(today: date) -> StablecoinResult:
+    pts, v = [], 210.0
+    for i in range(730, 0, -1):
+        v *= 1.0006
+        pts.append((today - timedelta(days=i), round(v, 2)))
+    return StablecoinResult(pts)
+
+
+def sample_bundle(today: date, weekly: bool = False):
+    from .email_report import Bundle
+    data = sample_observations(today)
+    readings = build_all(data, today)
+    cal = CalendarResult(events=fomc_events(today, today + timedelta(days=8)) + [
+        Event(today + timedelta(days=3), "Inflation report (CPI)"),
+        Event(today + timedelta(days=4), "Fed's weekly bank deposits report (H.8)")])
+    cal.events.sort(key=lambda e: e.when)
+    return Bundle(
+        today=today, readings=readings, flags=watch_flags(readings),
+        headlines=sample_headlines(today),
+        failures=FailureResult([Failure("Sample Community Bank", "Anytown, ST", today - timedelta(days=40), 210_000, 260_000)]),
+        stablecoins=sample_stablecoins(today) if weekly else StablecoinResult(),
+        calendar=cal, regional=sample_regional(), sample=True,
+    )
+

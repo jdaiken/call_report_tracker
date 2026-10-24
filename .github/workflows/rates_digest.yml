@@ -1,7 +1,9 @@
-name: Daily Rates & Markets Digest
+name: Rates & Markets Newsletter
 
 # Lives in this repo (not its own) so it can use the same EMAIL_ADDRESS /
 # EMAIL_APP_PASSWORD secrets as the FFIEC monitor. Code is in rates_newsletter/.
+# Mondays send the weekly look book (charts + analysis); Tuesday-Friday send the
+# short daily email.
 
 on:
   schedule:
@@ -11,10 +13,15 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "send = email the live digest; dry_run = build it and upload it as an artifact, no email; check_series = test that every data series loads"
+        description: "send = email it; dry_run = build it and upload it as an artifact, no email; check_series = test that every data source loads"
         type: choice
         options: [send, dry_run, check_series]
         default: send
+      edition:
+        description: "auto = look book on Mondays, daily email other days"
+        type: choice
+        options: [auto, daily, weekly]
+        default: auto
 
 permissions:
   contents: read
@@ -22,7 +29,7 @@ permissions:
 jobs:
   digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: rates_newsletter
@@ -42,11 +49,12 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
           MODE: ${{ inputs.mode }}
+          EDITION: ${{ inputs.edition }}
         run: |
           case "${MODE:-send}" in
             check_series) python run.py --check-series ;;
-            dry_run)      python run.py --dry-run --out-dir out ;;
-            *)            python run.py ;;
+            dry_run)      python run.py --edition "${EDITION:-auto}" --dry-run --out-dir out ;;
+            *)            python run.py --edition "${EDITION:-auto}" ;;
           esac
 
       - name: Upload preview (dry run only)
