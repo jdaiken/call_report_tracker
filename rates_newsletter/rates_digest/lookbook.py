@@ -360,7 +360,8 @@ def render_lookbook(b: Bundle) -> tuple[str, str, dict[str, bytes], str]:
             inner += f'<p style="margin:0 0 6px;font-size:12px;color:{QUIET}">Chart unavailable this week.</p>'
         if c.analysis:
             inner += f'<p style="margin:0 0 4px;font-size:14px;line-height:1.55;color:{INK}">{_esc(c.analysis)}</p>'
-    inner += _h2("Regional bank stocks", "From Finviz. Big moves here were the earliest warning in 2023.") + regional_section(b)
+    if b.regional.quotes or b.regional.error:   # skipped entirely while Finviz is turned off
+        inner += _h2("Regional bank stocks", "From Finviz. Big moves here were the earliest warning in 2023.") + regional_section(b)
     inner += _h2("The week ahead") + calendar_html(b.calendar, b.today)
     if b.headlines or b.feed_errors:
         inner += _h2("From the Fed last week") + headlines_html(b.headlines, b.feed_errors)

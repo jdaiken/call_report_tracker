@@ -37,7 +37,10 @@ def collect(today, weekly: bool) -> Bundle:
         failures=extras.fetch_failures(),
         stablecoins=extras.fetch_stablecoins() if weekly else extras.StablecoinResult(),
         calendar=extras.fetch_calendar(today, days=8),
-        regional=extras.fetch_regional_banks(with_performance=weekly),
+        # Finviz is off by default: its redesigned screener can't be read by
+        # finvizfinance yet. Set ENABLE_FINVIZ=1 to try it again.
+        regional=(extras.fetch_regional_banks(with_performance=weekly)
+                  if os.environ.get("ENABLE_FINVIZ", "").strip() == "1" else extras.RegionalBanks()),
         used_api=bool(os.environ.get("FRED_API_KEY", "").strip()),
     )
 
@@ -71,7 +74,8 @@ def check_sources(b: Bundle) -> int:
         ("Stablecoins", b.stablecoins.error, f"{len(b.stablecoins.points)} days, latest "
          f"${b.stablecoins.points[-1][1]:,.0f}B" if b.stablecoins.points else ""),
         ("Release calendar", b.calendar.error, f"{len(b.calendar.events)} events in the next 8 days"),
-        ("Regional banks (Finviz)", b.regional.error, f"{len(b.regional.quotes)} banks"),
+        ("Regional banks (Finviz)", b.regional.error,
+         f"{len(b.regional.quotes)} banks" if b.regional.quotes else "turned off (set ENABLE_FINVIZ=1 to try)"),
         ("Fed headlines", ", ".join(b.feed_errors) or None, f"{len(b.headlines)} in the past week"),
     ]
     if b.regional.error:

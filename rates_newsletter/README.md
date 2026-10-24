@@ -43,7 +43,10 @@ small-bank borrowings are the closest public read on FHLB demand.
 | Finviz via `finvizfinance` | regional bank stocks | no |
 | federalreserve.gov | Fed press release feeds; FOMC dates (typed into `extras.py`) | no |
 
-About Finviz: `finvizfinance` is an unofficial package that reads Finviz's public
+**Finviz is turned off** (October 2026): Finviz redesigned its screener and
+`finvizfinance` can't read the new pages yet. To try it again later, add
+`finvizfinance` to requirements.txt and set `ENABLE_FINVIZ: "1"` in the workflow's
+env. About Finviz: `finvizfinance` is an unofficial package that reads Finviz's public
 web pages. It can break when Finviz changes its site or blocks automated requests,
 and you should check Finviz's terms of use. If it fails, the emails still go out
 without the regional bank section. Finviz Elite's official API is the dependable
