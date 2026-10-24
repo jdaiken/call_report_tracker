@@ -58,7 +58,7 @@ def fmt_value(v: float, s_kind: str, unit: str) -> str:
         return f"${v:,.2f}"
     if s_kind == "points":
         return f"{v:.1f}"
-    return f"{v:,.2f}"
+    return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.2f}"
 
 
 def fmt_change(delta: float, kind: str, base: Optional[float] = None) -> str:

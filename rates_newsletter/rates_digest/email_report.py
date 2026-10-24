@@ -63,21 +63,52 @@ def headline_for(flags: list[Flag], moves: list[Reading]) -> str:
     return "A quiet day for rates"
 
 
+def _pct_move(r: Optional[Reading]) -> Optional[str]:
+    """'Nasdaq down 1.2%' style move since the previous trading day."""
+    if not r or not r.ok or r.stale or r.changes.get("last") is None or not r.bases.get("last"):
+        return None
+    pct = r.changes["last"] / r.bases["last"] * 100
+    if abs(pct) < 0.05:
+        return "flat"
+    return f"{'up' if pct > 0 else 'down'} {abs(pct):.1f}%"
+
+
+def market_snapshot(readings: dict[str, Reading]) -> Optional[str]:
+    """One line on how stocks and the 10-year moved on the latest trading day."""
+    parts = []
+    for key, label in (("SP500", "S&P 500"), ("DJIA", "Dow"), ("NASDAQCOM", "Nasdaq")):
+        mv = _pct_move(readings.get(key))
+        if mv:
+            parts.append(f"{label} {mv}")
+    ten = readings.get("DGS10")
+    if ten and ten.ok and not ten.stale and ten.changes.get("last") is not None:
+        parts.append(f"10-year Treasury {ten.display_value} ({ten.change_text('last')})")
+    if not parts:
+        return None
+    day = next((readings[k].as_of for k in ("SP500", "DJIA", "NASDAQCOM", "DGS10")
+                if readings.get(k) and readings[k].ok), None)
+    when = f"on {day:%A}" if day else "on the latest trading day"
+    return f"Markets {when}: " + ", ".join(parts) + "."
+
+
 def thirty_seconds(flags: list[Flag], moves: list[Reading], readings: dict[str, Reading]) -> list[tuple[str, str]]:
     """(level, text) bullets for the top of the email."""
     out: list[tuple[str, str]] = []
     top, bottom = readings.get("DFEDTARU"), readings.get("DFEDTARL")
     if top and bottom and top.ok and bottom.ok:
         out.append(("info", f"The Fed's target range is {bottom.value:.2f}% to {top.value:.2f}%."))
+    snap = market_snapshot(readings)
+    if snap:
+        out.append(("info", snap))
     for f in flags:
         out.append((f.level, f.text))
     for m in moves:
         if any(m.name in t for _, t in out):
             continue
         out.append(("move", f"{m.name} is {m.display_value}, {m.change_text('month')} over the past month."))
-    if len(out) <= 1:
+    if len(out) <= 2:
         out.append(("info", "No unusual moves today. Rates and markets are within their normal recent ranges."))
-    return out[:8]
+    return out[:9]
 
 
 # --------------------------------------------------------------------- HTML

@@ -136,3 +136,15 @@ def test_fetch_all_stops_early_when_fred_is_down(monkeypatch):
     out = fetch.fetch_all([f"S{i}" for i in range(10)], TODAY, fetcher=failing)
     assert len(calls) == 3
     assert all(o.error for o in out.values()) and len(out) == 10
+
+
+def test_market_snapshot_line():
+    from rates_digest.email_report import market_snapshot
+    def obs(sid, prev, now):
+        return Observations(sid, [(date(2026, 10, 22), prev), (date(2026, 10, 23), now)])
+    data = {"SP500": obs("SP500", 6500, 6435), "DJIA": obs("DJIA", 45000, 45000),
+            "NASDAQCOM": obs("NASDAQCOM", 21500, 21242), "DGS10": obs("DGS10", 4.15, 4.12)}
+    readings = analysis.build_all(data, date(2026, 10, 24))
+    line = market_snapshot(readings)
+    assert line == ("Markets on Friday: S&P 500 down 1.0%, Dow flat, Nasdaq down 1.2%, "
+                    "10-year Treasury 4.12% (down 0.03 points).")

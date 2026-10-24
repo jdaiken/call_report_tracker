@@ -208,9 +208,21 @@ SERIES: list[Series] = [
         notable_month_move=0.20,
     ),
     Series(
+        "DGS5", "5-year Treasury", "markets", "rate", "%", "daily",
+        "The yield on government debt that matures in five years.",
+        "A benchmark for medium-term bank lending and for longer CDs and term funding.",
+        notable_month_move=0.20,
+    ),
+    Series(
         "DGS10", "10-year Treasury", "markets", "rate", "%", "daily",
         "The yield on government debt that matures in ten years.",
         "Drives mortgage rates and the value of the bonds banks hold. A sharp rise means paper losses on bank bond portfolios, the problem that sank SVB.",
+        notable_month_move=0.20,
+    ),
+    Series(
+        "DGS30", "30-year Treasury", "markets", "rate", "%", "daily",
+        "The yield on the government's longest bond.",
+        "Reflects long-run inflation and government borrowing worries. A big jump pressures the value of long-term bank assets.",
         notable_month_move=0.20,
     ),
     Series(
@@ -236,6 +248,18 @@ SERIES: list[Series] = [
         "Expected stock market volatility over the next month. Around 12 to 20 is calm; above 30 is stress.",
         "Spikes in the VIX often come with flights to safety, when depositors look hardest at whether their money is insured.",
         notable_month_move=4.0,
+    ),
+    Series(
+        "DJIA", "Dow Jones Industrial Average", "markets", "level", "", "daily",
+        "The stock index of 30 large, well-known U.S. companies. The oldest and most quoted market index.",
+        "A headline read on market mood that bank customers and boards will have seen.",
+        notable_month_move=5.0,
+    ),
+    Series(
+        "NASDAQCOM", "Nasdaq Composite", "markets", "level", "", "daily",
+        "The index of all stocks on the Nasdaq exchange, heavy in technology companies.",
+        "Tech-driven swings show up here first. Sharp drops tend to come with a flight to safety.",
+        notable_month_move=6.0,
     ),
     Series(
         "SP500", "S&P 500", "markets", "level", "", "daily",

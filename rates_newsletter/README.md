@@ -19,17 +19,18 @@ root; the code is in this folder.
 | Where large depositors can put cash instead | 1-, 3- and 6-month T-bills, 1-year Treasury, retail money market fund assets |
 | Bank deposits and funding | Deposits at all, large and small banks; large CDs at small banks; reserves; Fed reverse repo |
 | Spreads that matter for IntraFi | T-bill vs. bank money market and CD rates, T-bill vs. fed funds and IORB, SOFR vs. IORB, yield curve |
-| General market trends | 2- and 10-year Treasuries, mortgages, credit spreads, VIX, S&P 500, oil, dollar, inflation, unemployment, bank loans |
+| General market trends | 2-, 5-, 10- and 30-year Treasuries, mortgages, credit spreads, VIX, S&P 500, Dow, Nasdaq, oil, dollar, inflation, unemployment, bank loans |
 | From the Fed this week | Monetary-policy and bank-regulation press releases from the past 7 days |
 
-The top of each email has a "Today in 30 seconds" summary with automatic
+The top of each email has a "Today in 30 seconds" summary, including how the S&P 500,
+Dow, Nasdaq and 10-year Treasury moved on the latest trading day, with automatic
 **Watch** flags, for example: a Fed rate change, an inverted yield curve,
 deposits falling at small banks while rising at large ones, SOFR above IORB,
 credit spreads widening, or the T-bill vs. bank deposit gap widening.
 
 All data comes from FRED (Federal Reserve Bank of St. Louis), which republishes
 the Fed, New York Fed, Treasury, FDIC, Freddie Mac and ICE BofA figures. FHLB
-advance rates are not included because there is no free public feed.
+advance rates are not included: the FHLBanks publish them to members only.
 
 ## Setup
 
