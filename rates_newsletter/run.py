@@ -50,10 +50,18 @@ def _finviz_probe() -> str:
         from finvizfinance.util import headers
         r = requests.get("https://finviz.com/screener.ashx", params={"v": "111", "f": "ind_banksregional"},
                          headers=headers, timeout=30)
-        title = re.search(r"<title>(.*?)</title>", r.text, re.S | re.I)
-        rows = len(re.findall(r"screener-body-table-nw", r.text))
-        return (f"HTTP {r.status_code}, {len(r.text):,} bytes, title={title.group(1).strip()[:80] if title else 'none'!r}, "
-                f"table cells found={rows}")
+        t = r.text
+        marks = {m: t.count(m) for m in ("pageSelect", "screener-pages", "quote.ashx?t=", "styled-table-new",
+                                          "screener_table", "is-pages", "Total:", "#1 /", "<tr", "data-row")}
+        i = t.find("quote.ashx?t=")
+        snippet = t[max(0, i - 700):i + 500].replace("\n", " ") if i >= 0 else ""
+        if os.environ.get("GITHUB_ACTIONS") == "true" and snippet:
+            for n in range(0, len(snippet), 380):
+                print(f"::notice title=Finviz row HTML {n // 380 + 1}::{snippet[n:n + 380].replace('%', '%25')}")
+            j = t.find("Total:")
+            if j >= 0:
+                print(f"::notice title=Finviz total::{t[j - 300:j + 300].replace(chr(10), ' ').replace('%', '%25')}")
+        return f"HTTP {r.status_code}, {len(t):,} bytes, markers={marks}"
     except Exception as e:
         return f"probe error: {e}"
 
