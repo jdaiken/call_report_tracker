@@ -18,7 +18,7 @@ from typing import Callable, Optional
 from .analysis import Reading
 from .charts import Band, Line, index_to_100, line_chart
 from .email_report import Bundle, _esc
-from .extras import FOMC_DECISION_DAYS, Event, Failure, fmt_thousands
+from .extras import FOMC_DECISION_DAYS, Event, Failure, deposits_note, fmt_thousands
 from .newsletter import (FDIC_FAILURES_URL, ITEMS, OK_C, RISK_C, TONE_COLOR, TONE_WORD, WATCH_C,
                          _pct, _r, current_zone, metric_value, sources_for)
 
@@ -296,7 +296,8 @@ def build_report(b: Bundle) -> Report:
     for f in recent:
         if (b.today - f.fail_date).days <= 7:
             signals.append(("risk", f"Bank failure: {f.name} ({f.city_state}), {f.fail_date:%b %-d}, "
-                                    f"{fmt_thousands(f.deposits_thousands)} deposits"))
+                                    f"{fmt_thousands(f.deposits_thousands)} deposits" if f.deposits_thousands is not None
+                                    else f"Bank failure: {f.name} ({f.city_state}), {f.fail_date:%b %-d}"))
     top = _r(b, "DFEDTARU")
     if top and top.changes.get("week") and abs(top.changes["week"]) >= 0.01:
         signals.append(("watch", f"Fed {'hiked' if top.changes['week'] > 0 else 'cut'} "
@@ -423,7 +424,7 @@ def render_html(rep: Report, b: Bundle, image_src: Callable[[str], str] = lambda
              f'<div style="font-size:11.5px;color:{MUTED}">failures in {rep.today.year}</div>')
     if rep.recent_failures:
         fails += "".join(f'<div style="font-size:12px;color:{INK};margin-top:6px"><b>{f.fail_date:%b %-d}</b> · {_esc(f.name)}, '
-                         f'{_esc(f.city_state)} · {fmt_thousands(f.deposits_thousands)}</div>' for f in rep.recent_failures[:8])
+                         f'{_esc(f.city_state)}{deposits_note(f)}</div>' for f in rep.recent_failures[:8])
     else:
         fails += f'<div style="font-size:12px;color:{MUTED};margin-top:6px">None so far this year</div>'
     fails += f'<div style="margin-top:8px;font-size:11px">{_link("FDIC failed bank list", FDIC_FAILURES_URL, LINK)}</div>'

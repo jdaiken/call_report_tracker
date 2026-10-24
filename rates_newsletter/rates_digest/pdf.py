@@ -19,7 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .extras import fmt_thousands
+from .extras import deposits_note
 from .monitor import NAME, Panel, Report
 from .newsletter import FDIC_FAILURES_URL, TONE_COLOR, TONE_WORD
 
@@ -184,8 +184,8 @@ def _last_page(rep: Report) -> list:
              _p(str(rep.failures_ytd) if rep.failures_ytd is not None else "n/a", "big"),
              _p(f"failures in {rep.today.year}", "sig"), Spacer(1, 6)]
     if rep.recent_failures:
-        fails += [_p(f"<b>{f.fail_date:%b %-d}</b> · {escape(f.name)}, {escape(f.city_state)} · "
-                     f"{fmt_thousands(f.deposits_thousands)}", "cell") for f in rep.recent_failures[:8]]
+        fails += [_p(f"<b>{f.fail_date:%b %-d}</b> · {escape(f.name)}, {escape(f.city_state)}"
+                     f"{deposits_note(f)}", "cell") for f in rep.recent_failures[:8]]
     else:
         fails.append(_p("None so far this year", "sig"))
     fails += [Spacer(1, 6), _p(_link("FDIC failed bank list", FDIC_FAILURES_URL, LINK), "small")]

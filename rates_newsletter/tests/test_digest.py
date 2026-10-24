@@ -188,3 +188,16 @@ def test_rates_table_has_every_daily_rate():
             assert r.name in html and r.url in html
     pdf = render_pdf(rep)
     assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5
+
+
+def test_published_failed_bank_list_fills_api_lag():
+    from rates_digest.extras import merge_failures, parse_failed_bank_list, parse_failures
+    csv_text = ('﻿Bank Name\xa0,City\xa0,State\xa0,Cert\xa0,Acquiring Institution\xa0,Closing Date\xa0,Fund\n'
+                'Nano Banc,Irvine,CA,57263,Sunwest Bank,25-Sep-26,10550\n'
+                'Small Business Bank,Lenexa,KS,58000,Some Bank,17-Jul-26,10549\n')
+    listed = parse_failed_bank_list(csv_text)
+    assert [f.name for f in listed] == ["Nano Banc", "Small Business Bank"]
+    api = parse_failures({"data": [{"data": {"NAME": "SMALL BUSINESS BANK", "CITYST": "LENEXA, KS",
+                                             "FAILDATE": "7/17/2026", "QBFDEP": "100000"}}]})
+    merged = merge_failures(api, listed)
+    assert len(merged) == 2 and merged[0].name == "Nano Banc" and merged[1].deposits_thousands == 100000

@@ -73,16 +73,91 @@ def parse_failures(payload: dict) -> list[Failure]:
     return out
 
 
+# The BankFind API can lag the FDIC's published failed bank list by weeks or
+# months, so the published list is read too and the two are merged.
+FDIC_LIST_CSV_URLS = (
+    "https://www.fdic.gov/bank-failures/download-data.csv",
+    "https://www.fdic.gov/bank/individual/failed/banklist.csv",
+)
+
+
+def _parse_list_date(s: str) -> Optional[date]:
+    s = (s or "").strip()
+    for fmt in ("%d-%b-%y", "%d-%b-%Y", "%B %d, %Y", "%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_failed_bank_list(text: str) -> list[Failure]:
+    """The FDIC's failed bank list CSV: Bank Name, City, State, Cert, Acquiring Institution, Closing Date, Fund."""
+    import csv
+    import io
+    out = []
+    rows = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+    for rec in rows:
+        rec = {(k or "").strip().lower().replace("\xa0", " "): (v or "").strip() for k, v in rec.items()}
+        d = _parse_list_date(rec.get("closing date", ""))
+        name = rec.get("bank name") or rec.get("bank")
+        if not d or not name:
+            continue
+        city, state = rec.get("city", ""), rec.get("state", "") or rec.get("st", "")
+        out.append(Failure(name, f"{city}, {state}".strip(", "), d, None, None))
+    return out
+
+
+def _key(name: str) -> str:
+    import re
+    n = re.sub(r"[^a-z0-9 ]", " ", name.lower())
+    n = re.sub(r"\b(the|of|and|national|association|bank|trust|savings|loan|company|co|fs|la|b|t|n|a)\b", " ", n)
+    return "".join(n.split())[:12]
+
+
+def merge_failures(api: list[Failure], listed: list[Failure]) -> list[Failure]:
+    """API records (which carry deposits) win; the published list adds anything the API hasn't caught up on."""
+    out = list(api)
+    for f in listed:
+        if not any(abs((f.fail_date - g.fail_date).days) <= 3 and
+                   (_key(f.name) == _key(g.name) or f.city_state.split(",")[0].lower() == g.city_state.split(",")[0].lower())
+                   for g in api):
+            out.append(f)
+    out.sort(key=lambda f: f.fail_date, reverse=True)
+    return out
+
+
 def fetch_failures() -> FailureResult:
+    api, errors = [], []
     try:
         r = _get(_session(), FDIC_FAILURES_URL, {
             "fields": "NAME,CITYST,FAILDATE,QBFDEP,QBFASSET",
             "sort_by": "FAILDATE", "sort_order": "DESC", "limit": 25, "format": "json",
         })
-        return FailureResult(parse_failures(r.json()))
+        api = parse_failures(r.json())
     except Exception as e:
-        log.warning("FDIC failures unavailable: %s", e)
-        return FailureResult(error=str(e))
+        errors.append(f"BankFind API: {e}")
+    listed = []
+    for url in FDIC_LIST_CSV_URLS:
+        try:
+            r = _get(_session(), url, None)
+            r.encoding = r.encoding or "latin-1"
+            listed = parse_failed_bank_list(r.text)
+            if listed:
+                break
+        except Exception as e:
+            errors.append(f"{url}: {e}")
+    if not api and not listed:
+        log.warning("FDIC failures unavailable: %s", errors)
+        return FailureResult(error="; ".join(errors) or "no records")
+    res = FailureResult(merge_failures(api, listed))
+    res.sources = ("API" if api else "") + (" + published list" if listed else "")   # type: ignore[attr-defined]
+    return res
+
+
+def deposits_note(f: Failure) -> str:
+    """' · $210 million' or '' when the published list hasn't given deposits."""
+    return f" · {fmt_thousands(f.deposits_thousands)}" if f.deposits_thousands is not None else ""
 
 
 def fmt_thousands(v: Optional[float]) -> str:
