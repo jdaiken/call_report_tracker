@@ -71,7 +71,7 @@ STATUS = "not run"          # last outcome, reported as a GitHub annotation by r
 def _post(api_key: str, model: str, content: str) -> requests.Response:
     return requests.post(API_URL, timeout=60, headers={
         "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json",
-    }, json={"model": model, "max_tokens": 400, "messages": [{"role": "user", "content": content}]})
+    }, json={"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": content}]})
 
 
 def _newest_sonnet(api_key: str) -> str | None:
@@ -103,7 +103,13 @@ def claude_summary(rep: "Report", api_key: str, model: str | None = None) -> str
                 STATUS = f"API error {r.status_code} ({model}): {r.text[:300]}"
                 log.warning("Claude summary unavailable: %s", STATUS)
                 return None
-            text = " ".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+            body = r.json()
+            text = " ".join(b.get("text", "") for b in body.get("content", []) if b.get("type") == "text")
+            if not text.strip():
+                STATUS = (f"empty reply ({model}): stop_reason={body.get('stop_reason')}, "
+                          f"blocks={[b.get('type') for b in body.get('content', [])]}")
+                log.warning("Claude summary %s", STATUS)
+                return None
         except Exception as e:                                   # network, timeout
             STATUS = f"API call failed: {e}"
             log.warning("Claude summary unavailable: %s", e)
