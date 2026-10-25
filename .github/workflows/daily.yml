@@ -142,6 +142,7 @@ jobs:
         env:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python scripts/preview_refilings_template.py "${{ inputs.preview_refilings_days }}"
 
       - name: Print restatement RSSDs (counts only, no email)
@@ -157,6 +158,8 @@ jobs:
           FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          # Optional: Claude writes the "What's going on" paragraph (ffiec_monitor/narrative.py).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # workflow_dispatch inputs are unset on a schedule-triggered run, so
           # fall back with bash's ${VAR:-default} rather than the `||` pattern
           # used elsewhere -- more reliable for an explicit-false boolean input

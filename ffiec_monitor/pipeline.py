@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
@@ -172,21 +173,31 @@ def run_daily(
         return heartbeat_body if heartbeat else "Nothing to report today."
 
     if send and email_config is not None:
-        subject = _subject_for(watch_list_changes, tier1_events)
-        html_body = email_report.build_email_html(
+        rep, html_body, pdf_bytes = email_report.compose(
             watch_list_changes, tier1_events, snapshot_entries, tier2_events,
             restatement_events, new_filing_events, run_date,
         )
+        from . import narrative
+        logger.info("Summary: %s", narrative.STATUS)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            level = "notice" if rep.summary_by == "Claude" else "warning"
+            print(f"::{level} title=Daily summary::{narrative.STATUS[:500]}")
         csv_content = None
         if restatement_events or new_filing_events:
             csv_content = email_report.events_csv(restatement_events, new_filing_events)
         email_report.send_email(
-            email_config, subject, body, html_body=html_body,
+            email_config, rep.subject, _with_summary(rep, body), html_body=html_body,
             attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv" if csv_content else None,
             attachment_content=csv_content,
+            attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")],
         )
 
     return body
+
+
+def _with_summary(rep, body: str) -> str:
+    """Plain-text alternative: the summary paragraph above the existing text digest."""
+    return f"WHAT'S GOING ON\n{rep.summary}\n\n{body}" if rep.summary else body
 
 
 def _heartbeat_body(
@@ -344,11 +355,3 @@ def _build_watch_list_snapshot(conn) -> list[email_report.WatchListSnapshotEntry
             continue
         entries.append(email_report.WatchListSnapshotEntry(meta, ratios.full_snapshot_rows(snap.ratios)))
     return entries
-
-
-def _subject_for(watch_list_changes: list, tier1_events: list) -> str:
-    if tier1_events:
-        return f"[FFIEC Monitor] Tier 1 alert -- {len(tier1_events)} institution(s)"
-    if watch_list_changes:
-        return "[FFIEC Monitor] Watch List changed"
-    return "[FFIEC Monitor] Daily digest"

@@ -20,7 +20,11 @@ ffiec_monitor/
   matching.py      conservative name+state -> RSSD matching (shared by both resolvers)
   watch_list.py    LTWC / enforcement-order Watch List qualification
   alerts.py        Tier 1/2/3 classification, restatement handling, escalation rule
-  email_report.py  email structure + smtplib delivery
+  email_report.py  email structure + smtplib delivery (CSV + PDF attachments)
+  report.py        the designed daily email: counts, summary, one section per alert type, links
+  pdf_report.py    the same report as a PDF attachment
+  narrative.py     plain-English "What's going on" paragraph, written by Claude when
+                   ANTHROPIC_API_KEY is set (numbers checked against the data), else rule-based
   pipeline.py       daily-run orchestration
 run.py             CLI entrypoint
 scripts/
@@ -43,6 +47,7 @@ tests/             unit tests (ratio extraction/diffing, materiality floor, Watc
 | `FFIEC_TOKEN` | 90-day JWT, does **not** auto-refresh. See "Known limitations" below. |
 | `EMAIL_ADDRESS` | Sender and (default) recipient -- Gmail-to-Gmail for the personal-account phase (§8). |
 | `EMAIL_APP_PASSWORD` | Google Account App Password, not the real password. |
+| `ANTHROPIC_API_KEY` | Optional. Claude writes the daily summary paragraph; without it a rule-based paragraph is used. |
 
 `ALERT_RECIPIENT` is an optional env var/secret if you ever want the recipient to
 differ from `EMAIL_ADDRESS`; defaults to `EMAIL_ADDRESS` per spec §8.
