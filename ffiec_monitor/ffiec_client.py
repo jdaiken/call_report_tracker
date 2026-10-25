@@ -327,17 +327,32 @@ def _decode_byte_field(value: Any) -> bytes:
 def _parse_sdf(raw_field: Any) -> dict[str, Any]:
     """Decode+parse a single-institution SDF facsimile into {MDRM code: raw value}.
 
-    CAVEAT: FFIEC's SIS611 doc doesn't include an actual SDF content sample (just
-    a "[<byte stream>]" placeholder) -- this assumes the same tab-delimited,
-    quoted-header convention verified against the bulk Call Report download (a
-    header row of MDRM codes, e.g. `"IDRSSD"\\tRCON2170\\t...`, then one data row).
-    If a live pull comes back shaped differently, this is the one function to fix;
-    ratios.py's field-level mapping is unaffected either way.
+    The live layout is semicolon-delimited, one row per MDRM field (verified
+    2026-10-25 against a real pull). Until then this assumed the bulk download's
+    tab-delimited one-row layout, which parsed real facsimiles to nothing -- every
+    stored ratio was None, so no Tier 1/2 alert could fire. That layout is still
+    accepted as a fallback.
     """
     text = _decode_byte_field(raw_field).decode("utf-8-sig", errors="replace")
     lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) < 2:
         return {}
+    # Live format (confirmed 2026-10-25 with scripts/probe_facsimile.py): semicolon-
+    # delimited, ONE ROW PER FIELD --
+    #   Call Date;Bank RSSD Identifier;MDRM #;Value;Last Update;Short Definition;...
+    #   20260930;142179;RCOA7204;22.3548%;20261024;Leverage ratio (...);RCRI;31
+    # The definition text can itself contain semicolons, so only the first four
+    # columns are read positionally.
+    header = [c.strip().strip('"') for c in lines[0].split(";")]
+    if "MDRM #" in header and "Value" in header:
+        code_i, value_i = header.index("MDRM #"), header.index("Value")
+        out: dict[str, Any] = {}
+        for line in lines[1:]:
+            cols = line.split(";")
+            if len(cols) > max(code_i, value_i):
+                out[cols[code_i].strip().strip('"')] = cols[value_i].strip().strip('"')
+        return out
+    # Older assumption (bulk-download convention): tab-delimited header of codes + one data row.
     codes = [c.strip().strip('"') for c in lines[0].split("\t")]
     values = lines[1].split("\t")
     return dict(zip(codes, values))

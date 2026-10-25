@@ -38,7 +38,18 @@ def main() -> None:
                        f"commas {text.count(',')}, pipes {text.count('|')}")
     note("Probe head", repr(text[:700]))
     note("Probe line 2-4", repr("\n".join(lines[1:4])[:700]))
-    note("Probe parsed", json.dumps(dict(list(ffiec_client._parse_sdf(raw).items())[:8]))[:700])
+    parsed = ffiec_client._parse_sdf(raw)
+    note("Probe parsed", f"{len(parsed)} fields; " + json.dumps(dict(list(parsed.items())[:6]))[:600])
+    from ffiec_monitor import ratios
+    from ffiec_monitor.screen import screen
+    rows = conn.execute("SELECT id_rssd, period_end FROM call_report_snapshots WHERE period_end = ? "
+                        "ORDER BY checked_at DESC LIMIT 6", [period]).fetchall()
+    for r_id, p_end in rows:
+        fac = client.retrieve_facsimile(r_id, p_end)
+        rat = ratios.extract_ratios(fac, p_end)
+        shown = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in rat.items() if not k.startswith("_")}
+        flags = screen(rat)
+        note(f"Probe ratios {r_id}", json.dumps(shown)[:700] + " | flags: " + "; ".join(f.text for f in flags))
 
 
 if __name__ == "__main__":

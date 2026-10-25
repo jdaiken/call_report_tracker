@@ -257,3 +257,17 @@ def test_gateway_level_403_html_body_still_raises_rate_limit_error_with_raw_body
     with patch("ffiec_monitor.ffiec_client.time.sleep"):
         with pytest.raises(FFIECRateLimitError, match="403 Forbidden"):
             _client(session).retrieve_reporting_periods()
+
+
+def test_parse_sdf_live_semicolon_format():
+    import base64
+    from datetime import date
+    from ffiec_monitor import ffiec_client, ratios
+    text = ("Call Date;Bank RSSD Identifier;MDRM #;Value;Last Update;Short Definition;Call Schedule;Line Number\r\n"
+            "20260930;142179;RCON2170;132504;20261024;Total assets (Schedule RC, item 12);RC;12\r\n"
+            "20260930;142179;RCOA7204;22.3548%;20261024;Leverage ratio (item 26; divided by 30);RCRI;31\r\n")
+    parsed = ffiec_client._parse_sdf(base64.b64encode(text.encode()).decode())
+    assert parsed["RCOA7204"] == "22.3548%" and parsed["RCON2170"] == "132504"
+    r = ratios.extract_ratios(parsed, date(2026, 9, 30))
+    assert round(r["tier1_leverage_ratio"], 4) == 22.3548
+    assert ratios.extract_total_assets(parsed) == 132504
