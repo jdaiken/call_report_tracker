@@ -34,8 +34,18 @@ def main() -> None:
     line = (f"{n} banks; red-flagged {red} ({red / max(n, 1):.0%}); amber only {amber_only} "
             f"({amber_only / max(n, 1):.0%}). By rule: " + ", ".join(f"{k} {v}" for k, v in sorted(per_rule.items())))
     print(line)
+    nonnull = Counter()
+    for (raw,) in rows:
+        for k, v in (json.loads(raw) if raw else {}).items():
+            if isinstance(v, (int, float)):
+                nonnull[k] += 1
+    sample = json.loads(rows[0][0]) if rows and rows[0][0] else {}
+    fields = "Numeric values per field: " + ", ".join(f"{k} {v}" for k, v in sorted(nonnull.items()))
+    print(fields)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::notice title=Screen stats::{line[:900]}")
+        print(f"::notice title=Screen fields::{fields[:900]}")
+        print(f"::notice title=Screen sample::{json.dumps(sample)[:900]}")
 
 
 if __name__ == "__main__":
