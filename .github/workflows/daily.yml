@@ -48,6 +48,10 @@ on:
         description: "TEST: email a preview of the new REFILINGS template using real (already-processed) restatements logged in the last N days -- no FFIEC API call. Blank = skip."
         type: string
         default: ""
+      probe_facsimile:
+        description: "TEST: pull one Call Report facsimile and print its raw format (no email, no DB writes)."
+        type: boolean
+        default: false
       screen_stats:
         description: "TEST: count how many banks' latest filings the new-filing screen would flag (counts only, no email, no API call)."
         type: boolean
@@ -149,6 +153,14 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python scripts/preview_refilings_template.py "${{ inputs.preview_refilings_days }}"
 
+      - name: Probe one facsimile's raw format
+        if: ${{ inputs.probe_facsimile == true }}
+        shell: bash
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+        run: python scripts/probe_facsimile.py
+
       - name: Screen stats (counts only, no email)
         if: ${{ inputs.screen_stats == true }}
         shell: bash
@@ -160,7 +172,7 @@ jobs:
         run: python scripts/restatement_rssds.py "${{ inputs.restatement_rssds_days }}"
 
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
