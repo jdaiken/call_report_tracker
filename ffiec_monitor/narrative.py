@@ -28,10 +28,12 @@ STATUS = "not run"           # last outcome; run.py prints it as a GitHub annota
 PROMPT = """You write the opening paragraph of a daily bank Call Report monitoring email read by a bank risk manager.
 Plain English for a risk professional; explain any term a non-specialist would not know in a few words.
 
-Write ONE paragraph of 2 to 5 sentences, at most 90 words, saying what happened in today's filings and what deserves
+Write ONE paragraph of 2 to 5 sentences, at most 100 words, saying what happened in today's filings and what deserves
 attention. Lead with the most important thing: Tier 1 alerts first (name the bank and what crossed), then Watch List
-changes, then Tier 2. If there are no alerts, say so plainly, then briefly describe the refilings and new filings
-(how many, and the largest institutions by assets). Do not list more than three banks.
+changes, then Tier 2, then new filings the level screen flagged (name the most concerning and say in a few words
+why it matters for a bank that takes reciprocal or brokered deposits: capital near the well-capitalized line, losses,
+tight liquidity, or heavy brokered/reciprocal funding). If there are no alerts or flags, say so plainly, then briefly
+describe the refilings and new filings. Do not list more than three banks.
 
 Rules:
 - Use ONLY facts and numbers from the data below. Do not add any number, date, name or event that is not there.
@@ -132,9 +134,12 @@ def rule_summary(rep: "Report") -> str:
         parts.append(f"{rep.refilings_total} {'bank' if rep.refilings_total == 1 else 'banks'} amended a Call Report "
                      f"without a material capital change; the largest {'is' if rep.refilings_total == 1 else 'are'} "
                      f"{_names(rep.refilings)}.")
-    if rep.new_filings_total:
-        parts.append(f"{rep.new_filings_total} new quarterly {'filing' if rep.new_filings_total == 1 else 'filings'} "
-                     f"came in, the largest from {_names(rep.new_filings)}.")
+    if c["new"]:
+        parts.append(f"{c['new']} new quarterly {'filing' if c['new'] == 1 else 'filings'} came in.")
+    if rep.flagged:
+        r = rep.flagged[0]
+        parts.append(f"The screen flagged {c['flagged']} of them; the most concerning is {r.bank.name} "
+                     f"({r.bank.location}, {r.bank.assets}): {r.flags[0].text}.")
     return " ".join(parts)
 
 

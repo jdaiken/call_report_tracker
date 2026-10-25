@@ -30,6 +30,10 @@ LIST_CAP = 40
 INK, MUTED, RULE, SOFT, LINK = "#14181f", "#5b626c", "#dde0e4", "#f5f6f8", "#1d5fbf"
 RED, AMBER, GREEN, GRAY = "#b42318", "#8a5a00", "#1d6b3a", "#4b5563"
 
+SCREEN_NOTE = ("New filings with at least one red flag for a bank that takes reciprocal or brokered deposits: "
+               "capital near the well-capitalized line, losses, tight liquidity, or heavy brokered/reciprocal "
+               "funding. Red = review now, amber = note it.")
+
 CDR_HOME = "https://cdr.ffiec.gov/public/"
 BANKFIND_HOME = "https://banks.data.fdic.gov/bankfind-suite/bankfind"
 
@@ -98,6 +102,7 @@ class Alert:
 class ListRow:
     bank: Bank
     detail: str
+    flags: list = field(default_factory=list)      # screen.Flag, new filings only
 
 
 @dataclass
@@ -119,8 +124,10 @@ class Report:
     tier2: list[Alert]
     refilings: list[ListRow]
     refilings_total: int
-    new_filings: list[ListRow]
+    new_filings: list[ListRow]          # new filings with nothing flagged
     new_filings_total: int
+    flagged: list[ListRow] = field(default_factory=list)   # new filings the screen flagged, worst first
+    flagged_total: int = 0
     summary: str = ""
     summary_by: str = ""
 
@@ -180,10 +187,17 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
         return out
 
     refilings = rows(restatement_events, lambda e: e.reason)
-    new_filings = rows(new_filing_events, lambda e: "Filed")
+    from .screen import screen, severity
+    new_all = [ListRow(_bank(e.meta, e.period_end), "Filed", screen(getattr(e, "ratios", None)))
+               for e in new_filing_events]
+    new_all.sort(key=lambda r: r.bank.assets_raw, reverse=True)
+    # "To review" = at least one red (concern) flag; amber-only banks stay in the plain list (flags in the CSV).
+    flagged = sorted((r for r in new_all if severity(r.flags)[0]), key=lambda r: (severity(r.flags), r.bank.assets_raw),
+                     reverse=True)
+    new_filings = [r for r in new_all if not severity(r.flags)[0]]
 
     counts = {"tier1": len(tier1), "tier2": len(tier2), "watch": len(watch),
-              "refilings": len(refilings), "new": len(new_filings)}
+              "refilings": len(refilings), "new": len(new_all), "flagged": len(flagged)}
     if tier1:
         status = _plural(len(tier1), "Tier 1 alert", "Tier 1 alerts")
     elif watch:
@@ -194,12 +208,14 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
         bits = []
         if refilings:
             bits.append(_plural(len(refilings), "refiling", "refilings"))
-        if new_filings:
-            bits.append(_plural(len(new_filings), "new filing", "new filings"))
+        if new_all:
+            bits.append(_plural(len(new_all), "new filing", "new filings")
+                        + (f" ({len(flagged)} flagged)" if flagged else ""))
         status = ", ".join(bits) or "no activity"
     subject = f"{NAME} · {run_date:%a %b %-d} · {status}"
     rep = Report(run_date, subject, status, counts, watch, tier1, snapshot, tier2,
-                 refilings[:LIST_CAP], len(refilings), new_filings[:LIST_CAP], len(new_filings))
+                 refilings[:LIST_CAP], len(refilings), new_filings[:LIST_CAP // 2], len(new_filings),
+                 flagged[:LIST_CAP], len(flagged))
     from .narrative import write_summary
     rep.summary, rep.summary_by = write_summary(rep)
     return rep
@@ -211,7 +227,8 @@ def facts(rep: Report, limit: int = 40) -> str:
     out = [f"{NAME} daily run {rep.run_date:%B %-d, %Y}",
            f"Tier 1 alerts: {c['tier1']}. Tier 2 items: {c['tier2']}. Watch List changes: {c['watch']}. "
            f"Refilings with no material capital change: {c['refilings']}. New quarterly filings with no "
-           f"threshold trigger: {c['new']}. Watch List banks: {len(rep.snapshot)}."]
+           f"threshold trigger: {c['new']}, of which {c['flagged']} flagged by the level screen for capital, earnings, "
+           f"liquidity or brokered/reciprocal deposit concerns. Watch List banks: {len(rep.snapshot)}."]
     for w in rep.watch_changes:
         out.append(f"WATCH LIST {w.verb.upper()}: {w.bank.name} ({w.bank.location}), reason: {w.reason}")
     for a in rep.tier1:
@@ -225,8 +242,13 @@ def facts(rep: Report, limit: int = 40) -> str:
         out.append(f"REFILINGS (largest first, {min(limit, len(rep.refilings))} of {rep.refilings_total}):")
         out += [f"  {r.bank.name} ({r.bank.location}), assets {r.bank.assets}, {r.bank.period}: {r.detail}"
                 for r in rep.refilings[:limit]]
+    if rep.flagged:
+        out.append(f"NEW FILINGS FLAGGED (worst first, {min(limit, len(rep.flagged))} of {rep.flagged_total}):")
+        for r in rep.flagged[:limit]:
+            out.append(f"  {r.bank.name} ({r.bank.location}), assets {r.bank.assets}, {r.bank.period}: "
+                       + "; ".join(f"{f.level}: {f.text}" for f in r.flags))
     if rep.new_filings:
-        out.append(f"NEW FILINGS (largest first, {min(limit, len(rep.new_filings))} of {rep.new_filings_total}):")
+        out.append(f"OTHER NEW FILINGS, nothing flagged (largest first, {min(limit, len(rep.new_filings))} of {rep.new_filings_total}):")
         out += [f"  {r.bank.name} ({r.bank.location}), assets {r.bank.assets}, {r.bank.period}"
                 for r in rep.new_filings[:limit]]
     return "\n".join(out)
@@ -310,7 +332,8 @@ def render_html(rep: Report) -> str:
     b += ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
           + '<td width="8"></td>'.join([_tile("TIER 1 ALERTS", c["tier1"], RED), _tile("TIER 2", c["tier2"], AMBER),
                                         _tile("WATCH LIST CHANGES", c["watch"], GRAY),
-                                        _tile("REFILINGS", c["refilings"], GRAY), _tile("NEW FILINGS", c["new"], GREEN)])
+                                        _tile("REFILINGS", c["refilings"], GRAY), _tile("NEW FILINGS", c["new"], GREEN),
+                                        _tile("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)])
           + "</tr></table></td></tr>")
     if rep.summary:
         by = (f'<div style="font-size:10.5px;color:{MUTED};margin-top:6px">Written by Claude from the filings in this report.</div>'
@@ -356,11 +379,26 @@ def render_html(rep: Report) -> str:
         b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
               f'<th {TH}>WHAT CHANGED</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
 
+    if rep.flagged:
+        b += _section("New filings to review", SCREEN_NOTE)
+        rows = ""
+        for r in rep.flagged:
+            fl = "".join(f'<div style="margin:1px 0"><span style="color:{RED if f.level == "concern" else AMBER}">●</span> '
+                         f'{_e(f.text)}</div>' for f in r.flags)
+            rows += (f'<tr>{_bank_cell(r.bank)}<td {TDM}>{_e(r.bank.period)}</td><td {TD}>{fl}</td>'
+                     f'<td {TD} nowrap>{_links(r.bank)}</td></tr>')
+        more = (f'<tr><td colspan="4" style="padding:8px;font-size:12px;color:{MUTED}">Showing {len(rep.flagged)} of '
+                f'{rep.flagged_total}. All are in the attached CSV (Flags column).</td></tr>'
+                if rep.flagged_total > len(rep.flagged) else "")
+        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
+              f'<th {TH}>PERIOD</th><th {TH}>WHAT STANDS OUT</th><th {TH}>LINKS</th></tr>{rows}{more}</table></td></tr>')
+
     if rep.refilings:
         b += _section("Refilings", "Amended Call Reports where no capital ratio moved more than 0.50 points.")
         b += f"<tr><td>{_list_table(rep.refilings, rep.refilings_total, 'WHAT CHANGED')}</td></tr>"
     if rep.new_filings:
-        b += _section("New quarterly filings", "First filing for the quarter; no threshold crossed.")
+        b += _section("Other new filings", "First filing for the quarter; no threshold crossed and no red flags "
+                      "(amber flags are in the CSV).")
         b += f"<tr><td>{_list_table(rep.new_filings, rep.new_filings_total, None)}</td></tr>"
 
     b += (f'<tr><td style="padding:22px 0 0;font-size:11px;color:{MUTED}"><b style="color:{INK}">Sources:</b> '

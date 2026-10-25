@@ -273,7 +273,7 @@ def _process_one(
             # new quarter opens and institutions file over the following weeks
             # (comparable to the ~8,600-entry initial full-universe backfill),
             # not the small trickle restatements produce.
-            new_filing_events.append(email_report.NewFilingEvent(meta, period_end))
+            new_filing_events.append(email_report.NewFilingEvent(meta, period_end, new_ratios))
 
     active_orders = db.get_active_order_types(conn, id_rssd)
     wl_change = watch_list.recompute_membership(conn, id_rssd, new_ratios, active_orders, run_date)

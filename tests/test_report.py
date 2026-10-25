@@ -41,7 +41,7 @@ def test_compose_renders_every_section_with_links(monkeypatch):
     assert rep.subject == "FFIEC Call Report Monitor · Mon Oct 26 · 1 Tier 1 alert"
     assert rep.summary_by == "rules" and rep.summary.startswith("Tier 1 alert for First Prairie Bank")
     for title in ("Watch List changes", "Tier 1 alerts", "Watch List: current ratios", "Tier 2", "Refilings",
-                  "New quarterly filings", "WHAT\'S GOING ON"):
+                  "Other new filings", "WHAT\'S GOING ON"):
         assert title in html, title
     # long lists: largest first, capped, with a pointer to the CSV
     assert rep.refilings_total == 55 and len(rep.refilings) == 40
@@ -100,3 +100,34 @@ def test_send_email_attaches_csv_and_pdf():
     msg = smtp.return_value.__enter__.return_value.send_message.call_args[0][0]
     names = [p.get_filename() for p in msg.walk() if p.get_filename()]
     assert names == ["c.csv", "r.pdf"]
+
+
+def test_new_filings_screen_flags_concerns(monkeypatch):
+    from ffiec_monitor import screen
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    healthy = {"tier1_leverage_ratio": 10.5, "total_rbc_ratio": 15.0, "roaa": 1.1, "net_interest_margin": 3.6,
+               "net_loans_leases_to_deposits": 82, "core_deposits_to_total_deposits": 85,
+               "brokered_reciprocal_deposits_to_total_deposits": 4}
+    weak = dict(healthy, tier1_leverage_ratio=5.6, roaa=-0.3, brokered_reciprocal_deposits_to_total_deposits=28)
+    assert screen.screen(healthy) == []
+    flags = screen.screen(weak)
+    assert [f.level for f in flags].count("concern") >= 3 and any(f.key == "combo" for f in flags)
+    assert screen.screen(None) == []
+
+    ev = sample_events(0, 0)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[],
+              new_filing_events=[email_report.NewFilingEvent(_meta(300, 900_000, "Weak Bank"), Q3, weak),
+                                 email_report.NewFilingEvent(_meta(301, 5_000_000, "Strong Bank"), Q3, healthy),
+                                 email_report.NewFilingEvent(_meta(302, 40_000, "Unknown Bank"), Q3)])
+    rep, html, pdf = email_report.compose(**ev)
+    assert rep.counts["new"] == 3 and rep.counts["flagged"] == 1
+    assert [r.bank.name for r in rep.flagged] == ["Weak Bank"]
+    assert [r.bank.name for r in rep.new_filings] == ["Strong Bank", "Unknown Bank"]
+    assert "New filings to review" in html and "near the 5% well-capitalized line" in html
+    assert rep.subject.endswith("3 new filings (1 flagged)")
+    assert "The screen flagged 1" in rep.summary and "Weak Bank" in rep.summary
+    import io
+    from pypdf import PdfReader
+    assert "New filings to review" in "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
+    csv_text = email_report.events_csv([], ev["new_filing_events"])
+    assert "CONCERN: Leverage ratio 5.60%" in csv_text

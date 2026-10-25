@@ -74,6 +74,7 @@ class NewFilingEvent:
     the user reviews the ones they care about themselves via the report link."""
     meta: InstitutionMeta
     period_end: date
+    ratios: Optional[dict] = None   # the filing's ratios, for the level screen (ffiec_monitor/screen.py)
 
 
 def _fmt_assets(total_assets: Optional[float]) -> str:
@@ -259,12 +260,15 @@ def events_csv(restatement_events: list[RestatementEvent], new_filing_events: li
     email body never can. Per user request 2026-09-18."""
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Type", "Institution", "City", "State", "RSSD", "FDIC Cert", "Period", "Report URL"])
+    from .screen import screen
+    writer.writerow(["Type", "Institution", "City", "State", "RSSD", "FDIC Cert", "Period", "Report URL", "Flags"])
     for kind, events in (("Refiling", restatement_events), ("New Filing", new_filing_events)):
         for evt in events:
             m = evt.meta
+            flags = screen(getattr(evt, "ratios", None)) if kind == "New Filing" else []
             writer.writerow([kind, m.name, m.city, m.state, m.id_rssd, m.fdic_cert or "",
-                              _quarter_label(evt.period_end), cdr_report_url(m.id_rssd, evt.period_end)])
+                              _quarter_label(evt.period_end), cdr_report_url(m.id_rssd, evt.period_end),
+                              "; ".join(f"{f.level.upper()}: {f.text}" for f in flags)])
     return out.getvalue()
 
 
