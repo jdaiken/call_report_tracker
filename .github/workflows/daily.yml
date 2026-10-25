@@ -48,6 +48,10 @@ on:
         description: "TEST: email a preview of the new REFILINGS template using real (already-processed) restatements logged in the last N days -- no FFIEC API call. Blank = skip."
         type: string
         default: ""
+      preview_full_days:
+        description: "TEST: email the designed daily report from REAL refilings + new filings logged in the last N days (new filings re-pulled and screened). Blank = skip."
+        type: string
+        default: ""
       probe_facsimile:
         description: "TEST: pull one Call Report facsimile and print its raw format (no email, no DB writes)."
         type: boolean
@@ -153,6 +157,17 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python scripts/preview_refilings_template.py "${{ inputs.preview_refilings_days }}"
 
+      - name: Preview full email with real data
+        if: ${{ inputs.preview_full_days != '' }}
+        shell: bash
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/preview_full_email.py "${{ inputs.preview_full_days }}"
+
       - name: Probe one facsimile's raw format
         if: ${{ inputs.probe_facsimile == true }}
         shell: bash
@@ -172,7 +187,7 @@ jobs:
         run: python scripts/restatement_rssds.py "${{ inputs.restatement_rssds_days }}"
 
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true && inputs.preview_full_days == '' }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
