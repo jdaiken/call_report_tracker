@@ -65,31 +65,63 @@ def grounded(summary: str, source: str) -> bool:
     return _numbers(summary) <= allowed
 
 
-def claude_summary(rep: "Report", api_key: str, model: str | None = None) -> str | None:
-    data = facts(rep)
+STATUS = "not run"          # last outcome, reported as a GitHub annotation by run.py
+
+
+def _post(api_key: str, model: str, content: str) -> requests.Response:
+    return requests.post(API_URL, timeout=60, headers={
+        "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json",
+    }, json={"model": model, "max_tokens": 400, "messages": [{"role": "user", "content": content}]})
+
+
+def _newest_sonnet(api_key: str) -> str | None:
+    """If the configured model name is wrong, pick the newest Sonnet the key can use."""
     try:
-        r = requests.post(API_URL, timeout=60, headers={
-            "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json",
-        }, json={
-            "model": model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL,
-            "max_tokens": 400,
-            "messages": [{"role": "user", "content": PROMPT + data}],
-        })
+        r = requests.get("https://api.anthropic.com/v1/models", timeout=30,
+                         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
         r.raise_for_status()
-        text = " ".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
-    except Exception as e:                                          # network, auth, model name, quota
-        log.warning("Claude summary unavailable: %s", e)
+        ids = [m["id"] for m in r.json().get("data", []) if "sonnet" in m.get("id", "")]
+        return ids[0] if ids else None                      # the API lists newest first
+    except Exception:
         return None
-    text = re.sub(r"\s+", " ", text.replace("**", "")).strip()
-    if not text:
-        return None
-    if len(text) > MAX_CHARS:
-        cut = text[:MAX_CHARS].rsplit(". ", 1)[0]
-        text = cut if cut.endswith(".") else cut + "."
-    if not grounded(text, data):
-        log.warning("Claude summary rejected: it contains numbers not in today's data")
-        return None
-    return text
+
+
+def claude_summary(rep: "Report", api_key: str, model: str | None = None) -> str | None:
+    global STATUS
+    data = facts(rep)
+    model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+    prompt = PROMPT + data
+    for attempt in range(2):
+        try:
+            r = _post(api_key, model, prompt)
+            if r.status_code == 404 and attempt == 0:          # unknown model name
+                alt = _newest_sonnet(api_key)
+                if alt and alt != model:
+                    model = alt
+                    r = _post(api_key, model, prompt)
+            if r.status_code >= 400:
+                STATUS = f"API error {r.status_code} ({model}): {r.text[:300]}"
+                log.warning("Claude summary unavailable: %s", STATUS)
+                return None
+            text = " ".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        except Exception as e:                                   # network, timeout
+            STATUS = f"API call failed: {e}"
+            log.warning("Claude summary unavailable: %s", e)
+            return None
+        text = re.sub(r"\s+", " ", text.replace("**", "")).strip()
+        if len(text) > MAX_CHARS:
+            cut = text[:MAX_CHARS].rsplit(". ", 1)[0]
+            text = cut if cut.endswith(".") else cut + "."
+        bad = sorted(_numbers(text) - (_numbers(data) | {str(i) for i in range(0, 13)}))
+        if text and not bad:
+            STATUS = f"written by Claude ({model}){' on retry' if attempt else ''}"
+            return text
+        # One retry, telling Claude exactly what was wrong.
+        prompt = (PROMPT + data + "\n\nYour previous draft used numbers that are not in the data: "
+                  + ", ".join(bad) + ". Rewrite it using only numbers copied exactly from the data.")
+    STATUS = f"rejected: numbers not in the data ({', '.join(bad)})"
+    log.warning("Claude summary %s", STATUS)
+    return None
 
 
 def _nm(name: str) -> str:
@@ -130,7 +162,12 @@ def rule_summary(rep: "Report") -> str:
 
 def write_summary(rep: "Report") -> tuple[str, str]:
     """(paragraph, who wrote it: 'Claude' or 'rules')."""
+    global STATUS
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        STATUS = "no ANTHROPIC_API_KEY; rule-based summary used"
+    elif rep.sample:
+        STATUS = "sample data; rule-based summary used"
     if key and not rep.sample:
         text = claude_summary(rep, key)
         if text:

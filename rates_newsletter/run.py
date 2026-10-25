@@ -101,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     rep = build_report(b)
+    from rates_digest import narrative
+    log.info("Summary: %s", narrative.STATUS)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        level = "notice" if rep.summary_by == "Claude" or "no ANTHROPIC" in narrative.STATUS else "warning"
+        print(f"::{level} title=Daily summary::{narrative.STATUS[:500]}")
     images = {p.cid: p.png for p in rep.all_panels if p.png}
     html_body, text_body, subject = render_html(rep, b), render_text(rep), rep.subject
     pdf_bytes = render_pdf(rep)
