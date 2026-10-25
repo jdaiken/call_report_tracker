@@ -173,9 +173,10 @@ def run_daily(
         return heartbeat_body if heartbeat else "Nothing to report today."
 
     if send and email_config is not None:
+        from . import analytics
         rep, html_body, pdf_bytes = email_report.compose(
             watch_list_changes, tier1_events, snapshot_entries, tier2_events,
-            restatement_events, new_filing_events, run_date,
+            restatement_events, new_filing_events, run_date, analytics.compute(conn, run_date),
         )
         from . import narrative
         logger.info("Summary: %s", narrative.STATUS)
@@ -190,6 +191,7 @@ def run_daily(
             attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv" if csv_content else None,
             attachment_content=csv_content,
             attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")],
+            images=rep.images,
         )
 
     return body

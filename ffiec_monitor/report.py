@@ -130,6 +130,9 @@ class Report:
     flagged_total: int = 0
     summary: str = ""
     summary_by: str = ""
+    analytics: object = None                     # analytics.Analytics, when a DB was available
+    flag_counts: list = field(default_factory=list)
+    images: dict = field(default_factory=dict)   # cid -> PNG (charts)
 
 
 # ------------------------------------------------------------------ building
@@ -163,7 +166,7 @@ def _plural(n: int, one: str, many: str) -> str:
 
 
 def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
-                 restatement_events, new_filing_events, run_date: date) -> Report:
+                 restatement_events, new_filing_events, run_date: date, analytics=None) -> Report:
     watch = []
     for e in watch_list_changes:
         verb = {"ADDED": "Added", "REMOVED": "Removed"}.get(e.change.change_type, "Reason changed")
@@ -216,6 +219,16 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
     rep = Report(run_date, subject, status, counts, watch, tier1, snapshot, tier2,
                  refilings[:LIST_CAP], len(refilings), new_filings[:LIST_CAP // 2], len(new_filings),
                  flagged[:LIST_CAP], len(flagged))
+    from . import analytics as an
+    rep.analytics = analytics
+    rep.flag_counts = an.flag_counts(new_all)
+    try:
+        for cid, png in (("activity", an.activity_chart(analytics) if analytics else None),
+                         ("flags", an.flags_chart(rep.flag_counts))):
+            if png:
+                rep.images[cid] = png
+    except Exception:                                  # charts are optional; never block the email
+        pass
     from .narrative import write_summary
     rep.summary, rep.summary_by = write_summary(rep)
     return rep
@@ -229,6 +242,13 @@ def facts(rep: Report, limit: int = 40) -> str:
            f"Refilings with no material capital change: {c['refilings']}. New quarterly filings with no "
            f"threshold trigger: {c['new']}, of which {c['flagged']} flagged by the level screen for capital, earnings, "
            f"liquidity or brokered/reciprocal deposit concerns. Watch List banks: {len(rep.snapshot)}."]
+    a = rep.analytics
+    if a is not None and a.period_end and a.universe:
+        out.append(f"{a.quarter} filing season: {a.filed:,} of {a.universe:,} banks have filed ({a.pct:.0f}%); "
+                   f"deadline {a.deadline:%B %-d}.")
+    if rep.flag_counts:
+        out.append("Flag types among today's new filings (banks with a red flag / amber only): "
+                   + "; ".join(f"{l} {r}/{w}" for l, r, w in rep.flag_counts))
     for w in rep.watch_changes:
         out.append(f"WATCH LIST {w.verb.upper()}: {w.bank.name} ({w.bank.location}), reason: {w.reason}")
     for a in rep.tier1:
@@ -326,15 +346,49 @@ def _list_table(rows: list[ListRow], total: int, detail_label: Optional[str]) ->
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{head}{body}{more}</table>'
 
 
+def _progress_html(a) -> str:
+    left = a.days_left
+    due = (f" ({left} days left)" if left and left > 1 else " (tomorrow)" if left == 1 else " (today)" if left == 0
+           else " (past due)" if left is not None and left < 0 else "")
+    pct = min(a.pct, 100)
+    return (f'<div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">{_e(a.quarter.upper())} FILING SEASON</div>'
+            f'<div style="font-size:13px;color:{INK};margin:4px 0 6px"><b>{a.filed:,}</b> of {a.universe:,} banks have filed '
+            f'({a.pct:.0f}%) · due {a.deadline:%a %b %-d}{due}</div>'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="height:10px"><tr>'
+            f'<td width="{pct:.1f}%" style="background:#2a78d6;height:10px;font-size:0;line-height:0">&nbsp;</td>'
+            f'<td style="background:#e6e8eb;height:10px;font-size:0;line-height:0">&nbsp;</td></tr></table>')
+
+
+def _glance_html(rep: Report, image_src=None) -> str:
+    """Progress bar + two charts under the count tiles."""
+    src = image_src or (lambda cid: f"cid:{cid}")
+    a = rep.analytics
+    out = ""
+    if a is not None and a.period_end and a.universe:
+        out += f'<tr><td style="padding:16px 0 0">{_progress_html(a)}</td></tr>'
+    cells = []
+    for cid, title in (("activity", "Filings logged per day, last 21 days"),
+                       ("flags", "Today's new filings: what was flagged")):
+        if cid in rep.images:
+            cells.append(f'<td valign="top" width="50%" style="padding:0">'
+                         f'<div style="font-size:12px;font-weight:700;color:{INK};margin-bottom:4px">{_e(title)}</div>'
+                         f'<img src="{src(cid)}" width="316" alt="{_e(title)}" style="display:block;width:100%;max-width:316px;height:auto;border:0"></td>')
+    if cells:
+        out += ('<tr><td style="padding:16px 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                + '<td width="16"></td>'.join(cells) + "</tr></table></td></tr>")
+    return out
+
+
 def render_html(rep: Report) -> str:
     c = rep.counts
     b = ""
     b += ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
           + '<td width="8"></td>'.join([_tile("TIER 1 ALERTS", c["tier1"], RED), _tile("TIER 2", c["tier2"], AMBER),
-                                        _tile("WATCH LIST CHANGES", c["watch"], GRAY),
+                                        _tile("WATCH LIST", c["watch"], GRAY),
                                         _tile("REFILINGS", c["refilings"], GRAY), _tile("NEW FILINGS", c["new"], GREEN),
                                         _tile("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)])
           + "</tr></table></td></tr>")
+    b += _glance_html(rep)
     if rep.summary:
         by = (f'<div style="font-size:10.5px;color:{MUTED};margin-top:6px">Written by Claude from the filings in this report.</div>'
               if rep.summary_by == "Claude" else "")

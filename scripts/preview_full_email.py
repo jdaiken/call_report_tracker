@@ -48,7 +48,8 @@ def main(days: int) -> None:
                 failed += 1
         events.append(email_report.NewFilingEvent(meta, period_end, r))
     run_date = datetime.now(timezone.utc).date()
-    rep, html, pdf = email_report.compose([], [], [], [], refilings, events, run_date)
+    from ffiec_monitor import analytics
+    rep, html, pdf = email_report.compose([], [], [], [], refilings, events, run_date, analytics.compute(conn, run_date))
     body = email_report.build_email_body([], [], [], [], refilings, events, run_date) or "Nothing logged."
     msg = (f"{len(refilings)} refilings, {len(new)} new filings ({min(len(new), MAX_PULLS)} screened, "
            f"{failed} pulls failed), {rep.counts['flagged']} flagged")
@@ -61,7 +62,7 @@ def main(days: int) -> None:
         EmailConfig.from_env(), f"TEST · {rep.subject}", f"WHAT'S GOING ON\n{rep.summary}\n\n{body}", html_body=html,
         attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv",
         attachment_content=email_report.events_csv(refilings, events),
-        attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf, "pdf")])
+        attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf, "pdf")], images=rep.images)
 
 
 if __name__ == "__main__":

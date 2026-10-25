@@ -131,3 +131,30 @@ def test_new_filings_screen_flags_concerns(monkeypatch):
     assert "New filings to review" in "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
     csv_text = email_report.events_csv([], ev["new_filing_events"])
     assert "CONCERN: Leverage ratio 5.60%" in csv_text
+
+
+def test_at_a_glance_analytics_and_inline_charts(monkeypatch):
+    from datetime import datetime
+    from ffiec_monitor import analytics
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    for i in range(10):                                     # 10 banks; 4 have filed Q3
+        conn.execute("INSERT INTO call_report_snapshots VALUES (?, ?, now(), '{}', now())", [str(i), date(2026, 6, 30)])
+    for i in range(4):
+        conn.execute("INSERT INTO call_report_snapshots VALUES (?, ?, now(), '{}', now())", [str(i), Q3])
+        db.log_alert(conn, str(i), Q3, "TIER3", "NEW_PERIOD_NO_TRIGGER", {})
+    db.log_alert(conn, "9", date(2026, 6, 30), "TIER3", "RESTATEMENT_SUB_FLOOR", {"reason": "x"})
+    a = analytics.compute(conn, datetime.now().date().replace(year=2026, month=10, day=25))
+    assert (a.quarter, a.filed, a.universe, a.deadline, a.days_left) == ("Q3 2026", 4, 10, date(2026, 10, 30), 5)
+    assert analytics.latest_quarter_end(date(2026, 1, 5)) == date(2025, 12, 31)
+
+    weak = {"tier1_leverage_ratio": 5.6, "roaa": -0.3}
+    ev = sample_events(2, 0)
+    ev["new_filing_events"] = [email_report.NewFilingEvent(_meta(300, 900_000), Q3, weak)]
+    a.days = [(date(2026, 10, 25), 4, 1)]
+    rep, html, pdf = email_report.compose(**ev, analytics=a)
+    assert "Q3 2026 FILING SEASON" in html and "4</b> of 10 banks" in html and "5 days left" in html
+    assert set(rep.images) == {"activity", "flags"} and all(v[:4] == b"\x89PNG" for v in rep.images.values())
+    assert 'src="cid:activity"' in html and 'src="cid:flags"' in html
+    assert dict((l, r) for l, r, _ in rep.flag_counts)["Capital near the line"] == 1
+    assert b"/Subtype /Image" in pdf

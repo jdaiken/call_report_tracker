@@ -226,13 +226,14 @@ def compose(
     restatement_events: list[RestatementEvent],
     new_filing_events: list[NewFilingEvent],
     run_date: date,
+    analytics=None,
 ):
     """(Report, html, pdf bytes) for one day's events: the designed email body and the
     same report as a PDF (ffiec_monitor/report.py, pdf_report.py). Builds the summary
     paragraph once (one Claude call) and shares it between the two."""
     from . import pdf_report, report
     rep = report.build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
-                              restatement_events, new_filing_events, run_date)
+                              restatement_events, new_filing_events, run_date, analytics)
     return rep, report.render_html(rep), pdf_report.render_pdf(rep)
 
 
@@ -276,8 +277,10 @@ def send_email(
     config: EmailConfig, subject: str, body: str, html_body: Optional[str] = None,
     attachment_filename: Optional[str] = None, attachment_content: Optional[str] = None,
     attachments: Optional[list[tuple[str, bytes, str]]] = None,
+    images: Optional[dict[str, bytes]] = None,
 ) -> None:
-    """`attachments` = extra (filename, bytes, mime subtype) files, e.g. the PDF."""
+    """`attachments` = extra (filename, bytes, mime subtype) files, e.g. the PDF.
+    `images` = {content-id: PNG} shown inline in the HTML via src="cid:<id>"."""
     if html_body is not None:
         alt = MIMEMultipart("alternative")
         # Plain text first: email clients render the LAST alternative part they
@@ -286,6 +289,16 @@ def send_email(
         alt.attach(MIMEText(body, "plain"))
         alt.attach(MIMEText(html_body, "html"))
         content: MIMEMultipart | MIMEText = alt
+        if images:
+            from email.mime.image import MIMEImage
+            related = MIMEMultipart("related")
+            related.attach(alt)
+            for cid, png in images.items():
+                img = MIMEImage(png, "png")
+                img.add_header("Content-ID", f"<{cid}>")
+                img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
+                related.attach(img)
+            content = related
     else:
         content = MIMEText(body, "plain")
 

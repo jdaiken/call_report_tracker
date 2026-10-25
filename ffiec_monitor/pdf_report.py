@@ -13,7 +13,7 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .report import (AMBER, BANKFIND_HOME, CDR_HOME, GRAY, GREEN, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
                      Report)
@@ -106,6 +106,38 @@ def _list(rows: list[ListRow], total: int, detail: bool) -> list:
     return out
 
 
+def _glance(rep: Report) -> list:
+    """Filing-season progress bar and the two charts, under the count tiles."""
+    out: list = []
+    a = rep.analytics
+    if a is not None and a.period_end and a.universe:
+        left = a.days_left
+        due = f" ({left} days left)" if left and left > 1 else ""
+        out += [_p(f"{escape(a.quarter.upper())} FILING SEASON", "label"), Spacer(1, 2),
+                _p(f"<b>{a.filed:,}</b> of {a.universe:,} banks have filed ({a.pct:.0f}%) · due {a.deadline:%a %b %-d}{due}",
+                   "cell"), Spacer(1, 4)]
+        done = max(min(a.pct, 100), 0.5) / 100 * WIDTH
+        bar = Table([["", ""]], colWidths=[done, WIDTH - done], rowHeights=[7])
+        bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#2a78d6")),
+                                 ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#e6e8eb"))]))
+        out += [bar, Spacer(1, 10)]
+    cells = []
+    half = (WIDTH - 14) / 2
+    for cid, title in (("activity", "Filings logged per day, last 21 days"),
+                       ("flags", "Today's new filings: what was flagged")):
+        if cid in rep.images:
+            img = Image(io.BytesIO(rep.images[cid]))
+            img.drawWidth, img.drawHeight = half, half * img.imageHeight / img.imageWidth
+            cells.append([_p(f"<b>{escape(title)}</b>", "cell"), Spacer(1, 3), img])
+    if cells:
+        row = [cells[0], "", cells[1]] if len(cells) == 2 else [cells[0], "", ""]
+        t = Table([row], colWidths=[half, 14, half])
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                               ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+        out += [t, Spacer(1, 10)]
+    return out
+
+
 def render_pdf(rep: Report) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
@@ -114,7 +146,7 @@ def render_pdf(rep: Report) -> bytes:
     tw = (WIDTH - 5 * 6) / 6
     tiles = []
     for label, n, color in (("TIER 1 ALERTS", c["tier1"], RED), ("TIER 2", c["tier2"], AMBER),
-                            ("WATCH LIST CHANGES", c["watch"], GRAY), ("REFILINGS", c["refilings"], GRAY),
+                            ("WATCH LIST", c["watch"], GRAY), ("REFILINGS", c["refilings"], GRAY),
                             ("NEW FILINGS", c["new"], GREEN),
                             ("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)):
         t = Table([[_p(str(n), "tile")], [_p(label, "label")]], colWidths=[tw])
@@ -124,7 +156,7 @@ def render_pdf(rep: Report) -> bytes:
         tiles += [t, ""]
     row = Table([tiles[:-1]], colWidths=[tw, 6] * 5 + [tw])
     row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    story: list = [row, Spacer(1, 10)]
+    story: list = [row, Spacer(1, 12)] + _glance(rep)
     if rep.summary:
         inner = [_p("WHAT'S GOING ON", "label"), Spacer(1, 3), _p(escape(rep.summary), "body")]
         if rep.summary_by == "Claude":
@@ -179,7 +211,7 @@ def render_pdf(rep: Report) -> bytes:
         story += _section("New filings to review", SCREEN_NOTE)
         head = [_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("WHAT STANDS OUT", "label"), _p("LINKS", "label")]
         body = [[_bank(r.bank), _p(escape(r.bank.period), "cell"),
-                 _p("<br/>".join(f"<font color='{RED if f.level == 'concern' else AMBER}'>●</font> {escape(f.text)}"
+                 _p("<br/>".join(f"<font color='{RED if f.level == 'concern' else AMBER}'>•</font> {escape(f.text)}"
                                  for f in r.flags), "cell"), _p(_links(r.bank), "small")] for r in rep.flagged]
         story.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 2.2 * inch - 0.65 * inch - 1.4 * inch, 1.4 * inch]))
         if rep.flagged_total > len(rep.flagged):

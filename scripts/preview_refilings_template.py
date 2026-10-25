@@ -48,7 +48,7 @@ def run_preview(conn, email_config: Optional[EmailConfig], days: int = 7, send: 
         email_report.send_email(
             email_config, f"TEST · {rep.subject}", body, html_body=html_body,
             attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv", attachment_content=csv_content,
-            attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")])
+            attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")], images=rep.images)
 
     return body
 
