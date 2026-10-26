@@ -1,0 +1,35 @@
+name: Enforcement check (read-only)
+
+# Lists every filer in a logged window that matches a public enforcement action.
+# Reads the FFIEC monitor's saved state; never writes it, never emails.
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Logged from (UTC), e.g. 2026-10-18 21:00"
+        type: string
+      end:
+        description: "Logged before (UTC), e.g. 2026-10-26 00:00"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state (read-only copy)
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-none
+          restore-keys: |
+            duckdb-
+      - run: python scripts/enforcement_matches.py "${{ inputs.start }}" "${{ inputs.end }}"
