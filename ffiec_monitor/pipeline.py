@@ -185,16 +185,14 @@ def run_daily(
         if os.environ.get("GITHUB_ACTIONS") == "true":
             level = "notice" if rep.summary_by == "Claude" else "warning"
             print(f"::{level} title=Daily summary::{narrative.STATUS[:500]}")
-        csv_content = None
+        from .workbook import build_workbook
+        files = [(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")]
         if restatement_events or new_filing_events:
-            csv_content = email_report.events_csv(restatement_events, new_filing_events)
-        email_report.send_email(
-            email_config, rep.subject, _with_summary(rep, body), html_body=html_body,
-            attachment_filename=f"call_report_changes_{run_date.isoformat()}.csv" if csv_content else None,
-            attachment_content=csv_content,
-            attachments=[(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")],
-            images=rep.images,
-        )
+            files.append((f"FFIEC-Call-Report-Filings-{run_date.isoformat()}.xlsx",
+                          build_workbook(rep, restatement_events, new_filing_events),
+                          "vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        email_report.send_email(email_config, rep.subject, _with_summary(rep, body), html_body=html_body,
+                                attachments=files, images=rep.images)
 
     return body
 

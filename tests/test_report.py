@@ -40,13 +40,12 @@ def test_compose_renders_every_section_with_links(monkeypatch):
     rep, html, pdf = email_report.compose(**sample_events())
     assert rep.subject == "FFIEC Call Report Monitor · Mon Oct 26 · 1 Tier 1 alert"
     assert rep.summary_by == "rules" and rep.summary.startswith("Tier 1 alert for First Prairie Bank")
-    for title in ("Watch List changes", "Tier 1 alerts", "Watch List: current ratios", "Tier 2", "Refilings",
-                  "Other new filings", "WHAT\'S GOING ON"):
+    for title in ("Alerts, refilings and other filings", "Watch List added", "Tier 1", "55 refilings", "GOING ON"):
         assert title in html, title
     # long lists: largest first, capped, with a pointer to the CSV
     assert rep.refilings_total == 55 and len(rep.refilings) == 40
     assert rep.refilings[0].bank.assets_raw >= rep.refilings[-1].bank.assets_raw
-    assert "Showing the 40 largest of 55" in html
+    assert "Showing" not in html or "attached spreadsheet" in html
     # every institution links to its Call Report and FDIC profile, in the email and the PDF
     assert "cdr.ffiec.gov/public/ViewFacsimileDirect.aspx" in html
     assert "banks.data.fdic.gov/bankfind-suite/bankfind?cert=9001" in html
@@ -212,8 +211,8 @@ def test_capital_status_and_enforcement_matching(monkeypatch):
     names = sorted({m.bank.name for m in rep.enforcement})
     assert names == ["Community Bank 10", "Community Bank 2", "First Prairie Bank"]
     assert rep.counts["ltwc"] == 1 and rep.ltwc[0][0].name == "First Prairie Bank"
-    assert "Less than well capitalized" in html_out and "Banks under enforcement orders" in html_out
-    assert "FDIC orders aren" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
+    assert "Less than well capitalized" in html_out and "Enforcement orders and capital" in html_out
+    assert "checked against Fed" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
     assert ">ENFORCEMENT / AML<" in html_out and "BELOW WELL CAP." in html_out
     assert rep.summary.startswith("1 filing is below well capitalized: First Prairie Bank")
 
@@ -295,7 +294,7 @@ def test_enforcement_discussion_and_stale_orders(monkeypatch):
     note, by = rep.enforcement_notes["100001"]
     assert by == "rules" and note.startswith("First Prairie Bank has been under an FDIC cease and desist / consent orders since")
     assert "Not counted: Community Bank 2" in html and "most likely closed" in html
-    assert "special cap" in html and "Banks under enforcement orders" in html
+    assert "special cap" in html and "Enforcement orders and capital" in html
 
 
 def _pages(pdf: bytes) -> int:
@@ -326,3 +325,35 @@ def test_pdf_is_always_five_pages(monkeypatch):
                                           prior_lookup=lambda r, p: {"tier1_leverage_ratio": 9.0, "roaa": 0.5})
     assert rep.counts["enforcement"] == 20 and rep.ltwc and rep.cblr and rep.flagged_total > 50
     assert _pages(pdf) == 5
+
+
+def test_spreadsheet_attachment(monkeypatch):
+    import io
+    from openpyxl import load_workbook
+    from ffiec_monitor.workbook import build_workbook
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    ev = sample_events(3, 0)
+    ev["new_filing_events"] = [email_report.NewFilingEvent(_meta(1, 500_000, "Weak Bank"), Q3,
+                                                            {"tier1_leverage_ratio": 4.7, "total_rbc_ratio": 9.1}),
+                               email_report.NewFilingEvent(_meta(2, 90_000, "Cblr Bank"), Q3, {"tier1_leverage_ratio": 8.5})]
+    rep, _, _ = email_report.compose(**ev)
+    wb = load_workbook(io.BytesIO(build_workbook(rep, ev["restatement_events"], ev["new_filing_events"])))
+    assert wb.sheetnames == ["Summary", "Filings", "Enforcement", "Capital watch", "Flagged performance", "Notes"]
+    fs = wb["Filings"]
+    head = [c.value for c in fs[4]]
+    rows = {r[1]: dict(zip(head, r)) for r in fs.iter_rows(min_row=5, values_only=True)}
+    assert rows["Weak Bank"]["Capital status"] == "Below well capitalized" and abs(rows["Weak Bank"]["Leverage ratio"] - 0.047) < 1e-9
+    assert rows["Cblr Bank"]["Capital status"] == "CBLR under 9%" and len(rows) == 5
+    assert str(wb["Summary"]["B8"].value).startswith('=COUNTIF(Filings!')          # live formulas, not pasted numbers
+    assert wb["Summary"]["B8"].offset(0, -1).value == "Below well capitalized"
+
+
+def test_email_does_not_say_no_orders_when_there_are_some(monkeypatch):
+    from ffiec_monitor import enforcement
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    ev = sample_events(0, 0)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[],
+              new_filing_events=[email_report.NewFilingEvent(_meta(1, 500_000, "First Prairie Bank"), Q3, {"tier1_leverage_ratio": 9.5})])
+    acts = [enforcement.Action("FDIC", "First Prairie Bank", "IL", "Consent Order", date(2025, 3, 1), "u", "", "9001")]
+    _, html, _ = email_report.compose(**ev, enforcement_sources=enforcement.Sources(actions=acts, loaded={"FDIC": 1}))
+    assert "First Prairie Bank" in html and "No bank is under an active" not in html

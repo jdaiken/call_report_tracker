@@ -80,11 +80,12 @@ def main(mode: str, start: str, end: str, label: str) -> None:
                         for m in rep.enforcement)
         print(f"::notice title=Enforcement matches ({len(rep.enforcement)})::{enf[:950] or 'none'}")
     slug = label.replace(" ", "-")
+    from ffiec_monitor.workbook import build_workbook
     email_report.send_email(
         EmailConfig.from_env(), rep.subject, f"WHAT'S GOING ON\n{rep.summary}\n\n{body}", html_body=html,
-        attachment_filename=f"call_report_changes_{slug}.csv",
-        attachment_content=email_report.events_csv(refilings, new),
-        attachments=[(f"FFIEC-Call-Report-Monitor-{slug}.pdf", pdf, "pdf")], images=rep.images)
+        attachments=[(f"FFIEC-Call-Report-Monitor-{slug}.pdf", pdf, "pdf"),
+                     (f"FFIEC-Call-Report-Filings-{slug}.xlsx", build_workbook(rep, refilings, new),
+                      "vnd.openxmlformats-officedocument.spreadsheetml.sheet")], images=rep.images)
 
 
 if __name__ == "__main__":

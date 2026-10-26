@@ -609,89 +609,154 @@ def tile_specs(c: dict) -> list[tuple[str, int, str]]:
                     ("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)]
 
 
-def render_html(rep: Report) -> str:
-    b = ""
-    b += ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-          + '<td width="8"></td>'.join(_tile(label, n, color) for label, n, color in tile_specs(rep.counts))
-          + "</tr></table></td></tr>")
-    b += _glance_html(rep)
-    if rep.summary:
-        by = ""
-        b += (f'<tr><td style="padding:16px 0 0"><div style="background:{SOFT};border-left:3px solid {INK};padding:10px 12px">'
-              f'<div style="font-size:12.4px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
-              f'<div style="font-size:15.9px;line-height:1.5;color:{INK};margin-top:4px">{_e(rep.summary)}</div>{by}</div></td></tr>')
+HIGHLIGHT_ROWS = 10        # rows per list in the email; the spreadsheet has everything
 
-    b += _risk_sections_html(rep)
-    b += _performance_html(rep)
 
-    if rep.watch_changes:
-        b += _section("Watch List changes")
-        rows = "".join(f'<tr><td {TD}><b>{_e(w.verb)}</b></td>{_bank_cell(w.bank)}<td {TD}>{_e(w.reason)}</td>'
-                       f'<td {TD} nowrap>{_links(w.bank)}</td></tr>' for w in rep.watch_changes)
-        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>CHANGE</th>'
-              f'<th {TH}>INSTITUTION</th><th {TH}>REASON</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
-
-    if rep.tier1:
-        b += _section("Tier 1 alerts", "A capital, earnings or asset-quality threshold was crossed. Review today.")
-        for a in rep.tier1:
-            trig = "".join(f'<li style="margin:2px 0">{_e(t)}</li>' for t in a.triggers)
-            wl = (f' <span style="background:{AMBER};color:#fff;font-size:11.8px;font-weight:700;padding:2px 6px">'
-                  f'WATCH LIST</span>' if a.on_watch_list else "")
-            b += (f'<tr><td style="padding-top:12px"><div style="border:1px solid {RULE};border-top:4px solid {RED};padding:12px">'
-                  f'<div style="font-size:17.7px;font-weight:700;color:{INK}">{_e(a.bank.name)}{wl}</div>'
-                  f'<div style="font-size:14.2px;color:{MUTED};margin-top:2px">{_e(a.bank.location)} · {_e(a.bank.assets)} assets · '
-                  f'{_e(a.bank.period)} · FDIC Cert {_e(a.bank.cert or "n/a")} · RSSD {_e(a.bank.rssd)} · {_links(a.bank)}</div>'
-                  f'<ul style="margin:8px 0 8px 18px;padding:0;font-size:15.3px;color:{INK}">{trig}</ul>'
-                  + (_ratio_table(a.ratios) if a.ratios else "")
-                  + (f'<div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:{MUTED};margin-top:12px">'
-                     f'ALL CURRENT RATIOS (WATCH LIST BANK)</div>' + _current_table(a.snapshot) if a.snapshot else "")
-                  + "</div></td></tr>")
-
-    if rep.snapshot:
-        b += _section("Watch List: current ratios", "Every Watch List bank, every day, whether or not anything changed.")
-        for a in rep.snapshot:
-            b += (f'<tr><td style="padding-top:12px"><div style="font-size:16.5px;font-weight:700;color:{INK}">{_e(a.bank.name)}</div>'
-                  f'<div style="font-size:14.2px;color:{MUTED}">{_e(a.bank.location)} · {_e(a.bank.assets)} · {_links(a.bank)}</div>'
-                  f'{_current_table(a.ratios)}</td></tr>')
-
-    if rep.tier2:
-        b += _section("Tier 2", "Slower-moving deterioration worth watching.")
-        rows = "".join(f'<tr>{_bank_cell(a.bank)}<td {TD}>{"<br>".join(_e(t) for t in a.triggers)}</td>'
-                       f'<td {TD} nowrap>{_links(a.bank)}</td></tr>' for a in rep.tier2)
-        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
-              f'<th {TH}>WHAT CHANGED</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
-
-    if rep.flagged:
-        b += _section("New filings to review", SCREEN_NOTE)
-        rows = ""
-        for r in rep.flagged:
-            fl = "".join(f'<div style="margin:1px 0"><span style="color:{RED if f.level == "concern" else AMBER}">●</span> '
-                         f'{_e(f.text)}</div>' for f in r.flags)
-            rows += (f'<tr>{_bank_cell(r.bank)}<td {TDM}>{_e(r.bank.period)}</td><td {TD}>{fl}</td>'
-                     f'<td {TD} nowrap>{_links(r.bank)}</td></tr>')
-        more = (f'<tr><td colspan="4" style="padding:8px;font-size:14.2px;color:{MUTED}">Showing {len(rep.flagged)} of '
-                f'{rep.flagged_total}. All are in the attached CSV (Flags column).</td></tr>'
-                if rep.flagged_total > len(rep.flagged) else "")
-        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
-              f'<th {TH}>PERIOD</th><th {TH}>WHAT STANDS OUT</th><th {TH}>LINKS</th></tr>{rows}{more}</table></td></tr>')
-
-    if rep.refilings:
-        b += _section("Refilings", "Amended Call Reports where no capital ratio moved more than 0.50 points.")
-        b += f"<tr><td>{_list_table(rep.refilings, rep.refilings_total, 'WHAT CHANGED')}</td></tr>"
-    if rep.new_filings:
-        b += _section("Other new filings", "First filing for the quarter; no threshold crossed and no red flags "
-                      "(amber flags are in the CSV).")
-        b += f"<tr><td>{_list_table(rep.new_filings, rep.new_filings_total, None)}</td></tr>"
-
-    b += (f'<tr><td style="padding:22px 0 0;font-size:13px;color:{MUTED}"><b style="color:{INK}">Sources:</b> '
-          f'{_a("FFIEC Central Data Repository", CDR_HOME)} (Call Reports) · {_a("FDIC BankFind", BANKFIND_HOME)} '
-          "(institution profiles). Full list attached as CSV; the same report is attached as a PDF.</td></tr>")
-
+def _wrap(rep: Report, body: str) -> str:
     return (f'<!doctype html><html><body style="margin:0;background:#eef0f3;font-family:-apple-system,Segoe UI,Arial,sans-serif">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f3"><tr><td align="center" style="padding:18px 10px">'
             f'<table role="presentation" width="760" cellpadding="0" cellspacing="0" style="max-width:760px;width:100%;background:#fff">'
-            f'<tr><td style="background:{INK};padding:18px 24px"><div style="font-size:13px;font-weight:700;letter-spacing:.12em;color:#9aa3ad">DAILY</div>'
+            f'<tr><td style="background:{INK};padding:18px 24px"><div style="font-size:13px;font-weight:700;letter-spacing:.12em;color:#9aa3ad">'
+            f'{"WEEKLY" if rep.edition else "DAILY"}</div>'
             f'<div style="font-size:23.6px;font-weight:700;color:#fff">{NAME}</div>'
-            f'<div style="font-size:14.8px;color:#c8cdd3;margin-top:3px">{_e(rep.edition) or f"{rep.run_date:%A, %B %-d, %Y}"} · {_e(rep.status)} · PDF attached</div></td></tr>'
-            f'<tr><td style="padding:18px 24px 26px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{b}</table></td></tr>'
+            f'<div style="font-size:14.8px;color:#c8cdd3;margin-top:3px">{_e(rep.edition) or f"{rep.run_date:%A, %B %-d, %Y}"} · '
+            f'{_e(rep.status)}</div></td></tr>'
+            f'<tr><td style="padding:18px 24px 26px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{body}</table></td></tr>'
             f'</table></td></tr></table></body></html>')
+
+
+def _img_row(rep: Report, cid: str, title: str, src) -> str:
+    if cid not in rep.images:
+        return ""
+    return (f'<tr><td style="padding:16px 0 0"><div style="font-size:15px;font-weight:700;color:{INK};margin-bottom:6px">{_e(title)}</div>'
+            f'<img src="{src(cid)}" width="712" alt="{_e(title)}" style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
+
+
+def _more_html(shown: int, total: int) -> str:
+    return (f'<tr><td style="padding:6px 0 0;font-size:13px;color:{MUTED}">Showing {shown} of {total}. All {total} are in the '
+            f'attached spreadsheet.</td></tr>' if total > shown else "")
+
+
+def render_html(rep: Report, image_src=None) -> str:
+    """The email: the same highlights as the five-page PDF, page by page. Full detail for every
+    filing (ratios, flags, capital status, enforcement) is in the attached spreadsheet."""
+    from .narrative import RECIPROCAL_NOTE
+    src = image_src or (lambda cid: f"cid:{cid}")
+    b = ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+         + '<td width="8"></td>'.join(_tile(label, n, color) for label, n, color in tile_specs(rep.counts))
+         + "</tr></table></td></tr>")
+    a = rep.analytics
+    if a is not None and a.period_end and a.universe:
+        b += f'<tr><td style="padding:16px 0 0">{_progress_html(a)}</td></tr>'
+    if rep.summary:
+        b += (f'<tr><td style="padding:16px 0 0"><div style="background:{SOFT};border-left:3px solid {INK};padding:10px 12px">'
+              f'<div style="font-size:12.4px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
+              f'<div style="font-size:15.9px;line-height:1.5;color:{INK};margin-top:4px">{_e(rep.summary)}</div></div></td></tr>')
+    b += _img_row(rep, "activity", "Filings logged per day, last 21 days", src)
+
+    # 2. Enforcement orders and capital
+    if rep.enforcement_sources is not None or rep.capital_checked:
+        src_ = rep.enforcement_sources
+        short = ("Active Fed, OCC and FDIC orders and agreements and recent FinCEN BSA actions (no civil money penalties), "
+                 "checked against " + ", ".join(f"{k} ({v:,})" for k, v in src_.loaded.items())
+                 + (f"; unavailable today: {', '.join(src_.errors)}" if src_.errors else "")
+                 + ". FDIC orders matched by FDIC cert, others by name and state." if src_ is not None else "")
+        b += _section("Enforcement orders and capital", short)
+        active = [m for m in rep.enforcement if not m.action.stale]
+        for m in active:
+            note, _by = rep.enforcement_notes.get(m.bank.rssd, ("", ""))
+            issued = f" · issued {m.action.start:%b %-d, %Y}" if m.action.start else ""
+            b += (f'<tr><td style="padding-top:12px"><div style="border-left:3px solid {RED};padding:4px 0 4px 12px">'
+                  f'<div style="font-size:16px;font-weight:700;color:{INK}">{_e(m.bank.name)}'
+                  f'<span style="font-weight:400;color:{MUTED};font-size:13.5px"> · {_e(m.bank.location)} · {_e(m.bank.assets)}</span></div>'
+                  f'<div style="font-size:13.5px;color:{MUTED}"><b>{_e(m.action.agency)}</b> {_e(m.action.action)}{_e(issued)} · '
+                  f'{_a("Order", m.action.url)} · {_links(m.bank)}</div>'
+                  + (f'<div style="font-size:15px;line-height:1.5;color:{INK};margin-top:4px">{_e(note)}</div>' if note else "")
+                  + "</div></td></tr>")
+        if rep.enforcement_sources is not None:
+            if active:
+                b += f'<tr><td style="padding:8px 0 0;font-size:13px;color:{MUTED}">{_e(RECIPROCAL_NOTE)}</td></tr>'
+            else:
+                b += (f'<tr><td style="padding:8px 0;font-size:15px;color:{INK}">No bank is under an active Fed, OCC or FDIC order '
+                      f'or a recent FinCEN action.</td></tr>')
+            stale = [m for m in rep.enforcement if m.action.stale]
+            if stale:
+                b += (f'<tr><td style="padding:6px 0 0;font-size:13px;color:{MUTED}">Not counted: '
+                      + "; ".join(f"{_e(m.bank.name)} ({_e(m.action.agency)}, {m.action.start:%Y}) has no termination date "
+                                  f"but is over 10 years old, most likely closed. {_a('Check', m.action.url)}" for m in stale)
+                      + "</td></tr>")
+        if rep.capital_checked:
+            if rep.ltwc:
+                rows = "".join(f'<tr>{_bank_cell(b_)}<td {TD}>{_e(rs[0])}</td><td {TD} nowrap>{_links(b_)}</td></tr>'
+                               for b_, rs in rep.ltwc[:HIGHLIGHT_ROWS])
+                b += (f'<tr><td style="padding:14px 0 4px;font-size:15px;font-weight:700;color:{INK}">Less than well capitalized ({len(rep.ltwc)})</td></tr>'
+                      f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table></td></tr>'
+                      + _more_html(min(HIGHLIGHT_ROWS, len(rep.ltwc)), len(rep.ltwc)))
+            else:
+                b += f'<tr><td style="padding:12px 0 0;font-size:15px;color:{INK}"><b>Less than well capitalized:</b> none.</td></tr>'
+            if rep.cblr:
+                names = ", ".join(f"{_e(b_.name)} ({rs[0].split('%')[0].replace('Leverage ratio ', '')}%)" for b_, rs in rep.cblr)
+                b += (f'<tr><td style="padding:8px 0 0;font-size:15px;color:{INK}"><b>Community bank leverage ratio banks under 9% '
+                      f'({len(rep.cblr)}):</b> {names}. Still well capitalized during the two-quarter grace period.</td></tr>')
+
+    # 3. Flagged-bank performance
+    if rep.performance:
+        keys = [("Leverage ratio", "LEVERAGE"), ("Return on assets", "ROA"), ("Noncurrent loans + OREO", "PROBLEM LOANS"),
+                ("Brokered/reciprocal share", "BROK./RECIP.")]
+        perf = sorted(rep.performance, key=lambda bp: ("Mostly worsening" not in bp.read, "order" not in " ".join(bp.why)))
+
+        def cell(bp, label):
+            r = next((x for x in bp.rows if x.label == label), None)
+            if r is None or r.current is None:
+                return f"<td {TDR}></td>"
+            ch = ("" if r.change is None else
+                  f'<div style="font-size:12px;color:{GREEN if r.better else RED if r.better is False else MUTED}">'
+                  f'{"+" if r.change >= 0 else "-"}{abs(r.change):.2f}</div>')
+            return f"<td {TDR}>{r.current:.2f}%{ch}</td>"
+        rows = "".join(f'<tr><td {TD}><b>{_e(bp.bank.name)}</b><div style="font-size:12px;color:{MUTED}">{_e("; ".join(bp.why))} · '
+                       f'{_e(bp.read.split(":")[0])}</div></td>' + "".join(cell(bp, k) for k, _ in keys) + "</tr>"
+                       for bp in perf[:HIGHLIGHT_ROWS])
+        b += _section("How the flagged banks are performing", f"This quarter vs. {perf[0].prior_label}; change underneath "
+                      "(green = healthier, red = worse).")
+        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>BANK</th>'
+              + "".join(f"<th {THR}>{h}</th>" for _, h in keys) + f"</tr>{rows}</table></td></tr>"
+              + _more_html(min(HIGHLIGHT_ROWS, len(perf)), len(perf)))
+
+    # 4. New filings to review
+    if rep.flagged or "flags" in rep.images:
+        b += _section("New filings to review", SCREEN_NOTE)
+        b += _img_row(rep, "flags", "Today's new filings: what was flagged", src)
+        rows = "".join(
+            f'<tr>{_bank_cell(r.bank)}<td {TD}>'
+            + "".join(f'<div><span style="color:{RED if f.level == "concern" else AMBER}">●</span> {_e(f.text)}</div>'
+                      for f in r.flags[:2])
+            + f'</td><td {TD} nowrap>{_links(r.bank)}</td></tr>' for r in rep.flagged[:HIGHLIGHT_ROWS])
+        if rows:
+            b += f'<tr><td style="padding-top:8px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table></td></tr>'
+        b += _more_html(min(HIGHLIGHT_ROWS, rep.flagged_total), rep.flagged_total)
+
+    # 5. Alerts, refilings, other filings
+    alerts = ([("Tier 1", a_.bank, "; ".join(a_.triggers[:2])) for a_ in rep.tier1]
+              + [("Tier 2", a_.bank, "; ".join(a_.triggers[:2])) for a_ in rep.tier2]
+              + [(f"Watch List {w.verb.lower()}", w.bank, w.reason) for w in rep.watch_changes])
+    b += _section("Alerts, refilings and other filings")
+    if alerts:
+        rows = "".join(f'<tr><td {TD}><b>{_e(k)}</b></td>{_bank_cell(bk)}<td {TD}>{_e(t)}</td><td {TD} nowrap>{_links(bk)}</td></tr>'
+                       for k, bk, t in alerts[:HIGHLIGHT_ROWS])
+        b += f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table></td></tr>'
+    else:
+        b += f'<tr><td style="padding:8px 0 0;font-size:15px;color:{INK}">No Tier 1, Tier 2 or Watch List changes.</td></tr>'
+    if rep.refilings_total:
+        top = ", ".join(f"{_e(r.bank.name)} ({_e(r.bank.assets)})" for r in rep.refilings[:5])
+        b += (f'<tr><td style="padding:10px 0 0;font-size:15px;color:{INK}"><b>{rep.refilings_total} refilings</b> with no material '
+              f'capital change; largest: {top}.</td></tr>')
+    if rep.new_filings_total:
+        top = ", ".join(f"{_e(r.bank.name)} ({_e(r.bank.assets)})" for r in rep.new_filings[:5])
+        b += (f'<tr><td style="padding:8px 0 0;font-size:15px;color:{INK}"><b>{rep.new_filings_total} other new filings</b> '
+              f'with no red flags; largest: {top}.</td></tr>')
+
+    b += (f'<tr><td style="padding:22px 0 0;font-size:13px;color:{MUTED}"><b style="color:{INK}">Attached:</b> the five-page PDF '
+          f'and a spreadsheet with every filing, its capital ratios, flags, capital status and enforcement match, plus '
+          f'summary analytics. <b style="color:{INK}">Sources:</b> {_a("FFIEC CDR", CDR_HOME)} · {_a("FDIC BankFind", BANKFIND_HOME)} · '
+          f'Fed, OCC, FinCEN and FDIC enforcement records.</td></tr>')
+    return _wrap(rep, b)
