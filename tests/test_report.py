@@ -77,7 +77,7 @@ def test_claude_summary_is_grounded(monkeypatch):
     good = "First Prairie Bank crossed a Tier 1 threshold; its assets are $2.4B."
     with mock.patch.object(narrative.requests, "post", return_value=reply(good)):
         rep, html, _ = email_report.compose(**ev)
-    assert rep.summary == good and rep.summary_by == "Claude" and "Written by Claude" in html
+    assert rep.summary == good and rep.summary_by == "Claude" and "Written by Claude" not in html
 
     # a number that is not in the data is rejected (after one retry) and the rule-based text is used
     with mock.patch.object(narrative.requests, "post", return_value=reply("Deposits fell 37.5% overnight.")) as post:

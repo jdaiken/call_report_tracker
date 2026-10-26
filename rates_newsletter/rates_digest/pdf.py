@@ -137,8 +137,6 @@ def _summary(rep: Report) -> list:
     story += [row, Spacer(1, 9)]
     if rep.summary:
         inner = [_p("WHAT'S GOING ON", "label"), Spacer(1, 2), Paragraph(escape(rep.summary), ParagraphStyle("summ", parent=S["body"], fontSize=8.7, leading=11.6))]
-        if rep.summary_by == "Claude":
-            inner += [Spacer(1, 2), _p("Written by Claude from the figures in this report.", "small")]
         box = Table([[inner]], colWidths=[WIDTH])
         box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f6f8")),
                                  ("LINEBEFORE", (0, 0), (0, -1), 2.5, INK),

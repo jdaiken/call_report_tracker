@@ -106,7 +106,7 @@ def _fig(w, h):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10, "axes.edgecolor": GRID,
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 12, "axes.edgecolor": GRID,
                          "axes.labelcolor": MUTED, "xtick.color": MUTED, "ytick.color": MUTED})
     fig, ax = plt.subplots(figsize=(w, h), dpi=200)
     fig.patch.set_facecolor(SURFACE)
@@ -128,21 +128,21 @@ def activity_chart(a: Analytics) -> Optional[bytes]:
     """Stacked daily bars: new filings (blue) and refilings (orange), with a 2px surface gap."""
     if not a.days or not any(n or r for _, n, r in a.days):
         return None
-    plt, fig, ax = _fig(4.6, 2.5)
+    plt, fig, ax = _fig(7.2, 3.1)
     xs = list(range(len(a.days)))
     new = [n for _, n, _ in a.days]
     ref = [r for _, _, r in a.days]
     ax.bar(xs, new, width=0.72, color=BLUE, label="New filings", edgecolor=SURFACE, linewidth=1.0, zorder=3)
     ax.bar(xs, ref, width=0.72, bottom=new, color=ORANGE, label="Refilings", edgecolor=SURFACE, linewidth=1.0, zorder=3)
     ax.yaxis.grid(True, color=GRID, linewidth=0.8, zorder=0)
-    ax.tick_params(axis="both", length=0, labelsize=8.5)
+    ax.tick_params(axis="both", length=0, labelsize=11)
     ticks = [i for i in xs if i % 5 == (len(xs) - 1) % 5]
     ax.set_xticks(ticks)
     ax.set_xticklabels([f"{a.days[i][0]:%b} {a.days[i][0].day}" for i in ticks])
     last_total = new[-1] + ref[-1]
     ax.annotate(f"{last_total:,}", (xs[-1], last_total), xytext=(0, 3), textcoords="offset points",
-                ha="center", va="bottom", fontsize=8.5, color=INK, fontweight="bold")
-    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=8.5, ncol=2, handlelength=1,
+                ha="center", va="bottom", fontsize=11.5, color=INK, fontweight="bold")
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=11.5, ncol=2, handlelength=1,
               handleheight=0.8, borderaxespad=0.2)
     top = max(n + r for n, r in zip(new, ref))
     ax.set_ylim(0, top * 1.15)
@@ -153,7 +153,7 @@ def flags_chart(counts: list[tuple[str, int, int]]) -> Optional[bytes]:
     """Horizontal bars per flag type: banks with a red flag (solid) and amber-only (light)."""
     if not counts or not any(r or w for _, r, w in counts):
         return None
-    plt, fig, ax = _fig(4.6, 2.5)
+    plt, fig, ax = _fig(7.2, 3.1)
     labels = [c[0] for c in counts][::-1]
     red = [c[1] for c in counts][::-1]
     amber = [c[2] for c in counts][::-1]
@@ -162,15 +162,15 @@ def flags_chart(counts: list[tuple[str, int, int]]) -> Optional[bytes]:
     ax.barh(ys, red, height=0.6, color=RED, label="Red flag", edgecolor=SURFACE, linewidth=1.0, zorder=3)
     ax.barh(ys, amber, height=0.6, left=red, color=AMBER, label="Amber only", edgecolor=SURFACE, linewidth=1.0, zorder=3)
     ax.set_yticks(ys)
-    ax.set_yticklabels(labels, fontsize=8.5, color=INK)
+    ax.set_yticklabels(labels, fontsize=11.5, color=INK)
     ax.xaxis.grid(True, color=GRID, linewidth=0.8, zorder=0)
-    ax.tick_params(axis="both", length=0, labelsize=8.5)
+    ax.tick_params(axis="both", length=0, labelsize=11)
     ax.spines["bottom"].set_visible(False)
     top = max(r + w for r, w in zip(red, amber))
     for y, r, w in zip(ys, red, amber):
         if r + w:
-            ax.text(r + w + top * 0.02, y, f"{r}" + (f" + {w}" if w else ""), va="center", fontsize=8.5, color=INK)
+            ax.text(r + w + top * 0.02, y, f"{r}" + (f" + {w}" if w else ""), va="center", fontsize=11.5, color=INK)
     ax.set_xlim(0, top * 1.3)
-    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=8.5, ncol=2, handlelength=1,
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=11.5, ncol=2, handlelength=1,
               handleheight=0.8, borderaxespad=0.2)
     return _png(plt, fig)

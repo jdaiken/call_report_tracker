@@ -21,7 +21,7 @@ from .report import (AMBER, BANKFIND_HOME, CDR_HOME, GREEN, NAME, RED, SCREEN_NO
 INK, MUTED, RULE, SOFT = colors.HexColor("#14181f"), colors.HexColor("#5b626c"), colors.HexColor("#dde0e4"), colors.HexColor("#f5f6f8")
 LINK = "#1d5fbf"
 PAGE_W, PAGE_H = letter
-MARGIN = 0.6 * inch
+MARGIN = 0.5 * inch
 WIDTH = PAGE_W - 2 * MARGIN
 
 
@@ -31,11 +31,12 @@ def _st(name, size, color=INK, bold=False, **kw) -> ParagraphStyle:
 
 
 S = {
-    "h": _st("h", 14, bold=True), "note": _st("note", 8.5, MUTED), "label": _st("label", 7.5, MUTED, bold=True),
-    "cell": _st("cell", 8.5), "cellb": _st("cellb", 8.5, bold=True), "small": _st("small", 7.5, MUTED),
-    "num": _st("num", 8.5, alignment=TA_RIGHT), "numb": _st("numb", 8.5, bold=True, alignment=TA_RIGHT),
-    "labr": _st("labr", 7.5, MUTED, bold=True, alignment=TA_RIGHT), "tile": _st("tile", 18, bold=True),
-    "body": _st("body", 9.2, leading=12.6), "card": _st("card", 11.5, bold=True),
+    # Sized up for reading on screen and in print (was ~1.5pt smaller across the board).
+    "h": _st("h", 16, bold=True), "note": _st("note", 10, MUTED), "label": _st("label", 8.5, MUTED, bold=True),
+    "cell": _st("cell", 10), "cellb": _st("cellb", 10, bold=True), "small": _st("small", 8.5, MUTED),
+    "num": _st("num", 10, alignment=TA_RIGHT), "numb": _st("numb", 10, bold=True, alignment=TA_RIGHT),
+    "labr": _st("labr", 8.5, MUTED, bold=True, alignment=TA_RIGHT), "tile": _st("tile", 22, bold=True),
+    "body": _st("body", 11, leading=15), "card": _st("card", 13, bold=True),
 }
 
 
@@ -121,20 +122,12 @@ def _glance(rep: Report) -> list:
         bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#2a78d6")),
                                  ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#e6e8eb"))]))
         out += [bar, Spacer(1, 10)]
-    cells = []
-    half = (WIDTH - 14) / 2
     for cid, title in (("activity", "Filings logged per day, last 21 days"),
                        ("flags", "Today's new filings: what was flagged")):
         if cid in rep.images:
             img = Image(io.BytesIO(rep.images[cid]))
-            img.drawWidth, img.drawHeight = half, half * img.imageHeight / img.imageWidth
-            cells.append([_p(f"<b>{escape(title)}</b>", "cell"), Spacer(1, 3), img])
-    if cells:
-        row = [cells[0], "", cells[1]] if len(cells) == 2 else [cells[0], "", ""]
-        t = Table([row], colWidths=[half, 14, half])
-        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                               ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-        out += [t, Spacer(1, 10)]
+            img.drawWidth, img.drawHeight = WIDTH, WIDTH * img.imageHeight / img.imageWidth
+            out.append(KeepTogether([_p(f"<b>{escape(title)}</b>", "card"), Spacer(1, 4), img, Spacer(1, 12)]))
     return out
 
 
@@ -171,8 +164,6 @@ def _risk_sections(rep: Report) -> list:
                         f"{_a('Order', m.action.url)} · {_links(m.bank)}", "note")]
             if note:
                 block += [Spacer(1, 2), _p(escape(note), "body")]
-            if by == "Claude":
-                block.append(_p("Written by Claude from the figures in this report.", "small"))
             card = Table([[block]], colWidths=[WIDTH])
             card.setStyle(TableStyle([("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor(RED)),
                                       ("LEFTPADDING", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -234,8 +225,6 @@ def render_pdf(rep: Report) -> bytes:
     story: list = [row, Spacer(1, 12)] + _glance(rep)
     if rep.summary:
         inner = [_p("WHAT'S GOING ON", "label"), Spacer(1, 3), _p(escape(rep.summary), "body")]
-        if rep.summary_by == "Claude":
-            inner += [Spacer(1, 3), _p("Written by Claude from the filings in this report.", "small")]
         box = Table([[inner]], colWidths=[WIDTH])
         box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SOFT), ("LINEBEFORE", (0, 0), (0, -1), 2.5, INK),
                                  ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
@@ -311,13 +300,13 @@ def render_pdf(rep: Report) -> bytes:
         canvas.setFillColor(INK)
         canvas.rect(0, PAGE_H - 0.75 * inch, PAGE_W, 0.75 * inch, stroke=0, fill=1)
         canvas.setFillColor(colors.white)
-        canvas.setFont("Helvetica-Bold", 13)
+        canvas.setFont("Helvetica-Bold", 15)
         canvas.drawString(MARGIN, PAGE_H - 0.42 * inch, NAME)
-        canvas.setFont("Helvetica", 8.5)
+        canvas.setFont("Helvetica", 10)
         canvas.setFillColor(colors.HexColor("#c8cdd3"))
         canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.edition or f'{rep.run_date:%A, %B %-d, %Y}'}  ·  {rep.status}")
         canvas.setFillColor(MUTED)
-        canvas.setFont("Helvetica", 7)
+        canvas.setFont("Helvetica", 8.5)
         canvas.drawString(MARGIN, 0.35 * inch, f"{NAME} · {rep.run_date:%B %-d, %Y}")
         canvas.drawRightString(PAGE_W - MARGIN, 0.35 * inch, f"Page {doc_.page}")
         canvas.restoreState()

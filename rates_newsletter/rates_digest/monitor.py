@@ -417,8 +417,7 @@ def render_html(rep: Report, b: Bundle, image_src: Callable[[str], str] = lambda
              f'{_tile("RISK", rep.counts["risk"], "risk")}<td width="10"></td>{_tile("WATCH", rep.counts["watch"], "watch")}'
              f'<td width="10"></td>{_tile("NORMAL", rep.counts["ok"], "ok")}</tr></table></td></tr>')
     if rep.summary:
-        by = (f'<div style="font-size:10.5px;color:{MUTED};margin-top:6px">Written by Claude from the figures in this report.</div>'
-              if rep.summary_by == "Claude" else "")
+        by = ""
         body += (f'<tr><td style="padding:16px 0 0"><div style="background:#f5f6f8;border-left:3px solid {INK};padding:10px 12px">'
                  f'<div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
                  f'<div style="font-size:13.5px;line-height:1.5;color:{INK};margin-top:4px">{_esc(rep.summary)}</div>{by}</div></td></tr>')

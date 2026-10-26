@@ -409,20 +409,20 @@ def _links(b: Bank) -> str:
 
 
 def _section(title: str, note: str = "") -> str:
-    n = f'<div style="font-size:12px;color:{MUTED};margin-top:3px">{_e(note)}</div>' if note else ""
+    n = f'<div style="font-size:14.2px;color:{MUTED};margin-top:3px">{_e(note)}</div>' if note else ""
     return (f'<tr><td style="padding:26px 0 8px;border-bottom:2px solid {INK}">'
-            f'<div style="font-size:17px;font-weight:700;color:{INK}">{_e(title)}</div>{n}</td></tr>')
+            f'<div style="font-size:20.1px;font-weight:700;color:{INK}">{_e(title)}</div>{n}</td></tr>')
 
 
-TH = f'style="padding:6px 8px;font-size:10px;font-weight:700;letter-spacing:.06em;color:{MUTED};text-align:left;border-bottom:1px solid {INK}"'
+TH = f'style="padding:6px 8px;font-size:11.8px;font-weight:700;letter-spacing:.06em;color:{MUTED};text-align:left;border-bottom:1px solid {INK}"'
 THR = TH.replace("text-align:left", "text-align:right")
-TD = f'style="padding:6px 8px;font-size:12.5px;color:{INK};border-bottom:1px solid {RULE};vertical-align:top"'
+TD = f'style="padding:6px 8px;font-size:14.8px;color:{INK};border-bottom:1px solid {RULE};vertical-align:top"'
 TDR = TD.replace("vertical-align:top", "vertical-align:top;text-align:right;white-space:nowrap")
 TDM = TD.replace(f"color:{INK}", f"color:{MUTED}")
 
 
 def _bank_cell(b: Bank) -> str:
-    return (f'<td {TD}><b>{_e(b.name)}</b><div style="font-size:11px;color:{MUTED}">{_e(b.location)} · '
+    return (f'<td {TD}><b>{_e(b.name)}</b><div style="font-size:13px;color:{MUTED}">{_e(b.location)} · '
             f'{_e(b.assets)}</div></td>')
 
 
@@ -447,8 +447,8 @@ def _current_table(rows: list[RatioRow]) -> str:
 
 def _tile(label: str, n: int, color: str) -> str:
     return (f'<td valign="top" style="border:1px solid {RULE};border-top:4px solid {color};padding:9px 10px">'
-            f'<div style="font-size:22px;font-weight:700;color:{INK}">{n}</div>'
-            f'<div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:{MUTED}">{_e(label)}</div></td>')
+            f'<div style="font-size:26px;font-weight:700;color:{INK}">{n}</div>'
+            f'<div style="font-size:11.8px;font-weight:700;letter-spacing:.06em;color:{MUTED}">{_e(label)}</div></td>')
 
 
 def _list_table(rows: list[ListRow], total: int, detail_label: Optional[str]) -> str:
@@ -457,7 +457,7 @@ def _list_table(rows: list[ListRow], total: int, detail_label: Optional[str]) ->
     body = "".join(f'<tr>{_bank_cell(r.bank)}<td {TDM}>{_e(r.bank.period)}</td>'
                    + (f'<td {TD}>{_e(r.detail)}</td>' if detail_label else "")
                    + f'<td {TD} nowrap>{_links(r.bank)}</td></tr>' for r in rows)
-    more = (f'<tr><td colspan="4" style="padding:8px;font-size:12px;color:{MUTED}">Showing the {len(rows)} largest of '
+    more = (f'<tr><td colspan="4" style="padding:8px;font-size:14.2px;color:{MUTED}">Showing the {len(rows)} largest of '
             f'{total}. All {total} are in the attached CSV.</td></tr>' if total > len(rows) else "")
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{head}{body}{more}</table>'
 
@@ -467,8 +467,8 @@ def _progress_html(a) -> str:
     due = (f" ({left} days left)" if left and left > 1 else " (tomorrow)" if left == 1 else " (today)" if left == 0
            else " (past due)" if left is not None and left < 0 else "")
     pct = min(a.pct, 100)
-    return (f'<div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">{_e(a.quarter.upper())} FILING SEASON</div>'
-            f'<div style="font-size:13px;color:{INK};margin:4px 0 6px"><b>{a.filed:,}</b> of {a.universe:,} banks have filed '
+    return (f'<div style="font-size:12.4px;font-weight:700;letter-spacing:.08em;color:{MUTED}">{_e(a.quarter.upper())} FILING SEASON</div>'
+            f'<div style="font-size:15.3px;color:{INK};margin:4px 0 6px"><b>{a.filed:,}</b> of {a.universe:,} banks have filed '
             f'({a.pct:.0f}%) · due {a.deadline:%a %b %-d}{due}</div>'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="height:10px"><tr>'
             f'<td width="{pct:.1f}%" style="background:#2a78d6;height:10px;font-size:0;line-height:0">&nbsp;</td>'
@@ -482,16 +482,12 @@ def _glance_html(rep: Report, image_src=None) -> str:
     out = ""
     if a is not None and a.period_end and a.universe:
         out += f'<tr><td style="padding:16px 0 0">{_progress_html(a)}</td></tr>'
-    cells = []
     for cid, title in (("activity", "Filings logged per day, last 21 days"),
                        ("flags", "Today's new filings: what was flagged")):
         if cid in rep.images:
-            cells.append(f'<td valign="top" width="50%" style="padding:0">'
-                         f'<div style="font-size:12px;font-weight:700;color:{INK};margin-bottom:4px">{_e(title)}</div>'
-                         f'<img src="{src(cid)}" width="316" alt="{_e(title)}" style="display:block;width:100%;max-width:316px;height:auto;border:0"></td>')
-    if cells:
-        out += ('<tr><td style="padding:16px 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                + '<td width="16"></td>'.join(cells) + "</tr></table></td></tr>")
+            out += (f'<tr><td style="padding:20px 0 0"><div style="font-size:16.5px;font-weight:700;color:{INK};margin-bottom:6px">'
+                    f'{_e(title)}</div><img src="{src(cid)}" width="712" alt="{_e(title)}" '
+                    f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
     return out
 
 
@@ -534,7 +530,7 @@ def _risk_sections_html(rep: Report) -> str:
             b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
                   f'<th {TH}>PERIOD</th><th {TH}>BELOW THE LINE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
         else:
-            b += f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">None. Every filing with capital data is at or above the well-capitalized lines.</td></tr>'
+            b += f'<tr><td style="padding:8px 0;font-size:15.3px;color:{INK}">None. Every filing with capital data is at or above the well-capitalized lines.</td></tr>'
         if rep.cblr:
             b += _section("Community bank leverage ratio banks under 9%", CBLR_NOTE)
             rows = "".join(f'<tr>{_bank_cell(b_)}<td {TDM}>{_e(b_.period)}</td><td {TD}>{_e(rs[0])}</td>'
@@ -550,21 +546,19 @@ def _risk_sections_html(rep: Report) -> str:
             for m in active:
                 note, by = rep.enforcement_notes.get(m.bank.rssd, ("", ""))
                 b += (f'<tr><td style="padding-top:12px"><div style="border-left:3px solid {RED};padding:6px 0 6px 12px">'
-                      f'<div style="font-size:14px;font-weight:700;color:{INK}">{_e(m.bank.name)}</div>'
-                      f'<div style="font-size:12px;color:{MUTED}">{_e(m.bank.location)} · {_e(m.bank.assets)} · '
+                      f'<div style="font-size:16.5px;font-weight:700;color:{INK}">{_e(m.bank.name)}</div>'
+                      f'<div style="font-size:14.2px;color:{MUTED}">{_e(m.bank.location)} · {_e(m.bank.assets)} · '
                       f'<b>{_e(m.action.agency)}</b> {_e(m.action.action)}'
                       f'{_e(f" · issued {m.action.start:%b %-d, %Y}" if m.action.start else "")} · {_e(m.action.topic)} · '
                       f'{_a("Order", m.action.url)} · {_links(m.bank)}</div>'
-                      + (f'<div style="font-size:13px;line-height:1.5;color:{INK};margin-top:5px">{_e(note)}</div>' if note else "")
-                      + (f'<div style="font-size:10.5px;color:{MUTED};margin-top:3px">Written by Claude from the figures in this report.</div>'
-                         if by == "Claude" else "")
+                      + (f'<div style="font-size:15.3px;line-height:1.5;color:{INK};margin-top:5px">{_e(note)}</div>' if note else "")
                       + "</div></td></tr>")
-            b += f'<tr><td style="padding:10px 0 0;font-size:12px;color:{MUTED}">{_e(RECIPROCAL_NOTE)}</td></tr>'
+            b += f'<tr><td style="padding:10px 0 0;font-size:14.2px;color:{MUTED}">{_e(RECIPROCAL_NOTE)}</td></tr>'
         else:
-            b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report is under an active Fed, '
+            b += (f'<tr><td style="padding:8px 0;font-size:15.3px;color:{INK}">No bank in this report is under an active Fed, '
                   f'OCC or FDIC order or a recent FinCEN action.</td></tr>')
         if stale:
-            b += (f'<tr><td style="padding:8px 0 0;font-size:12px;color:{MUTED}">Not counted: '
+            b += (f'<tr><td style="padding:8px 0 0;font-size:14.2px;color:{MUTED}">Not counted: '
                   + "; ".join(f"{_e(m.bank.name)} ({_e(m.action.agency)} {_e(m.action.action.split(' (')[0])}, "
                               f"{m.action.start:%Y}) has no termination date in the data but is over 10 years old, so it "
                               f"is most likely closed. {_a('Check', m.action.url)}" for m in stale)
@@ -590,10 +584,10 @@ def _performance_html(rep: Report) -> str:
             rows += (f'<tr><td {TD}>{_e(r.label)}</td><td {TDR}>{"" if r.prior is None else f"{r.prior:.2f}%"}</td>'
                      f'<td {TDR}><b>{"" if r.current is None else f"{r.current:.2f}%"}</b></td>'
                      f'<td {TDR}><span style="color:{color}">{ch}</span></td></tr>')
-        b += (f'<tr><td style="padding-top:14px"><div style="font-size:14px;font-weight:700;color:{INK}">{_e(bp.bank.name)}</div>'
-              f'<div style="font-size:12px;color:{MUTED}">{_e(bp.bank.location)} · {_e(bp.bank.assets)} · '
+        b += (f'<tr><td style="padding-top:14px"><div style="font-size:16.5px;font-weight:700;color:{INK}">{_e(bp.bank.name)}</div>'
+              f'<div style="font-size:14.2px;color:{MUTED}">{_e(bp.bank.location)} · {_e(bp.bank.assets)} · '
               f'{_e("; ".join(bp.why))} · {_links(bp.bank)}</div>'
-              f'<div style="font-size:13px;color:{INK};margin:5px 0">{_e(bp.read)}</div>'
+              f'<div style="font-size:15.3px;color:{INK};margin:5px 0">{_e(bp.read)}</div>'
               f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>RATIO</th>'
               f'<th {THR}>{_e(bp.prior_label.upper())}</th><th {THR}>{_e(bp.bank.period.upper())}</th><th {THR}>CHANGE</th></tr>'
               f'{rows}</table></td></tr>')
@@ -622,11 +616,10 @@ def render_html(rep: Report) -> str:
           + "</tr></table></td></tr>")
     b += _glance_html(rep)
     if rep.summary:
-        by = (f'<div style="font-size:10.5px;color:{MUTED};margin-top:6px">Written by Claude from the filings in this report.</div>'
-              if rep.summary_by == "Claude" else "")
+        by = ""
         b += (f'<tr><td style="padding:16px 0 0"><div style="background:{SOFT};border-left:3px solid {INK};padding:10px 12px">'
-              f'<div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
-              f'<div style="font-size:13.5px;line-height:1.5;color:{INK};margin-top:4px">{_e(rep.summary)}</div>{by}</div></td></tr>')
+              f'<div style="font-size:12.4px;font-weight:700;letter-spacing:.08em;color:{MUTED}">WHAT\'S GOING ON</div>'
+              f'<div style="font-size:15.9px;line-height:1.5;color:{INK};margin-top:4px">{_e(rep.summary)}</div>{by}</div></td></tr>')
 
     b += _risk_sections_html(rep)
     b += _performance_html(rep)
@@ -642,23 +635,23 @@ def render_html(rep: Report) -> str:
         b += _section("Tier 1 alerts", "A capital, earnings or asset-quality threshold was crossed. Review today.")
         for a in rep.tier1:
             trig = "".join(f'<li style="margin:2px 0">{_e(t)}</li>' for t in a.triggers)
-            wl = (f' <span style="background:{AMBER};color:#fff;font-size:10px;font-weight:700;padding:2px 6px">'
+            wl = (f' <span style="background:{AMBER};color:#fff;font-size:11.8px;font-weight:700;padding:2px 6px">'
                   f'WATCH LIST</span>' if a.on_watch_list else "")
             b += (f'<tr><td style="padding-top:12px"><div style="border:1px solid {RULE};border-top:4px solid {RED};padding:12px">'
-                  f'<div style="font-size:15px;font-weight:700;color:{INK}">{_e(a.bank.name)}{wl}</div>'
-                  f'<div style="font-size:12px;color:{MUTED};margin-top:2px">{_e(a.bank.location)} · {_e(a.bank.assets)} assets · '
+                  f'<div style="font-size:17.7px;font-weight:700;color:{INK}">{_e(a.bank.name)}{wl}</div>'
+                  f'<div style="font-size:14.2px;color:{MUTED};margin-top:2px">{_e(a.bank.location)} · {_e(a.bank.assets)} assets · '
                   f'{_e(a.bank.period)} · FDIC Cert {_e(a.bank.cert or "n/a")} · RSSD {_e(a.bank.rssd)} · {_links(a.bank)}</div>'
-                  f'<ul style="margin:8px 0 8px 18px;padding:0;font-size:13px;color:{INK}">{trig}</ul>'
+                  f'<ul style="margin:8px 0 8px 18px;padding:0;font-size:15.3px;color:{INK}">{trig}</ul>'
                   + (_ratio_table(a.ratios) if a.ratios else "")
-                  + (f'<div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:{MUTED};margin-top:12px">'
+                  + (f'<div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:{MUTED};margin-top:12px">'
                      f'ALL CURRENT RATIOS (WATCH LIST BANK)</div>' + _current_table(a.snapshot) if a.snapshot else "")
                   + "</div></td></tr>")
 
     if rep.snapshot:
         b += _section("Watch List: current ratios", "Every Watch List bank, every day, whether or not anything changed.")
         for a in rep.snapshot:
-            b += (f'<tr><td style="padding-top:12px"><div style="font-size:14px;font-weight:700;color:{INK}">{_e(a.bank.name)}</div>'
-                  f'<div style="font-size:12px;color:{MUTED}">{_e(a.bank.location)} · {_e(a.bank.assets)} · {_links(a.bank)}</div>'
+            b += (f'<tr><td style="padding-top:12px"><div style="font-size:16.5px;font-weight:700;color:{INK}">{_e(a.bank.name)}</div>'
+                  f'<div style="font-size:14.2px;color:{MUTED}">{_e(a.bank.location)} · {_e(a.bank.assets)} · {_links(a.bank)}</div>'
                   f'{_current_table(a.ratios)}</td></tr>')
 
     if rep.tier2:
@@ -676,7 +669,7 @@ def render_html(rep: Report) -> str:
                          f'{_e(f.text)}</div>' for f in r.flags)
             rows += (f'<tr>{_bank_cell(r.bank)}<td {TDM}>{_e(r.bank.period)}</td><td {TD}>{fl}</td>'
                      f'<td {TD} nowrap>{_links(r.bank)}</td></tr>')
-        more = (f'<tr><td colspan="4" style="padding:8px;font-size:12px;color:{MUTED}">Showing {len(rep.flagged)} of '
+        more = (f'<tr><td colspan="4" style="padding:8px;font-size:14.2px;color:{MUTED}">Showing {len(rep.flagged)} of '
                 f'{rep.flagged_total}. All are in the attached CSV (Flags column).</td></tr>'
                 if rep.flagged_total > len(rep.flagged) else "")
         b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
@@ -690,15 +683,15 @@ def render_html(rep: Report) -> str:
                       "(amber flags are in the CSV).")
         b += f"<tr><td>{_list_table(rep.new_filings, rep.new_filings_total, None)}</td></tr>"
 
-    b += (f'<tr><td style="padding:22px 0 0;font-size:11px;color:{MUTED}"><b style="color:{INK}">Sources:</b> '
+    b += (f'<tr><td style="padding:22px 0 0;font-size:13px;color:{MUTED}"><b style="color:{INK}">Sources:</b> '
           f'{_a("FFIEC Central Data Repository", CDR_HOME)} (Call Reports) · {_a("FDIC BankFind", BANKFIND_HOME)} '
           "(institution profiles). Full list attached as CSV; the same report is attached as a PDF.</td></tr>")
 
     return (f'<!doctype html><html><body style="margin:0;background:#eef0f3;font-family:-apple-system,Segoe UI,Arial,sans-serif">'
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f3"><tr><td align="center" style="padding:18px 10px">'
-            f'<table role="presentation" width="680" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%;background:#fff">'
-            f'<tr><td style="background:{INK};padding:18px 24px"><div style="font-size:11px;font-weight:700;letter-spacing:.12em;color:#9aa3ad">DAILY</div>'
-            f'<div style="font-size:20px;font-weight:700;color:#fff">{NAME}</div>'
-            f'<div style="font-size:12.5px;color:#c8cdd3;margin-top:3px">{_e(rep.edition) or f"{rep.run_date:%A, %B %-d, %Y}"} · {_e(rep.status)} · PDF attached</div></td></tr>'
+            f'<table role="presentation" width="760" cellpadding="0" cellspacing="0" style="max-width:760px;width:100%;background:#fff">'
+            f'<tr><td style="background:{INK};padding:18px 24px"><div style="font-size:13px;font-weight:700;letter-spacing:.12em;color:#9aa3ad">DAILY</div>'
+            f'<div style="font-size:23.6px;font-weight:700;color:#fff">{NAME}</div>'
+            f'<div style="font-size:14.8px;color:#c8cdd3;margin-top:3px">{_e(rep.edition) or f"{rep.run_date:%A, %B %-d, %Y}"} · {_e(rep.status)} · PDF attached</div></td></tr>'
             f'<tr><td style="padding:18px 24px 26px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{b}</table></td></tr>'
             f'</table></td></tr></table></body></html>')
