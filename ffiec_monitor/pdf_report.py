@@ -158,22 +158,34 @@ def _risk_sections(rep: Report) -> list:
                     for b, rs in rep.cblr]
             out.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 4.25 * inch, 1.4 * inch]))
     if rep.enforcement_sources is not None:
-        out += _section("Enforcement actions", coverage_note(rep))
-        if rep.enforcement:
-            head = [_p("INSTITUTION", "label"), _p("AGENCY", "label"), _p("ACTION", "label"), _p("SINCE", "label"),
-                    _p("LINKS", "label")]
-            body = [[_bank(m.bank), _p(f"<b>{escape(m.action.agency)}</b><br/><font size='7' color='#5b626c'>"
-                                       f"{escape(m.action.topic)}</font>", "cell"),
-                     _p(f"{escape(m.action.action)}<br/><font size='7' color='#5b626c'>as listed: {escape(m.action.name)}"
-                        f" · matched on {escape(m.how)}"
-                        + (" · over 10 years old with no termination date: confirm it is still in force" if m.action.stale else "")
-                        + "</font>", "cell"),
-                     _p(f"{m.action.start:%b %-d, %Y}" if m.action.start else "", "cell"),
-                     _p(_a("Source", m.action.url) + " · " + _links(m.bank), "small")] for m in rep.enforcement]
-            out.append(_table([head] + body, [2.0 * inch, 0.6 * inch, WIDTH - 5.0 * inch, 0.9 * inch, 1.5 * inch]))
+        from .narrative import RECIPROCAL_NOTE
+        active = [m for m in rep.enforcement if not m.action.stale]
+        stale = [m for m in rep.enforcement if m.action.stale]
+        out += _section("Banks under enforcement orders", coverage_note(rep))
+        for m in active:
+            note, by = rep.enforcement_notes.get(m.bank.rssd, ("", ""))
+            issued = f" · issued {m.action.start:%b %-d, %Y}" if m.action.start else ""
+            block = [_p(f"<b>{escape(m.bank.name)}</b>", "cell"),
+                     _p(f"{escape(m.bank.location)} · {escape(m.bank.assets)} · <b>{escape(m.action.agency)}</b> "
+                        f"{escape(m.action.action)}{escape(issued)} · {escape(m.action.topic)} · "
+                        f"{_a('Order', m.action.url)} · {_links(m.bank)}", "note")]
+            if note:
+                block += [Spacer(1, 2), _p(escape(note), "body")]
+            if by == "Claude":
+                block.append(_p("Written by Claude from the figures in this report.", "small"))
+            card = Table([[block]], colWidths=[WIDTH])
+            card.setStyle(TableStyle([("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor(RED)),
+                                      ("LEFTPADDING", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (-1, -1), 4),
+                                      ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+            out += [KeepTogether([card]), Spacer(1, 6)]
+        if active:
+            out.append(_p(escape(RECIPROCAL_NOTE), "note"))
         else:
-            out.append(_p("No bank in this report matched an active Fed, OCC or FDIC order or agreement or a recent FinCEN action. "
-                          + _a("Search FDIC orders", "https://orders.fdic.gov/s/"), "cell"))
+            out.append(_p("No bank in this report is under an active Fed, OCC or FDIC order or a recent FinCEN action.", "cell"))
+        if stale:
+            out += [Spacer(1, 4), _p("Not counted: " + "; ".join(
+                f"{escape(m.bank.name)} ({escape(m.action.agency)}, {m.action.start:%Y}) has no termination date in the "
+                f"data but is over 10 years old, so it is most likely closed. {_a('Check', m.action.url)}" for m in stale), "note")]
     return out
 
 

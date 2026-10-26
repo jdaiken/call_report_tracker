@@ -1,0 +1,58 @@
+name: Weekly FFIEC Call Report Edition
+
+# Every Monday: one email covering every filing the daily monitor logged the previous
+# week (Mon-Sun), with every report re-pulled for the capital check, the enforcement /
+# AML check (Fed, OCC, FDIC export, FinCEN), and flagged-bank performance vs. last quarter.
+# Read-only: restores the daily monitor's saved state but never saves it.
+on:
+  schedule:
+    - cron: "37 13 * * 1"     # Mondays 13:37 UTC = 9:37am EDT / 8:37am EST, after the daily run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffiec-daily          # waits for the daily run instead of reading its state mid-write
+  cancel-in-progress: false
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state (read-only copy)
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-none
+          restore-keys: |
+            duckdb-
+      - name: Send the weekly edition
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Last Monday 00:00 to this Monday 00:00, US Eastern, expressed in UTC (how alert_log is stored).
+          read START END LABEL < <(python3 - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          et = ZoneInfo("America/New_York")
+          now = datetime.now(et)
+          this_mon = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+          last_mon = this_mon - timedelta(days=7)
+          u = lambda d: d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+          sun = this_mon - timedelta(days=1)
+          print(u(last_mon), u(this_mon), f"Week_ending_Sun_{sun:%b}_{sun.day}")
+          PY
+          )
+          python scripts/send_window_digest.py logged "$START" "$END" "${LABEL//_/ }"

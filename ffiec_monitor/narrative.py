@@ -137,10 +137,10 @@ def rule_summary(rep: "Report") -> str:
     if rep.enforcement_sources is not None:
         orders = c.get("enforcement", 0)
         if orders:
-            m = rep.enforcement[0]
+            m = next(x for x in rep.enforcement if not x.action.stale)
             parts.append(f"{orders} {'bank has' if orders == 1 else 'banks have'} an active enforcement or AML action, "
                          f"including {m.bank.name} ({m.action.agency} {m.action.action.lower()}"
-                         + (", over 10 years old, so confirm it is still in force" if m.action.stale else "") + ").")
+                         + ").")
         else:
             parts.append("No filer has an active Fed, OCC or FDIC enforcement order or a recent FinCEN AML action.")
     if rep.performance:
@@ -185,3 +185,68 @@ def write_summary(rep: "Report") -> tuple[str, str]:
     else:
         STATUS = "no ANTHROPIC_API_KEY; rule-based summary used"
     return rule_summary(rep), "rules"
+
+
+# ------------------------------------------------------------------ enforcement discussion
+ENF_PROMPT = """You write a short discussion of ONE bank that is under an active regulatory enforcement order, for a
+risk manager at a firm that places reciprocal deposits with banks. Plain English, 2 to 4 sentences, at most 80 words.
+Cover: what the order is and since when; how the bank performed this quarter vs. last (capital, earnings, problem
+loans, funding) using the numbers given; and what to watch.
+
+Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice to act, no markdown.
+
+Data:
+"""
+
+RECIPROCAL_NOTE = ("A bank under a formal order is usually not rated 1 or 2, so its reciprocal deposits are likely "
+                   "limited to the special cap (its average over the last four quarters); growth beyond that counts as "
+                   "brokered.")
+
+
+def _enf_facts(m, bp) -> str:
+    a, b = m.action, m.bank
+    lines = [f"Bank: {b.name}, {b.location}, total assets {b.assets}, filing {b.period}.",
+             f"Order: {a.agency} {a.action}" + (f" ({a.detail})" if a.detail and a.agency == 'FDIC' else "")
+             + (f", issued {a.start:%B %-d, %Y}" if a.start else "") + "."]
+    if bp is not None:
+        for r in bp.rows:
+            if r.current is not None:
+                lines.append(f"{r.label}: {'n/a' if r.prior is None else f'{r.prior:.2f}%'} in {bp.prior_label} to "
+                             f"{r.current:.2f}% in {b.period}.")
+        lines.append(f"Summary read: {bp.read}")
+    return "\n".join(lines)
+
+
+def rule_enforcement_note(m, bp) -> str:
+    a, b = m.action, m.bank
+    since = f" since {a.start:%B %-d, %Y}" if a.start else ""
+    s = f"{b.name} has been under an {a.agency} {a.action.split(',')[0].lower()}{since}."
+    if bp is not None:
+        s += f" This quarter: {bp.read[0].lower() + bp.read[1:]}"
+    return s
+
+
+def enforcement_notes(rep: "Report") -> dict[str, tuple[str, str]]:
+    """{rssd: (paragraph, 'Claude'|'rules')} for each bank with an active order (stale ones excluded)."""
+    perf = {bp.bank.rssd: bp for bp in rep.performance}
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    model = os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+    out = {}
+    for m in rep.enforcement:
+        if getattr(m.action, "stale", False) or m.bank.rssd in out:
+            continue
+        bp = perf.get(m.bank.rssd)
+        text, by = rule_enforcement_note(m, bp), "rules"
+        if key:
+            data = _enf_facts(m, bp)
+            try:
+                r = _post(key, model, ENF_PROMPT + data)
+                if r.status_code < 400:
+                    t = " ".join(x.get("text", "") for x in r.json().get("content", []) if x.get("type") == "text")
+                    t = re.sub(r"\s+", " ", t.replace("**", "")).strip()
+                    if t and _numbers(t) <= (_numbers(data) | {str(i) for i in range(0, 13)}) and len(t) < 900:
+                        text, by = t, "Claude"
+            except Exception as e:
+                log.warning("enforcement note unavailable: %s", e)
+        out[m.bank.rssd] = (text, by)
+    return out

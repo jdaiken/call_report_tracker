@@ -23,6 +23,10 @@ ffiec_monitor/
   email_report.py  email structure + smtplib delivery (CSV + PDF attachments)
   report.py        the designed daily email: counts, summary, one section per alert type, links
   pdf_report.py    the same report as a PDF attachment
+  screen.py        new-filing screen (capital, earnings, liquidity, brokered/reciprocal)
+  enforcement.py   Fed/OCC/FinCEN fetch + FDIC export (data/fdic_active_orders.csv), matching
+  performance.py   flagged banks this quarter vs. last
+  analytics.py     filing-season progress and charts
   narrative.py     plain-English "What's going on" paragraph, written by Claude when
                    ANTHROPIC_API_KEY is set (numbers checked against the data), else rule-based
   pipeline.py       daily-run orchestration
@@ -36,7 +40,8 @@ scripts/
   fake_diff.py                   synthetic Tier 1 event to test the email path (§10.2)
   svb_backtest.py                historical validation against SVB (§10.3)
 tests/             unit tests (ratio extraction/diffing, materiality floor, Watch List, tiers)
-.github/workflows/daily.yml      scheduled run
+.github/workflows/daily.yml      scheduled daily run
+.github/workflows/ffiec_weekly.yml  Monday weekly edition (previous week's filings, full checks)
 ```
 
 ## Secrets (GitHub Actions: Settings -> Secrets and variables -> Actions)
@@ -250,3 +255,14 @@ without changing the default).
   inputs from this investigation (`runner_type`, `reset_cursor`, `limit`,
   `diagnose_secrets`) -- all default off/empty and safe to leave, but worth
   deleting once the daily schedule has run cleanly a few times unattended.
+
+## Refreshing FDIC enforcement orders
+
+FDIC has no live data feed for its Enforcement Decisions and Orders. Export the full
+list from https://orders.fdic.gov/s/ (CSV) and rebuild the active-orders file:
+
+```
+python scripts/build_fdic_orders.py path/to/EDOOrders.csv "Oct 26, 2026"
+```
+
+Refresh monthly (the FDIC publishes new orders on the last Friday of each month).

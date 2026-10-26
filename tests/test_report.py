@@ -212,7 +212,7 @@ def test_capital_status_and_enforcement_matching(monkeypatch):
     names = sorted({m.bank.name for m in rep.enforcement})
     assert names == ["Community Bank 10", "Community Bank 2", "First Prairie Bank"]
     assert rep.counts["ltwc"] == 1 and rep.ltwc[0][0].name == "First Prairie Bank"
-    assert "Less than well capitalized" in html_out and "Enforcement actions" in html_out
+    assert "Less than well capitalized" in html_out and "Banks under enforcement orders" in html_out
     assert "FDIC orders aren" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
     assert ">ENFORCEMENT / AML<" in html_out and "BELOW WELL CAP." in html_out
     assert rep.summary.startswith("1 filing is below well capitalized: First Prairie Bank")
@@ -273,3 +273,26 @@ def test_flagged_bank_performance(monkeypatch):
     assert bp.read.startswith("Mostly worsening: capital down 0.70 pts, losing money, problem loans 2.60% (up 0.70)")
     assert "How the flagged banks are performing" in html and "Q2 2026" in html
     assert "1 mostly worsening" in rep.summary
+
+
+def test_enforcement_discussion_and_stale_orders(monkeypatch):
+    from datetime import timedelta
+    from ffiec_monitor import enforcement
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    today = date.today()
+    acts = [enforcement.Action("FDIC", "First Prairie Bank", "IL", "Cease and Desist / Consent Orders",
+                               today - timedelta(days=400), "https://orders.example/1", "Consent Order", "9001"),
+            enforcement.Action("OCC", "Community Bank 2", "IL", "Cease-and-Desist Order", date(2003, 1, 29), "u")]
+    ev = sample_events(0, 0)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[],
+              new_filing_events=[email_report.NewFilingEvent(_meta(1, 500_000, "First Prairie Bank"), Q3,
+                                                             {"tier1_leverage_ratio": 9.5, "roaa": 0.2}),
+                                 email_report.NewFilingEvent(_meta(2, 500_000), Q3, {"tier1_leverage_ratio": 10})])
+    src = enforcement.Sources(actions=acts, loaded={"FDIC": 1, "OCC": 1})
+    rep, html, pdf = email_report.compose(**ev, enforcement_sources=src,
+                                          prior_lookup=lambda r, p: {"tier1_leverage_ratio": 9.9, "roaa": 0.4})
+    assert rep.counts["enforcement"] == 1                         # the 2003 OCC order is footnoted, not counted
+    note, by = rep.enforcement_notes["100001"]
+    assert by == "rules" and note.startswith("First Prairie Bank has been under an FDIC cease and desist / consent orders since")
+    assert "Not counted: Community Bank 2" in html and "most likely closed" in html
+    assert "special cap" in html and "Banks under enforcement orders" in html

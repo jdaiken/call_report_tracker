@@ -140,6 +140,7 @@ class Report:
     enforcement_sources: object = None                       # enforcement.Sources, when checked
     edition: str = ""                                        # e.g. "Week ending Sun Oct 25" (default: the date)
     performance: list = field(default_factory=list)          # performance.BankPerformance for focus banks
+    enforcement_notes: dict = field(default_factory=dict)    # rssd -> (discussion paragraph, 'Claude'|'rules')
 
 
 # ------------------------------------------------------------------ building
@@ -278,7 +279,8 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
                      + [a.bank for a in tier2] + [a.bank for a in snapshot] + [w.bank for w in watch])
         uniq = list({b.rssd: b for b in all_banks}.values())
         matches = match(uniq, enforcement_sources.actions)
-        counts["enforcement"] = len({m.bank.rssd for m in matches})
+        # Orders 10+ years old with no termination in the data are almost always closed: footnoted, not counted.
+        counts["enforcement"] = len({m.bank.rssd for m in matches if not m.action.stale})
     if ltwc:
         status = _plural(len(ltwc), "bank below well capitalized", "banks below well capitalized") + " · " + status
     if counts.get("enforcement"):
@@ -302,7 +304,8 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
             if why not in entry[1]:
                 entry[1].append(why)
     for m in matches:
-        add(m.bank, f"{m.action.agency} {m.action.action.split(',')[0].lower()}")
+        if not m.action.stale:
+            add(m.bank, f"{m.action.agency} {m.action.action.split(',')[0].lower()}")
     for b_, _rs in ltwc:
         add(b_, "below well capitalized")
     for b_, _rs in cblr:
@@ -311,6 +314,9 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
         from .performance import build as build_perf
         rep.performance = build_perf(list(focus.values()), prior_lookup)
     rep.enforcement, rep.enforcement_sources, rep.edition = matches, enforcement_sources, edition
+    if matches:
+        from .narrative import enforcement_notes
+        rep.enforcement_notes = enforcement_notes(rep)
     from . import analytics as an
     rep.analytics = analytics
     rep.flag_counts = an.flag_counts(new_all)
@@ -350,7 +356,7 @@ def facts(rep: Report, limit: int = 40) -> str:
         out.append(f"ENFORCEMENT / AML: {rep.counts.get('enforcement', 0)} banks with an active order, agreement or "
                    f"recent FinCEN action. " + coverage_note(rep))
         out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} {m.action.topic}: {m.action.action}"
-                + (" (over 10 years old, may no longer be in force)" if m.action.stale else "")
+                + (" (over 10 years old with no termination in the data: most likely closed, NOT counted)" if m.action.stale else "")
                 + (f" since {m.action.start:%B %-d, %Y}" if m.action.start else "") for m in rep.enforcement[:limit]]
     if rep.performance:
         out.append("PERFORMANCE OF FLAGGED BANKS (this quarter vs. last):")
@@ -536,21 +542,33 @@ def _risk_sections_html(rep: Report) -> str:
             b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
                   f'<th {TH}>PERIOD</th><th {TH}>LEVERAGE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
     if rep.enforcement_sources is not None:
-        b += _section("Enforcement actions", coverage_note(rep))
-        if rep.enforcement:
-            rows = "".join(
-                f'<tr>{_bank_cell(m.bank)}<td {TD}><b>{_e(m.action.agency)}</b><div style="font-size:11px;color:{MUTED}">'
-                f'{_e(m.action.topic)}</div></td><td {TD}>{_e(m.action.action)}'
-                f'<div style="font-size:11px;color:{MUTED}">as listed: {_e(m.action.name)} · matched on {_e(m.how)}'
-                + (' · over 10 years old with no termination date: confirm it is still in force' if m.action.stale else '')
-                + '</div></td>'
-                f'<td {TDM}>{_e(f"{m.action.start:%b %-d, %Y}" if m.action.start else "")}</td>'
-                f'<td {TD} nowrap>{_a("Source", m.action.url)} · {_links(m.bank)}</td></tr>' for m in rep.enforcement)
-            b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
-                  f'<th {TH}>AGENCY</th><th {TH}>ACTION</th><th {TH}>SINCE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
+        active = [m for m in rep.enforcement if not m.action.stale]
+        stale = [m for m in rep.enforcement if m.action.stale]
+        b += _section("Banks under enforcement orders", coverage_note(rep))
+        if active:
+            from .narrative import RECIPROCAL_NOTE
+            for m in active:
+                note, by = rep.enforcement_notes.get(m.bank.rssd, ("", ""))
+                b += (f'<tr><td style="padding-top:12px"><div style="border-left:3px solid {RED};padding:6px 0 6px 12px">'
+                      f'<div style="font-size:14px;font-weight:700;color:{INK}">{_e(m.bank.name)}</div>'
+                      f'<div style="font-size:12px;color:{MUTED}">{_e(m.bank.location)} · {_e(m.bank.assets)} · '
+                      f'<b>{_e(m.action.agency)}</b> {_e(m.action.action)}'
+                      f'{_e(f" · issued {m.action.start:%b %-d, %Y}" if m.action.start else "")} · {_e(m.action.topic)} · '
+                      f'{_a("Order", m.action.url)} · {_links(m.bank)}</div>'
+                      + (f'<div style="font-size:13px;line-height:1.5;color:{INK};margin-top:5px">{_e(note)}</div>' if note else "")
+                      + (f'<div style="font-size:10.5px;color:{MUTED};margin-top:3px">Written by Claude from the figures in this report.</div>'
+                         if by == "Claude" else "")
+                      + "</div></td></tr>")
+            b += f'<tr><td style="padding:10px 0 0;font-size:12px;color:{MUTED}">{_e(RECIPROCAL_NOTE)}</td></tr>'
         else:
-            b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report matched an active Fed or '
-                  f'OCC or FDIC order or agreement or a recent FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
+            b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report is under an active Fed, '
+                  f'OCC or FDIC order or a recent FinCEN action.</td></tr>')
+        if stale:
+            b += (f'<tr><td style="padding:8px 0 0;font-size:12px;color:{MUTED}">Not counted: '
+                  + "; ".join(f"{_e(m.bank.name)} ({_e(m.action.agency)} {_e(m.action.action.split(' (')[0])}, "
+                              f"{m.action.start:%Y}) has no termination date in the data but is over 10 years old, so it "
+                              f"is most likely closed. {_a('Check', m.action.url)}" for m in stale)
+                  + "</td></tr>")
     return b
 
 
