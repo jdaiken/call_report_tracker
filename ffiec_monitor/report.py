@@ -134,7 +134,8 @@ class Report:
     flag_counts: list = field(default_factory=list)
     images: dict = field(default_factory=dict)   # cid -> PNG (charts)
     capital_checked: bool = False                # were any ratios available for the capital check
-    ltwc: list = field(default_factory=list)     # (Bank, [reasons]) below a well-capitalized line
+    ltwc: list = field(default_factory=list)     # (Bank, [reasons]) below a PCA well-capitalized minimum
+    cblr: list = field(default_factory=list)     # (Bank, [reason]) CBLR banks below the 9% leverage line
     enforcement: list = field(default_factory=list)          # enforcement.Match
     enforcement_sources: object = None                       # enforcement.Sources, when checked
     edition: str = ""                                        # e.g. "Week ending Sun Oct 25" (default: the date)
@@ -145,8 +146,10 @@ def _bank(meta, period_end: Optional[date]) -> Bank:
     from .email_report import cdr_report_url
     period = period_end or meta.as_of_period
     return Bank(
-        name=meta.name, location=f"{meta.city}, {meta.state}".strip(", "), rssd=str(meta.id_rssd),
-        cert=str(meta.fdic_cert or ""), assets=fmt_assets(meta.total_assets), assets_raw=meta.total_assets or 0,
+        # FFIEC pads names/cities to fixed width; strip so tables and matching aren't thrown off.
+        name=" ".join((meta.name or "").split()),
+        location=f"{(meta.city or '').strip()}, {(meta.state or '').strip()}".strip(", "), rssd=str(meta.id_rssd).strip(),
+        cert=str(meta.fdic_cert or "").strip(), assets=fmt_assets(meta.total_assets), assets_raw=meta.total_assets or 0,
         period=quarter(period) if period else "n/a",
         call_report_url=cdr_report_url(meta.id_rssd, period) if period else None,
         bankfind_url=bankfind_url(meta.fdic_cert),
@@ -185,14 +188,20 @@ def capital_status(r: Optional[dict]) -> list[str]:
     def v(k):
         x = r.get(k)
         return float(x) if isinstance(x, (int, float)) else None
-    out = [f"{label} {v(k):.2f}% (well capitalized: {m:g}%+)" for k, m, label in WELL_CAP
-           if v(k) is not None and v(k) < m]
-    lev = v("tier1_leverage_ratio")
-    cblr = lev is not None and v("total_rbc_ratio") is None and v("tier1_rbc_ratio") is None
-    if cblr and 5.0 <= lev < CBLR_MIN:
-        out.append(f"Leverage ratio {lev:.2f}%: below the 9% community bank leverage ratio "
-                   "(no risk-based ratios reported, so it relies on that framework)")
-    return out
+    return [f"{label} {v(k):.2f}% (well capitalized: {m:g}%+)" for k, m, label in WELL_CAP
+            if v(k) is not None and v(k) < m]
+
+
+def cblr_status(r: Optional[dict]) -> Optional[str]:
+    """A community bank leverage ratio (CBLR) bank -- reports only the leverage ratio -- below 9%.
+    Not less than well capitalized by itself: 8-9% gets a two-quarter grace period."""
+    if not r:
+        return None
+    lev, t1, tot = (r.get(k) for k in ("tier1_leverage_ratio", "tier1_rbc_ratio", "total_rbc_ratio"))
+    if isinstance(lev, (int, float)) and t1 is None and tot is None and 5.0 <= lev < CBLR_MIN:
+        grace = "grace period (8% to 9%)" if lev >= 8 else "below 8%: leaves the framework now"
+        return f"Leverage ratio {lev:.2f}% vs. the 9% CBLR line: {grace}"
+    return None
 
 
 def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
@@ -247,16 +256,20 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
                         + (f" ({len(flagged)} flagged)" if flagged else ""))
         status = ", ".join(bits) or "no activity"
     # Capital check across every filing that has ratios (new filings and pulled refilings).
-    ltwc, checked = [], False
+    ltwc, cblr, checked = [], [], False
     for e in list(new_filing_events) + list(restatement_events):
         r = getattr(e, "ratios", None)
         checked = checked or bool(r)
         reasons = capital_status(r)
         if reasons:
             ltwc.append((_bank(e.meta, e.period_end), reasons))
+        elif cblr_status(r):
+            cblr.append((_bank(e.meta, e.period_end), [cblr_status(r)]))
     ltwc.sort(key=lambda t: t[0].assets_raw, reverse=True)
+    cblr.sort(key=lambda t: t[0].assets_raw, reverse=True)
     if checked:
         counts["ltwc"] = len(ltwc)
+        counts["cblr"] = len(cblr)
     matches = []
     if enforcement_sources is not None:
         from .enforcement import match
@@ -274,7 +287,7 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
     rep = Report(run_date, subject, status, counts, watch, tier1, snapshot, tier2,
                  refilings[:LIST_CAP], len(refilings), new_filings[:LIST_CAP // 2], len(new_filings),
                  flagged[:LIST_CAP], len(flagged))
-    rep.capital_checked, rep.ltwc = checked, ltwc
+    rep.capital_checked, rep.ltwc, rep.cblr = checked, ltwc, cblr
     rep.enforcement, rep.enforcement_sources, rep.edition = matches, enforcement_sources, edition
     from . import analytics as an
     rep.analytics = analytics
@@ -307,8 +320,10 @@ def facts(rep: Report, limit: int = 40) -> str:
         out.append("Flag types among today's new filings (banks with a red flag / amber only): "
                    + "; ".join(f"{l} {r}/{w}" for l, r, w in rep.flag_counts))
     if rep.capital_checked:
-        out.append(f"LESS THAN WELL CAPITALIZED: {len(rep.ltwc)} filings.")
+        out.append(f"LESS THAN WELL CAPITALIZED (PCA minimums): {len(rep.ltwc)} filings.")
         out += [f"  {b_.name} ({b_.location}), assets {b_.assets}, {b_.period}: " + "; ".join(rs) for b_, rs in rep.ltwc[:limit]]
+        out.append(f"CBLR BANKS UNDER THE 9% LEVERAGE LINE (not less than well capitalized by themselves): {len(rep.cblr)}.")
+        out += [f"  {b_.name} ({b_.location}), assets {b_.assets}: {rs[0]}" for b_, rs in rep.cblr[:limit]]
     if rep.enforcement_sources is not None:
         out.append(f"ENFORCEMENT ACTION MATCHES: {len(rep.enforcement)} (" + coverage_note(rep) + ")")
         out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} {m.action.action}"
@@ -443,6 +458,15 @@ def _glance_html(rep: Report, image_src=None) -> str:
     return out
 
 
+LTWC_NOTE = ("Filings below a Prompt Corrective Action well-capitalized minimum: leverage 5%, Tier 1 risk-based 8%, "
+             "total risk-based 10%, CET1 6.5%. Below well capitalized, a bank faces limits on brokered deposits and on the "
+             "reciprocal deposits it can exclude from them.")
+CBLR_NOTE = ("These banks use the community bank leverage ratio (CBLR) framework: they report only a leverage ratio and are "
+             "deemed well capitalized above 9%. Between 8% and 9% they get a two-quarter grace period, then must meet the "
+             "risk-based rules or get back above 9%; below 8% they leave the framework right away. Not less than well "
+             "capitalized by itself, but the cushion is thin.")
+
+
 def coverage_note(rep: Report) -> str:
     src = rep.enforcement_sources
     if src is None:
@@ -456,10 +480,7 @@ def coverage_note(rep: Report) -> str:
 def _risk_sections_html(rep: Report) -> str:
     b = ""
     if rep.capital_checked:
-        b += _section("Less than well capitalized",
-                      "Filings below a Prompt Corrective Action well-capitalized minimum (leverage 5%, Tier 1 risk-based 8%, "
-                      "total risk-based 10%, CET1 6.5%), or a community bank leverage ratio bank below 9%. Below well "
-                      "capitalized, a bank faces limits on brokered deposits and on reciprocal deposits it can exclude.")
+        b += _section("Less than well capitalized", LTWC_NOTE)
         if rep.ltwc:
             rows = "".join(f'<tr>{_bank_cell(b_)}<td {TDM}>{_e(b_.period)}</td><td {TD}>{"<br>".join(_e(x) for x in rs)}</td>'
                            f'<td {TD} nowrap>{_links(b_)}</td></tr>' for b_, rs in rep.ltwc)
@@ -467,6 +488,12 @@ def _risk_sections_html(rep: Report) -> str:
                   f'<th {TH}>PERIOD</th><th {TH}>BELOW THE LINE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
         else:
             b += f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">None. Every filing with capital data is at or above the well-capitalized lines.</td></tr>'
+        if rep.cblr:
+            b += _section("Community bank leverage ratio banks under 9%", CBLR_NOTE)
+            rows = "".join(f'<tr>{_bank_cell(b_)}<td {TDM}>{_e(b_.period)}</td><td {TD}>{_e(rs[0])}</td>'
+                           f'<td {TD} nowrap>{_links(b_)}</td></tr>' for b_, rs in rep.cblr)
+            b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
+                  f'<th {TH}>PERIOD</th><th {TH}>LEVERAGE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
     if rep.enforcement_sources is not None:
         b += _section("Enforcement actions", coverage_note(rep))
         if rep.enforcement:
@@ -492,6 +519,8 @@ def tile_specs(c: dict) -> list[tuple[str, int, str]]:
         tiles.append(("ENFORCEMENT", c["enforcement"], RED if c["enforcement"] else GRAY))
     if "ltwc" in c:
         tiles.append(("BELOW WELL CAP.", c["ltwc"], RED if c["ltwc"] else GRAY))
+    if c.get("cblr"):
+        tiles.append(("CBLR UNDER 9%", c["cblr"], AMBER))
     return tiles + [("NEW FILINGS", c["new"], GREEN), ("REFILINGS", c["refilings"], GRAY),
                     ("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)]
 

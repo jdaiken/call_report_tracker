@@ -142,10 +142,8 @@ def _risk_sections(rep: Report) -> list:
     from .report import coverage_note
     out: list = []
     if rep.capital_checked:
-        out += _section("Less than well capitalized",
-                        "Below a Prompt Corrective Action well-capitalized minimum (leverage 5%, Tier 1 risk-based 8%, "
-                        "total risk-based 10%, CET1 6.5%), or a community bank leverage ratio bank below 9%. Below well "
-                        "capitalized, a bank faces limits on brokered deposits and on reciprocal deposits it can exclude.")
+        from .report import CBLR_NOTE, LTWC_NOTE
+        out += _section("Less than well capitalized", LTWC_NOTE)
         if rep.ltwc:
             head = [_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("BELOW THE LINE", "label"), _p("LINKS", "label")]
             body = [[_bank(b), _p(escape(b.period), "cell"), _p("<br/>".join(escape(x) for x in rs), "cell"),
@@ -153,6 +151,12 @@ def _risk_sections(rep: Report) -> list:
             out.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 4.25 * inch, 1.4 * inch]))
         else:
             out.append(_p("None. Every filing with capital data is at or above the well-capitalized lines.", "cell"))
+        if rep.cblr:
+            out += _section("Community bank leverage ratio banks under 9%", CBLR_NOTE)
+            head = [_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("LEVERAGE", "label"), _p("LINKS", "label")]
+            body = [[_bank(b), _p(escape(b.period), "cell"), _p(escape(rs[0]), "cell"), _p(_links(b), "small")]
+                    for b, rs in rep.cblr]
+            out.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 4.25 * inch, 1.4 * inch]))
     if rep.enforcement_sources is not None:
         out += _section("Enforcement actions", coverage_note(rep))
         if rep.enforcement:

@@ -179,7 +179,9 @@ def test_capital_status_and_enforcement_matching(monkeypatch):
     from ffiec_monitor.report import capital_status
     assert capital_status({"tier1_leverage_ratio": 9.5, "total_rbc_ratio": 14.0}) == []
     assert capital_status({"tier1_leverage_ratio": 4.8, "total_rbc_ratio": 9.1})[0].startswith("Leverage ratio 4.80%")
-    assert "community bank leverage ratio" in capital_status({"tier1_leverage_ratio": 8.4})[0]   # CBLR filer
+    from ffiec_monitor.report import cblr_status
+    assert capital_status({"tier1_leverage_ratio": 8.4}) == []                          # CBLR filer: not LTWC
+    assert "grace period" in cblr_status({"tier1_leverage_ratio": 8.4})
     assert capital_status(None) == []
 
     fed = ("Banking Organization,Entity,Individual,Individual Affiliation,Effective Date,Termination Date,Action,Note,URL\n"

@@ -66,17 +66,17 @@ def main(mode: str, start: str, end: str, label: str) -> None:
                                           enforcement_sources=src, edition=label)
     body = email_report.build_email_body([], [], [], [], refilings, new, run_date) or "No filings in this window."
     msg = (f"{len(filings)} filings: {len(new)} new, {len(refilings)} refilings ({failed} pulls failed); "
-           f"{rep.counts.get('ltwc', 0)} below well capitalized; {rep.counts.get('enforcement', 0)} enforcement matches; "
+           f"{rep.counts.get('ltwc', 0)} below well capitalized; {rep.counts.get('cblr', 0)} CBLR under 9%; {rep.counts.get('enforcement', 0)} enforcement matches; "
            f"{rep.counts['flagged']} flagged. Enforcement sources: {src.loaded} errors: {src.errors}")
     print(msg)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::notice title=Window digest::{msg[:900]}")
         print(f"::notice title=Daily summary::{narrative.STATUS[:500]}")
-        for b, rs in rep.ltwc[:10]:
-            print(f"::notice title=Below well capitalized::{b.name} ({b.location}) {b.period}: {'; '.join(rs)}")
-        for m in rep.enforcement[:10]:
-            print(f"::notice title=Enforcement match::{m.bank.name} ({m.bank.location}) - {m.action.agency} "
-                  f"{m.action.action} ({m.action.name}, {m.how})")
+        ltwc = "; ".join(f"{b.name} ({b.location}): {rs[0]}" for b, rs in rep.ltwc)
+        print(f"::notice title=Below well capitalized ({len(rep.ltwc)})::{ltwc[:950] or 'none'}")
+        enf = "; ".join(f"{m.bank.name} ({m.bank.location}) {m.action.agency} {m.action.action} [{m.action.name}]"
+                        for m in rep.enforcement)
+        print(f"::notice title=Enforcement matches ({len(rep.enforcement)})::{enf[:950] or 'none'}")
     slug = label.replace(" ", "-")
     email_report.send_email(
         EmailConfig.from_env(), rep.subject, f"WHAT'S GOING ON\n{rep.summary}\n\n{body}", html_body=html,
