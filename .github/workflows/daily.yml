@@ -2,8 +2,10 @@ name: Daily FFIEC Call Report Monitor
 
 on:
   schedule:
-    # 13:00 UTC ~ 8-9am US Eastern, after FFIEC's overnight batch processing.
-    - cron: "0 13 * * *"
+    # 12:23 UTC = 8:23am EDT, after FFIEC's overnight batch processing. Off the top of the
+    # hour on purpose: GitHub starts :00 schedules hours late when it's busy (this one was
+    # starting 3-6 hours late at 13:00).
+    - cron: "23 12 * * *"
   workflow_dispatch:
     inputs:
       universe:

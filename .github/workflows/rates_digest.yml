@@ -1,4 +1,5 @@
 name: Rates & Deposit Risk Monitor
+run-name: "Rates ${{ inputs.mode || 'send' }}"
 
 # Lives in this repo (not its own) so it can use the same EMAIL_ADDRESS /
 # EMAIL_APP_PASSWORD secrets as the FFIEC monitor. Code is in rates_newsletter/.
@@ -6,7 +7,11 @@ name: Rates & Deposit Risk Monitor
 
 on:
   schedule:
-    # Weekdays 12:43 UTC = 8:43am EDT / 7:43am EST.
+    # GitHub often starts scheduled runs hours late (or skips them), so there are three
+    # tries each weekday; the first one to start sends and the rest see that and skip.
+    # 10:17 / 11:43 / 12:43 UTC = 6:17 / 7:43 / 8:43am EDT (an hour earlier in winter).
+    - cron: "17 10 * * 1-5"
+    - cron: "43 11 * * 1-5"
     - cron: "43 12 * * 1-5"
   workflow_dispatch:
     inputs:
@@ -18,6 +23,11 @@ on:
 
 permissions:
   contents: read
+  actions: read     # to see whether today's email already went out
+
+concurrency:
+  group: rates-digest
+  cancel-in-progress: false
 
 jobs:
   digest:
@@ -29,13 +39,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Skip if today's email already went out (scheduled runs only)
+        id: dedupe
+        if: ${{ github.event_name == 'schedule' }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list -R "${{ github.repository }}" -w rates_digest.yml -L 30 \
+            --json databaseId,displayTitle,conclusion,createdAt > runs.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          et = ZoneInfo("America/New_York")
+          today = datetime.now(et).date()
+          me = int(os.environ["GITHUB_RUN_ID"])
+          sent = [r for r in json.load(open("runs.json")) if r["databaseId"] != me and r["conclusion"] == "success"
+                  and r["displayTitle"] in ("Rates send", "Rates & Deposit Risk Monitor")
+                  and datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")).astimezone(et).date() == today]
+          print(f"skip={'true' if sent else 'false'}")
+          PY
+
       - uses: actions/setup-python@v5
+        if: ${{ steps.dedupe.outputs.skip != 'true' }}
         with:
           python-version: "3.11"
 
       - run: pip install -r requirements.txt
+        if: ${{ steps.dedupe.outputs.skip != 'true' }}
 
       - name: Build and send digest
+        if: ${{ steps.dedupe.outputs.skip != 'true' }}
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
