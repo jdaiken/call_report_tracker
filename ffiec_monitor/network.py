@@ -34,6 +34,8 @@ log = logging.getLogger(__name__)
 NAME = "Network Exposure Report"
 NEAR_CAP = 80.0          # % of the cap
 HIGH_UNINSURED = 40.0    # % of deposits
+SEGMENTS = [("Community (<$1B)", 0, 1_000_000), ("Regional ($1B-$10B)", 1_000_000, 10_000_000),
+            ("Large ($10B+)", 10_000_000, 10 ** 12)]
 USAGE_BUCKETS = [("None", None, 0.0), ("Under 25%", 0.0, 25.0), ("25-50%", 25.0, 50.0), ("50-80%", 50.0, 80.0),
                  ("80-100%", 80.0, 100.0), ("Over 100%", 100.0, None)]
 
@@ -52,6 +54,22 @@ class NetBank:
     special_cap: list[str] = field(default_factory=list)   # reasons it is likely on the special cap
     prior_reciprocal: Optional[float] = None
     prior_used: Optional[float] = None
+    capital: dict = field(default_factory=dict)            # leverage / tier1 / total / cet1 (%)
+    cushion: Optional[float] = None                        # pts above the nearest well-capitalized line
+    binding: str = ""                                      # which ratio that is
+    history: list = field(default_factory=list)            # [(quarter end, reciprocal $000)] newest first
+    state: str = ""
+
+    @property
+    def special_cap_est(self) -> Optional[float]:
+        '''Estimated special cap: average quarter-end reciprocal deposits over the last four quarters.'''
+        vals = [v for _, v in self.history[:4] if v is not None]
+        return sum(vals) / len(vals) if len(vals) >= 2 else None
+
+    @property
+    def over_special(self) -> Optional[float]:
+        est = self.special_cap_est
+        return None if est is None or self.reciprocal is None else self.reciprocal - est
 
     @property
     def headroom(self) -> Optional[float]:
@@ -102,6 +120,34 @@ class Network:
 
     def special(self) -> list[NetBank]:
         return sorted([b for b in self.users if b.special_cap], key=lambda b: -(b.reciprocal or 0))
+
+    def closest_to_special(self) -> list[NetBank]:
+        '''Reciprocal users not yet on the special cap, thinnest capital cushion first.'''
+        return sorted([b for b in self.users if not b.special_cap and b.cushion is not None], key=lambda b: b.cushion)
+
+    def concentration(self) -> dict:
+        u = sorted(self.users, key=lambda b: -(b.reciprocal or 0))
+        total = sum(b.reciprocal or 0 for b in u)
+        if not total:
+            return {}
+        shares = [(b.reciprocal or 0) / total for b in u]
+        cum, n50, n80 = 0.0, None, None
+        for i, sh in enumerate(shares, 1):
+            cum += sh
+            if n50 is None and cum >= 0.5:
+                n50 = i
+            if n80 is None and cum >= 0.8:
+                n80 = i
+        states = {}
+        for b in u:
+            states[b.state] = states.get(b.state, 0) + (b.reciprocal or 0)
+        dep = [b for b in u if b.deposits and (b.reciprocal or 0) / b.deposits >= 0.10]
+        return {"total": total, "top10": sum(shares[:10]) * 100, "top25": sum(shares[:25]) * 100,
+                "hhi": sum(x * x for x in shares) * 10000, "n50": n50, "n80": n80, "users": len(u),
+                "top": u[:10], "states": sorted(states.items(), key=lambda t: -t[1])[:8],
+                "dependent": sorted(dep, key=lambda b: -(b.reciprocal or 0) / b.deposits),
+                "special_share": sum(b.reciprocal or 0 for b in u if b.special_cap) / total * 100,
+                "shares": shares}
 
     def buckets(self) -> list[tuple[str, int]]:
         out = []
@@ -171,6 +217,9 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                      (unins / deps * 100) if (unins is not None and deps) else None, deps, meta.total_assets or 0)
         if capital_status(r):
             nb.special_cap.append("below well capitalized")
+        nb.state = b.location.rsplit(",", 1)[-1].strip()
+        nb.capital = {k: _num(r, k) for k in ("tier1_leverage_ratio", "tier1_rbc_ratio", "total_rbc_ratio", "cet1_ratio")}
+        nb.cushion, nb.binding = capital_cushion(nb.capital)
         net.banks.append(nb)
     # enforcement -> likely special cap
     if enforcement_sources is not None:
@@ -180,29 +229,69 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                 for nb in net.banks:
                     if nb.bank.rssd == m.bank.rssd and "under an enforcement order" not in nb.special_cap:
                         nb.special_cap.append("under an enforcement order")
-    # quarter-over-quarter for the banks in the lists
+    # Last quarter (all listed banks) and four quarters of history (special-cap and closest banks,
+    # for the estimated special cap).
     if prior_lookup is not None:
-        focus = {id(b): b for b in net.near_cap()[:25] + net.special()[:25] + net.prospects()[:15]}
-        for nb in focus.values():
-            try:
-                pr = prior_lookup(nb.bank.rssd, prior_quarter_end(nb.period)) or {}
-            except Exception:
-                pr = {}
-            prec, pliab = _num(pr, RECIPROCAL_RAW_KEY), _num(pr, LIABILITIES_RAW_KEY)
-            if prec is not None:
-                nb.prior_reciprocal = prec
-                pcap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * pliab) if pliab else None
-                nb.prior_used = prec / pcap * 100 if pcap else None
+        hist_banks = {id(b): b for b in net.special()[:40] + net.closest_to_special()[:25]}
+        focus = {id(b): b for b in net.near_cap()[:25] + net.prospects()[:15]}
+        focus.update(hist_banks)
+        for key, nb in focus.items():
+            nb.history = [(nb.period, nb.reciprocal)]
+            q = nb.period
+            for i in range(3 if key in hist_banks else 1):
+                q = prior_quarter_end(q)
+                try:
+                    pr = prior_lookup(nb.bank.rssd, q) or {}
+                except Exception:
+                    pr = {}
+                prec = _num(pr, RECIPROCAL_RAW_KEY)
+                nb.history.append((q, prec))
+                if i == 0 and prec is not None:
+                    nb.prior_reciprocal = prec
+                    pliab = _num(pr, LIABILITIES_RAW_KEY)
+                    pcap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * pliab) if pliab else None
+                    nb.prior_used = prec / pcap * 100 if pcap else None
     return net
+
+
+WELL_CAP_MIN = [("tier1_leverage_ratio", 5.0, "leverage"), ("tier1_rbc_ratio", 8.0, "Tier 1 risk-based"),
+                ("total_rbc_ratio", 10.0, "total risk-based"), ("cet1_ratio", 6.5, "CET1")]
+
+
+def capital_cushion(cap: dict) -> tuple[Optional[float], str]:
+    '''Points above the nearest well-capitalized line. A community bank leverage ratio bank (only a
+    leverage ratio reported) is measured against 9%.'''
+    vals = {k: v for k, v in cap.items() if v is not None}
+    if not vals:
+        return None, ""
+    if set(vals) == {"tier1_leverage_ratio"}:
+        return vals["tier1_leverage_ratio"] - 9.0, "CBLR leverage (9%)"
+    gaps = [(vals[k] - m, f"{label} ({m:g}%)") for k, m, label in WELL_CAP_MIN if k in vals]
+    return min(gaps, key=lambda t: t[0])
+
+
+def make_history_lookup(conn, client):
+    '''A quarter's ratios for a bank: stored snapshot if it already has the network fields, else a Call Report pull.'''
+    from . import db, ratios as ratios_mod
+
+    def lookup(rssd: str, period_end: date) -> Optional[dict]:
+        snap = db.get_snapshot(conn, rssd, period_end)
+        if snap is not None and isinstance(snap.ratios.get(RECIPROCAL_RAW_KEY), (int, float)):
+            return snap.ratios
+        if client is None:
+            return None
+        return ratios_mod.extract_ratios(client.retrieve_facsimile(rssd, period_end), period_end)
+    return lookup
 
 
 # ------------------------------------------------------------------ narrative
 PROMPT = """You write the opening analysis of a weekly report for a risk manager at a firm that runs a reciprocal deposit
-network. Plain English, ONE paragraph of 4 to 6 sentences, at most 130 words. Cover: how widely banks use reciprocal
+network. Plain English, ONE paragraph of 5 to 8 sentences. Cover: how widely banks use reciprocal
 deposits and how close they are to the reciprocal cap (lesser of $5 billion or 20% of liabilities); the banks nearest or
 over the cap and what that means (more placements would count as brokered); banks likely held to the special cap
 (not well capitalized/rated, so limited to their four-quarter average); and uninsured-deposit exposure, including banks
-with high uninsured deposits and room under the cap. Name at most three banks.
+with high uninsured deposits and room under the cap; how concentrated reciprocal deposits are; and the banks closest to
+the special cap (thinnest capital cushion) with their estimated special cap. Name at most four banks. Up to 170 words.
 
 Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice, no markdown.
 
@@ -233,8 +322,26 @@ def facts(net: Network) -> str:
              f"{_pct(s['median_uninsured'])}. Banks with uninsured share of {HIGH_UNINSURED:.0f}% or more: "
              f"{s['high_uninsured']}; of those with under half the cap used and not on the special cap: "
              f"{s['high_unins_low_use']}."]
-    for title, lst in (("NEAREST OR OVER THE CAP", net.near_cap()[:8]), ("LIKELY ON THE SPECIAL CAP", net.special()[:8]),
-                       ("HIGH UNINSURED, ROOM UNDER THE CAP", net.prospects()[:8])):
+    c = net.concentration()
+    if c:
+        lines.append(f"CONCENTRATION: top 10 holders have {c['top10']:.1f}% of all reciprocal deposits, top 25 have "
+                     f"{c['top25']:.1f}%; {c['n50']} banks hold half; HHI {c['hhi']:,.0f}; banks likely on the special cap "
+                     f"hold {c['special_share']:.1f}%; {len(c['dependent'])} banks fund 10% or more of deposits with reciprocal. "
+                     "Largest holders: " + "; ".join(f"{b.bank.name} {_fmt_money(b.reciprocal)}" for b in c["top"][:5])
+                     + ". Top states: " + "; ".join(f"{st} {_fmt_money(v)}" for st, v in c["states"][:5]) + ".")
+    lines.append("CLOSEST TO THE SPECIAL CAP (thinnest capital cushion above a well-capitalized line, reciprocal users):")
+    for b in net.closest_to_special()[:6]:
+        est = b.special_cap_est
+        lines.append(f"  {b.bank.name} ({b.bank.location}): cushion {b.cushion:.2f} pts on {b.binding}; reciprocal "
+                     f"{_fmt_money(b.reciprocal)}" + (f"; estimated special cap if it slips {_fmt_money(est)}" if est else ""))
+    lines.append("LIKELY ON THE SPECIAL CAP, with estimated special cap (four-quarter average):")
+    for b in net.special()[:8]:
+        est, over = b.special_cap_est, b.over_special
+        lines.append(f"  {b.bank.name} ({b.bank.location}): reciprocal {_fmt_money(b.reciprocal)}; "
+                     + (f"estimated special cap {_fmt_money(est)}; "
+                        + (f"{_fmt_money(over)} above it (would count as brokered)" if over and over > 0 else "within it")
+                        if est else "special cap not estimated (history unavailable)"))
+    for title, lst in (("NEAREST OR OVER THE CAP", net.near_cap()[:8]), ("HIGH UNINSURED, ROOM UNDER THE CAP", net.prospects()[:8])):
         lines.append(title + ":")
         for b in lst:
             lines.append(f"  {b.bank.name} ({b.bank.location}, assets {b.bank.assets}): reciprocal {_fmt_money(b.reciprocal)}, "
@@ -257,6 +364,14 @@ def rule_summary(net: Network) -> str:
                      "order), which limits them to their four-quarter average.")
     parts.append(f"{s['high_uninsured']} banks have {HIGH_UNINSURED:.0f}% or more of deposits uninsured; "
                  f"{s['high_unins_low_use']} of them use under half their cap.")
+    c = net.concentration()
+    if c:
+        parts.append(f"Reciprocal deposits are concentrated: the top 10 holders have {c['top10']:.0f}% and {c['n50']} banks hold half.")
+    close = net.closest_to_special()[:1]
+    if close:
+        b = close[0]
+        parts.append(f"Closest to the special cap: {b.bank.name}, {b.cushion:.2f} pts above the {b.binding} line"
+                     + (f"; its special cap would be about {_fmt_money(b.special_cap_est)}." if b.special_cap_est else "."))
     return " ".join(parts)
 
 
@@ -270,7 +385,7 @@ def write_summary(net: Network) -> tuple[str, str]:
             if r.status_code < 400:
                 t = " ".join(x.get("text", "") for x in r.json().get("content", []) if x.get("type") == "text")
                 t = re.sub(r"\s+", " ", t.replace("**", "")).strip()
-                if t and len(t) < 1100 and _numbers(t) <= (_numbers(data) | {str(i) for i in range(0, 13)}):
+                if t and len(t) < 1500 and _numbers(t) <= (_numbers(data) | {str(i) for i in range(0, 13)}):
                     return t, "Claude"
         except Exception as e:
             log.warning("network summary unavailable: %s", e)
@@ -337,6 +452,13 @@ def charts(net: Network) -> dict[str, bytes]:
         ax.text(0.995, 100, "cap ", transform=ax.get_yaxis_transform(), ha="right", va="bottom", fontsize=10.5, color=RED)
         ax.text(0.995, NEAR_CAP, f"{NEAR_CAP:.0f}% ", transform=ax.get_yaxis_transform(), ha="right", va="bottom",
                 fontsize=10.5, color=AMBER)
+        close = [p for p in net.closest_to_special()[:6] if p.used is not None and p.uninsured_share is not None]
+        if close:
+            ax.scatter([p.uninsured_share for p in close], [min(p.used, 140) for p in close], s=[size(p.assets) for p in close],
+                       facecolors="none", edgecolors=AMBER, linewidths=2.0, label="Closest to special cap", zorder=5)
+            for p in close:
+                ax.annotate(p.bank.name.title()[:22], (p.uninsured_share, min(p.used, 140)), xytext=(6, 4),
+                            textcoords="offset points", fontsize=9.5, color=INK, zorder=6)
         ax.set_xlabel("Uninsured deposits, % of deposits", fontsize=11)
         ax.set_ylabel("Reciprocal cap used, %", fontsize=11)
         ax.yaxis.grid(True, color=GRID, zorder=0)
@@ -345,35 +467,77 @@ def charts(net: Network) -> dict[str, bytes]:
         ax.legend(loc="upper left", frameon=False, fontsize=10.5)
         save(fig, "map")
 
-    # 3. By asset size: share using reciprocal deposits, and median uninsured share
-    from .workbook import SIZE_BUCKETS
-    labels, use_pct, unins = [], [], []
-    for lab, lo, hi in SIZE_BUCKETS:
-        grp = [x for x in net.banks if lo <= (x.assets or 0) < hi]
-        if not grp:
-            continue
-        # "$" starts math mode in matplotlib text, so escape it
-        labels.append(lab.replace(" to ", "-").replace("Under ", "<").replace(" and over", "+").replace("$", r"\$"))
-        use_pct.append(sum(1 for x in grp if (x.reciprocal or 0) > 0) / len(grp) * 100)
-        u = [x.uninsured_share for x in grp if x.uninsured_share is not None]
-        unins.append(statistics.median(u) if u else 0)
-    if labels:
-        fig, ax = axes(7.2, 3.0)
-        xs = list(range(len(labels)))
-        w = 0.36
-        ax.bar([x - w / 2 for x in xs], use_pct, width=w, color=BLUE, label="% of banks using reciprocal",
-               edgecolor=SURFACE, linewidth=1.0, zorder=3)
-        ax.bar([x + w / 2 for x in xs], unins, width=w, color="#eb6834", label="Median uninsured share, %",
-               edgecolor=SURFACE, linewidth=1.0, zorder=3)
-        for x, a, c in zip(xs, use_pct, unins):
-            ax.text(x - w / 2, a, f"{a:.0f}", ha="center", va="bottom", fontsize=10.5, color=INK)
-            ax.text(x + w / 2, c, f"{c:.0f}", ha="center", va="bottom", fontsize=10.5, color=INK)
-        ax.set_xticks(xs)
-        ax.set_xticklabels(labels)
-        ax.yaxis.grid(True, color=GRID, zorder=0)
-        ax.set_ylim(0, max(use_pct + unins + [1]) * 1.2)
-        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=10.5, ncol=2)
-        save(fig, "size")
+    # 3. By size segment: small multiples of how much of the cap banks use (share of banks in each segment)
+    segs = [(lab, [x for x in net.banks if lo <= (x.assets or 0) < hi]) for lab, lo, hi in SEGMENTS]
+    segs = [(lab, grp) for lab, grp in segs if grp]
+    if segs:
+        fig, axs = plt.subplots(1, len(segs), figsize=(7.4, 3.6), sharey=True)
+        fig.patch.set_facecolor(SURFACE)
+        axs = axs if len(segs) > 1 else [axs]
+        colors = [GRID, BLUE, BLUE, BLUE, AMBER, RED]
+        short = ["None", "<25", "25-50", "50-80", "80-100", ">100"]
+        for ax, (lab, grp) in zip(axs, segs):
+            ax.set_facecolor(SURFACE)
+            for side in ("top", "right", "left"):
+                ax.spines[side].set_visible(False)
+            sub = Network(net.run_date, grp, net.quarter_label)
+            counts = [n for _, n in sub.buckets()]
+            pct = [c / len(grp) * 100 for c in counts]
+            ax.bar(range(len(pct)), pct, color=colors, width=0.7, edgecolor=SURFACE, linewidth=1.0, zorder=3)
+            ax.set_xticks(range(len(pct)))
+            ax.set_xticklabels(short, fontsize=8.5, rotation=45, ha="right")
+            ax.yaxis.grid(True, color=GRID, zorder=0)
+            ax.tick_params(length=0, labelsize=9)
+            users = len(sub.users)
+            un = [x.uninsured_share for x in grp if x.uninsured_share is not None]
+            ax.set_title(lab.replace("$", chr(92) + "$"), fontsize=10.5, color=INK, loc="left", fontweight="bold", pad=36)
+            ax.text(0, 1.02, f"{len(grp):,} banks · {users / len(grp) * 100:.0f}% use it\nmedian uninsured "
+                    f"{statistics.median(un) if un else 0:.0f}%", transform=ax.transAxes, fontsize=8.5, color=MUTED, va="bottom")
+        axs[0].set_ylabel("% of banks in segment", fontsize=10)
+        fig.text(0.5, 0.01, "Share of the reciprocal cap used, %", ha="center", fontsize=10, color=MUTED)
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE)
+        plt.close(fig)
+        out["size"] = buf.getvalue()
+
+    # 4. Concentration: how much of all reciprocal deposits the largest holders have, and the top 10
+    c = net.concentration()
+    if c:
+        fig, (a1, a2) = plt.subplots(1, 2, figsize=(7.4, 3.2), gridspec_kw={"width_ratios": [1, 1.25]})
+        fig.patch.set_facecolor(SURFACE)
+        for ax in (a1, a2):
+            ax.set_facecolor(SURFACE)
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+            ax.tick_params(length=0, labelsize=9.5)
+        cum, acc = [], 0.0
+        for sh in c["shares"]:
+            acc += sh * 100
+            cum.append(acc)
+        n = len(cum)
+        a1.plot([i / n * 100 for i in range(1, n + 1)], cum, color=BLUE, linewidth=2.2, zorder=3)
+        a1.plot([0, 100], [0, 100], color=GRID, linewidth=1.0, linestyle=(0, (3, 3)))
+        a1.set_xlabel("% of reciprocal users (largest first)", fontsize=9.5)
+        a1.set_ylabel("% of all reciprocal deposits", fontsize=9.5)
+        a1.set_xlim(0, 100)
+        a1.set_ylim(0, 102)
+        a1.yaxis.grid(True, color=GRID, zorder=0)
+        a1.set_title(f"Top 10 hold {c['top10']:.0f}%; top 25 hold {c['top25']:.0f}%", fontsize=10, color=INK, loc="left")
+        top = c["top"][:10][::-1]
+        a2.barh(range(len(top)), [(b.reciprocal or 0) / 1e6 for b in top],
+                color=[RED if b.special_cap else BLUE for b in top], height=0.62, edgecolor=SURFACE, zorder=3)
+        a2.set_yticks(range(len(top)))
+        a2.set_yticklabels([b.bank.name.title()[:24] for b in top], fontsize=8.5)
+        a2.xaxis.grid(True, color=GRID, zorder=0)
+        a2.spines["left"].set_visible(False)
+        a2.set_xlabel("Reciprocal deposits, $B", fontsize=9.5)
+        a2.set_title("Largest holders", fontsize=10, color=INK, loc="left")
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE)
+        plt.close(fig)
+        out["concentration"] = buf.getvalue()
     return out
 
 

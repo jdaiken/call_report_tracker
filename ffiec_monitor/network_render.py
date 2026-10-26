@@ -13,6 +13,13 @@ CAP_NOTE = ("Reciprocal deposits are excepted from brokered only up to the lesse
             "likely on it.")
 
 
+def _over(nb: NetBank) -> str:
+    o = nb.over_special
+    if o is None:
+        return ""
+    return _fmt_money(o) if o > 0 else "within"
+
+
 def _change(nb: NetBank) -> str:
     if nb.prior_used is None or nb.used is None:
         return ""
@@ -55,7 +62,9 @@ def render_html(net: Network) -> str:
                 f'attached spreadsheet.</td></tr>' if total > shown else "")
 
     b += img("usage", "How much of the reciprocal cap banks use")
-    b += img("map", "Exposure map: uninsured deposits vs. reciprocal cap used (bubble = assets)")
+    b += img("size", "By segment: community, regional and large banks")
+    b += img("map", "Exposure map: uninsured deposits vs. reciprocal cap used (bubble = assets; red = likely special cap; "
+                    "amber ring = closest to it)")
 
     near = net.near_cap()
     b += _section(f"Nearest or over the reciprocal cap ({len(near)})", CAP_NOTE)
@@ -64,10 +73,37 @@ def render_html(net: Network) -> str:
 
     spec = net.special()
     b += _section(f"Likely on the special cap ({len(spec)})", "Reciprocal users below well capitalized or under an active "
-                  "enforcement order: reciprocal deposits above their four-quarter average would count as brokered.")
-    b += (table(spec[:ROWS], f'<th {TH}>WHY</th>', lambda nb: f'<td {TD}>{_e("; ".join(nb.special_cap))}<div>{_links(nb.bank)}</div></td>')
+                  "enforcement order. Estimated special cap = average quarter-end reciprocal deposits over the last four "
+                  "quarters; anything above it would count as brokered.")
+    b += (table(spec[:ROWS], f'<th {THR}>EST. SPECIAL CAP</th><th {THR}>ABOVE IT</th><th {TH}>WHY</th>',
+                lambda nb: f'<td {TDR}>{_fmt_money(nb.special_cap_est)}</td><td {TDR}>{_over(nb)}</td>'
+                           f'<td {TD}>{_e("; ".join(nb.special_cap))}<div>{_links(nb.bank)}</div></td>')
           + more(min(ROWS, len(spec)), len(spec)) if spec else
           f'<tr><td style="padding:8px 0;font-size:15px;color:{INK}">None.</td></tr>')
+
+    close = net.closest_to_special()
+    b += _section("Closest to the special cap", "Reciprocal users with the thinnest capital cushion above a "
+                  "well-capitalized line (community bank leverage ratio banks against 9%). If one slips below well "
+                  "capitalized, its reciprocal deposits are limited to the estimated special cap.")
+    rows = "".join(
+        f'<tr>{_bank_cell(nb.bank)}<td {TDR}><b>{nb.cushion:+.2f} pts</b><div style="font-size:12px;color:{MUTED}">'
+        f'{_e(nb.binding)}</div></td><td {TDR}>{_fmt_money(nb.reciprocal)}</td><td {TDR}>{_fmt_money(nb.special_cap_est)}</td>'
+        f'<td {TDR}>{_over(nb)}</td><td {TD} nowrap>{_links(nb.bank)}</td></tr>' for nb in close[:ROWS])
+    if rows:
+        b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>BANK</th>'
+              f'<th {THR}>CUSHION</th><th {THR}>RECIPROCAL</th><th {THR}>EST. SPECIAL CAP</th><th {THR}>ABOVE IT</th>'
+              f'<th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
+
+    c = net.concentration()
+    if c:
+        b += _section("Concentration", "How much of all reciprocal deposits sit with a few banks, places and dependent funders.")
+        b += img("concentration", "Share held by the largest users, and the ten largest")
+        st = ", ".join(f"{_e(k)} {_fmt_money(v)}" for k, v in c["states"][:5])
+        b += (f'<tr><td style="padding:8px 0 0;font-size:15px;line-height:1.5;color:{INK}">'
+              f'<b>{c["top10"]:.0f}%</b> of reciprocal deposits sit with the top 10 holders and <b>{c["top25"]:.0f}%</b> with the top 25; '
+              f'<b>{c["n50"]}</b> banks hold half. Concentration index (HHI) <b>{c["hhi"]:,.0f}</b> (above 2,500 is highly concentrated). '
+              f'Banks likely on the special cap hold <b>{c["special_share"]:.1f}%</b>. Largest states: {st}. '
+              f'<b>{len(c["dependent"])}</b> banks fund 10% or more of their deposits with reciprocal deposits.</td></tr>')
 
     pro = net.prospects()
     b += _section(f"High uninsured deposits, room under the cap ({len(pro)})",
@@ -78,7 +114,6 @@ def render_html(net: Network) -> str:
           + more(min(ROWS, len(pro)), len(pro)) if pro else
           f'<tr><td style="padding:8px 0;font-size:15px;color:{INK}">None.</td></tr>')
 
-    b += img("size", "By asset size")
     cov = (f"{s['banks']:,} banks from their latest Call Report ({net.quarter_label} where filed, else the prior quarter)"
            + (f"; {net.missing:,} not yet loaded (picked up next week)" if net.missing else "") + ".")
     b += (f'<tr><td style="padding:22px 0 0;font-size:13px;color:{MUTED}"><b style="color:{INK}">Coverage:</b> {_e(cov)} '
@@ -108,7 +143,7 @@ def render_pdf(net: Network) -> bytes:
     from reportlab.lib.units import inch
     from reportlab.platypus import Image, PageBreak, SimpleDocTemplate, Spacer, Table, TableStyle
     from . import pdf_report as P
-    PAGES = 4
+    PAGES = 5
     s = net.stats()
 
     def header(title, n):
@@ -168,26 +203,66 @@ def render_pdf(net: Network) -> bytes:
     p1 += [P._p(escape(CAP_NOTE), "small")]
 
     # page 2
-    p2 = header("Exposure map and size", 2) + chart("map", "Uninsured deposits vs. reciprocal cap used (bubble = assets; red = likely special cap)", 4.3)
-    p2 += chart("size", "By asset size", 2.6)
+    p2 = header("Exposure map and segments", 2) + chart(
+        "map", "Uninsured vs. reciprocal cap used (bubble = assets; red = likely special cap; amber ring = closest to it)", 4.1)
+    p2 += chart("size", "By segment: community, regional and large banks", 2.9)
+
+    # page 3: concentration
+    c = net.concentration()
+    p3 = header("Concentration", 3) + chart("concentration", "Share held by the largest users, and the ten largest", 3.2)
+    if c:
+        p3 += [P._p(f"<b>{c['top10']:.0f}%</b> of reciprocal deposits sit with the top 10 holders and <b>{c['top25']:.0f}%</b> "
+                    f"with the top 25; <b>{c['n50']}</b> banks hold half and {c['n80']} hold 80%. HHI <b>{c['hhi']:,.0f}</b> "
+                    f"(above 2,500 is highly concentrated). Banks likely on the special cap hold <b>{c['special_share']:.1f}%</b>.",
+                    "cell"), Spacer(1, 6)]
+        st = [[P._p(escape(k), "cell"), P._p(_fmt_money(v), "num"), P._p(f"{v / c['total'] * 100:.1f}%", "num")]
+              for k, v in c["states"][:8]]
+        dep = [[P._bank(nb.bank), P._p(f"{(nb.reciprocal or 0) / nb.deposits * 100:.1f}%", "num"), P._p(_fmt_money(nb.reciprocal), "num")]
+               for nb in c["dependent"][:8]]
+        left = P._table([[P._p("STATE", "label"), P._p("RECIPROCAL", "labr"), P._p("SHARE", "labr")]] + st,
+                        [1.0 * inch, 1.0 * inch, 0.8 * inch])
+        right = P._table([[P._p(f"MOST DEPENDENT ({len(c['dependent'])} at 10%+ of deposits)", "label"),
+                           P._p("OF DEPOSITS", "labr"), P._p("RECIPROCAL", "labr")]] + dep,
+                         [2.4 * inch, 0.95 * inch, 0.95 * inch])
+        both = Table([[left, "", right]], colWidths=[2.8 * inch, 0.25 * inch, 4.3 * inch])
+        both.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                  ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+        p3.append(both)
 
     # page 3
     near, spec = net.near_cap(), net.special()
 
-    def page3(cap):
-        out = header("Cap pressure", 3) + [P._p(f"<b>NEAREST OR OVER THE CAP ({len(near)})</b>", "label"), Spacer(1, 3)]
-        out += ([tbl(near[:cap])] + more(min(cap, len(near)), len(near)) if near else [P._p("None.", "cell")])
-        out += [Spacer(1, 10), P._p(f"<b>LIKELY ON THE SPECIAL CAP ({len(spec)})</b>: held to the four-quarter average", "label"),
-                Spacer(1, 3)]
-        out += ([tbl(spec[:cap], ("WHY", lambda nb: P._p(escape("; ".join(nb.special_cap)), "small")))]
+    close = net.closest_to_special()
+
+    def page4(cap):
+        out = header("Special cap", 4)
+        out += [P._p(f"<b>LIKELY ON THE SPECIAL CAP ({len(spec)})</b>. Estimated special cap = average quarter-end reciprocal "
+                     "deposits over the last four quarters; anything above it counts as brokered.", "label"), Spacer(1, 3)]
+        out += ([tbl(spec[:cap], ("EST. CAP / ABOVE IT", lambda nb: P._p(f"{_fmt_money(nb.special_cap_est)} / {_over(nb) or 'n/a'}"
+                                                                          f"<br/><font size='8' color='#5b626c'>{escape('; '.join(nb.special_cap))}</font>",
+                                                                          "small")))]
                 + more(min(cap, len(spec)), len(spec)) if spec else [P._p("None.", "cell")])
+        out += [Spacer(1, 10), P._p("<b>CLOSEST TO THE SPECIAL CAP</b>: thinnest capital cushion above a well-capitalized line",
+                                    "label"), Spacer(1, 3)]
+        head = [P._p("BANK", "label"), P._p("CUSHION", "labr"), P._p("RECIPROCAL", "labr"), P._p("EST. SPECIAL CAP", "labr"),
+                P._p("ABOVE IT", "labr")]
+        body = [[P._bank(nb.bank), P._p(f"<b>{nb.cushion:+.2f} pts</b><br/><font size='8' color='#5b626c'>{escape(nb.binding)}</font>", "num"),
+                 P._p(_fmt_money(nb.reciprocal), "num"), P._p(_fmt_money(nb.special_cap_est), "num"), P._p(_over(nb), "num")]
+                for nb in close[:cap]]
+        out += ([P._table([head] + body, [P.WIDTH - 4.6 * inch, 1.3 * inch, 1.1 * inch, 1.2 * inch, 1.0 * inch])]
+                if body else [P._p("None.", "cell")])
+        return out
+
+    def page3(cap):
+        out = header("Nearest or over the reciprocal cap", 5)
+        out += ([tbl(near[:cap])] + more(min(cap, len(near)), len(near)) if near else [P._p("None.", "cell")])
         return out
 
     # page 4
     pro = net.prospects()
 
-    def page4(cap):
-        out = header("High uninsured deposits, room under the cap", 4)
+    def page5(cap):
+        out = page3(cap) + [Spacer(1, 10), P._p("<b>HIGH UNINSURED DEPOSITS, ROOM UNDER THE CAP</b>", "label"), Spacer(1, 2)]
         out += [P._p(f"Uninsured share {HIGH_UNINSURED:.0f}% or more, under half the cap used, not on the special cap "
                      f"({len(pro)} banks), largest uninsured balance first.", "note"), Spacer(1, 6)]
         out += ([tbl(pro[:cap], ("UNINSURED $", lambda nb: P._p(_fmt_money(nb.uninsured), "num")))]
@@ -198,7 +273,8 @@ def render_pdf(net: Network) -> bytes:
                                     + (f"; {net.missing:,} not yet loaded" if net.missing else "") + ".", "small")]
         return out
 
-    pages = [P._fit(lambda _c: p1, 0), P._fit(lambda _c: p2, 0), P._fit(page3, 18), P._fit(page4, 30)]
+    pages = [P._fit(lambda _c: p1, 0), P._fit(lambda _c: p2, 0), P._fit(lambda _c: p3, 0), P._fit(page4, 12),
+             P._fit(page5, 12)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
@@ -240,7 +316,8 @@ def build_workbook(net: Network) -> bytes:
     _title(bs, f"{NAME}: every bank", f"{net.run_date:%B %-d, %Y}. Dollar figures in $000. Cap = lesser of $5B or 20% of liabilities.")
     heads = ["Institution", "City", "State", "RSSD", "FDIC cert", "Period", "Total assets", "Total deposits",
              "Reciprocal deposits", "Reciprocal cap", "% of cap used", "Headroom", "Uninsured deposits", "Uninsured share",
-             "Likely special cap", "Last quarter % of cap", "Call Report", "UBPR", "FDIC profile"]
+             "Likely special cap", "Last quarter % of cap", "Call Report", "UBPR", "FDIC profile",
+             "Capital cushion (pts)", "Nearest line", "Est. special cap (4Q avg)", "Above est. special cap"]
     hr = 4
     _header_row(bs, hr, heads)
     r = hr
@@ -263,18 +340,27 @@ def build_workbook(net: Network) -> bytes:
         _link(bs.cell(row=r, column=17), b.call_report_url, "Call Report")
         _link(bs.cell(row=r, column=18), b.ubpr_url, "UBPR")
         _link(bs.cell(row=r, column=19), b.bankfind_url, "FDIC profile")
+        for c, v in ((20, nb.cushion), (21, nb.binding), (22, nb.special_cap_est)):
+            cell = bs.cell(row=r, column=c, value=v)
+            cell.font = _font()
+        bs.cell(row=r, column=20).number_format = "+0.00;-0.00"
+        bs.cell(row=r, column=22).number_format = "#,##0"
+        bs.cell(row=r, column=23, value=f'=IF(AND(ISNUMBER(V{r}),ISNUMBER(I{r})),I{r}-V{r},"")').number_format = "#,##0;(#,##0);-"
+        bs.cell(row=r, column=23).font = _font()
     last = max(r, hr + 1)
     bs.conditional_formatting.add(f"K{hr + 1}:K{last}", CellIsRule(operator="greaterThan", formula=["1"], fill=RED_FILL))
     bs.conditional_formatting.add(f"K{hr + 1}:K{last}", CellIsRule(operator="between", formula=[str(NEAR_CAP / 100), "1"], fill=AMBER_FILL))
     bs.conditional_formatting.add(f"N{hr + 1}:N{last}", CellIsRule(operator="greaterThanOrEqual", formula=[str(HIGH_UNINSURED / 100)], fill=AMBER_FILL))
     bs.conditional_formatting.add(f"O{hr + 1}:O{last}", FormulaRule(formula=[f"LEN(O{hr + 1})>0"], fill=RED_FILL))
+    bs.conditional_formatting.add(f"T{hr + 1}:T{last}", CellIsRule(operator="lessThan", formula=["0.5"], fill=AMBER_FILL))
+    bs.conditional_formatting.add(f"W{hr + 1}:W{last}", CellIsRule(operator="greaterThan", formula=["0"], fill=RED_FILL))
     if r > hr:
         t = Table(displayName="Banks", ref=f"A{hr}:{get_column_letter(len(heads))}{last}")
         t.tableStyleInfo = TableStyleInfo(name="TableStyleLight1", showRowStripes=True)
         bs.add_table(t)
     bs.freeze_panes = f"B{hr + 1}"
     _widths(bs, {"A": 34, "B": 16, "C": 6, "D": 10, "E": 9, "F": 9, "G": 13, "H": 13, "I": 13, "J": 13, "K": 10, "L": 13,
-                 "M": 13, "N": 10, "O": 26, "P": 11, "Q": 12, "R": 8, "S": 12})
+                 "M": 13, "N": 10, "O": 26, "P": 11, "Q": 12, "R": 8, "S": 12, "T": 11, "U": 22, "V": 15, "W": 15})
 
     ss = wb.create_sheet("Summary", 0)
     _title(ss, f"{NAME}: summary", "Live formulas over the Banks sheet. Yellow cells are editable thresholds.")
@@ -321,12 +407,47 @@ def build_workbook(net: Network) -> bytes:
             cell.number_format = "0.0%" if c in (6, 9) else "#,##0"
     _widths(ss, {"A": 46, "B": 16, "C": 14, "D": 10, "E": 15, "F": 10, "G": 17, "H": 17, "I": 18})
 
-    for title, lst in (("Near cap", net.near_cap()), ("Special cap", net.special()), ("High uninsured", net.prospects())):
+    cs = wb.create_sheet("Concentration")
+    _title(cs, "Concentration of reciprocal deposits", "Live formulas over the Banks sheet.")
+    I = rng("I")
+    crow = [("Total reciprocal deposits ($000)", f"=SUM({I})", "#,##0"),
+            ("Top 10 holders' share", f"=IFERROR(SUMPRODUCT(LARGE({I},ROW(INDIRECT(\"1:10\"))))/B4,\"\")", "0.0%"),
+            ("Top 25 holders' share", f"=IFERROR(SUMPRODUCT(LARGE({I},ROW(INDIRECT(\"1:25\"))))/B4,\"\")", "0.0%"),
+            ("Concentration index (HHI)", f"=IFERROR(SUMPRODUCT(({I}/B4)^2)*10000,\"\")", "#,##0"),
+            ("Held by banks likely on the special cap", f'=IFERROR(SUMIFS({I},{rng("O")},"?*")/B4,"")', "0.0%"),
+            ("Banks funding 10%+ of deposits with reciprocal",
+             f"=SUMPRODUCT(--(IFERROR({I}/{rng('H')},0)>=0.1))", "#,##0")]
+    for i, (k, f, fmt) in enumerate(crow, 4):
+        cs.cell(row=i, column=1, value=k).font = _font()
+        cell = cs.cell(row=i, column=2, value=f)
+        cell.font = _font(bold=True)
+        cell.number_format = fmt
+    cs.cell(row=4 + len(crow), column=1, value="HHI above 2,500 is highly concentrated, 1,500-2,500 moderately (DOJ/FTC guideline scale)."
+            ).font = _font(color="5B626C", italic=True)
+    c = net.concentration()
+    r0 = 6 + len(crow)
+    _header_row(cs, r0, ["Largest holders", "Reciprocal ($000)", "Share of total", "Likely special cap"])
+    for i, nb in enumerate((c.get("top") or [])[:25], r0 + 1):
+        for col_, v in enumerate([nb.bank.name, nb.reciprocal, None, "; ".join(nb.special_cap)], 1):
+            cs.cell(row=i, column=col_, value=v).font = _font(bold=(col_ == 1))
+        cs.cell(row=i, column=3, value=f"=IFERROR(B{i}/$B$4,\"\")").number_format = "0.0%"
+        cs.cell(row=i, column=2).number_format = "#,##0"
+    s0 = r0 + 2 + min(25, len(c.get("top") or [])) + 1
+    _header_row(cs, s0, ["State", "Reciprocal ($000)", "Share of total"])
+    for i, (st, v) in enumerate(c.get("states") or [], s0 + 1):
+        cs.cell(row=i, column=1, value=st).font = _font(bold=True)
+        cs.cell(row=i, column=2, value=f'=SUMIFS({I},{rng("C")},A{i})').number_format = "#,##0"
+        cs.cell(row=i, column=3, value=f"=IFERROR(B{i}/$B$4,\"\")").number_format = "0.0%"
+    _widths(cs, {"A": 48, "B": 18, "C": 14, "D": 26})
+
+    for title, lst in (("Near cap", net.near_cap()), ("Special cap", net.special()), ("Closest to special cap", net.closest_to_special()[:50]),
+                       ("High uninsured", net.prospects())):
         ws = wb.create_sheet(title)
         _title(ws, title, CAP_NOTE if title != "High uninsured" else
                f"Uninsured {HIGH_UNINSURED:.0f}%+ of deposits, under half the cap used, not on the special cap.")
         _header_row(ws, 4, ["Institution", "Location", "Total assets", "Reciprocal ($000)", "% of cap", "Last quarter % of cap",
-                            "Uninsured ($000)", "Uninsured share", "Likely special cap", "Call Report", "UBPR"])
+                            "Uninsured ($000)", "Uninsured share", "Likely special cap", "Call Report", "UBPR",
+                            "Capital cushion (pts)", "Nearest line", "Est. special cap ($000)", "Above it ($000)"])
         for i, nb in enumerate(lst, 5):
             vals = [nb.bank.name, nb.bank.location, nb.bank.assets, nb.reciprocal, None if nb.used is None else nb.used / 100,
                     None if nb.prior_used is None else nb.prior_used / 100, nb.uninsured,
@@ -337,9 +458,15 @@ def build_workbook(net: Network) -> bytes:
                 cell.number_format = "0.0%" if c in (5, 6, 8) else "#,##0" if c in (4, 7) else "General"
             _link(ws.cell(row=i, column=10), nb.bank.call_report_url, "Call Report")
             _link(ws.cell(row=i, column=11), nb.bank.ubpr_url, "UBPR")
+            for col_, v, fmt in ((12, nb.cushion, "+0.00;-0.00"), (13, nb.binding, "General"),
+                                 (14, nb.special_cap_est, "#,##0"), (15, nb.over_special, "#,##0;(#,##0);-")):
+                cell = ws.cell(row=i, column=col_, value=v)
+                cell.font = _font()
+                cell.number_format = fmt
         if not lst:
             ws.cell(row=5, column=1, value="None.").font = _font(italic=True)
-        _widths(ws, {"A": 34, "B": 22, "C": 12, "D": 16, "E": 10, "F": 14, "G": 16, "H": 12, "I": 30, "J": 12, "K": 8})
+        _widths(ws, {"A": 34, "B": 22, "C": 12, "D": 16, "E": 10, "F": 14, "G": 16, "H": 12, "I": 30, "J": 12, "K": 8,
+                     "L": 12, "M": 22, "N": 16, "O": 14})
         ws.freeze_panes = "B5"
     for ws in wb.worksheets:
         ws.sheet_view.showGridLines = False

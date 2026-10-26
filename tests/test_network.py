@@ -52,11 +52,29 @@ def test_network_report(monkeypatch):
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
     assert net.summary_by == "rules" and "4 of 5 banks" in net.summary
-    assert set(net.images) == {"usage", "map", "size"}
+    assert set(net.images) == {"usage", "map", "size", "concentration"}
     html = network_render.render_html(net)
     assert "Nearest or over the reciprocal cap (2)" in html and "cid:net_map" in html and "UBPR" in html
     pdf = network_render.render_pdf(net)
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 4
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))
-    assert wb.sheetnames == ["Summary", "Banks", "Near cap", "Special cap", "High uninsured"]
+    assert wb.sheetnames == ["Summary", "Banks", "Concentration", "Near cap", "Special cap", "Closest to special cap", "High uninsured"]
     assert str(wb["Summary"]["B8"].value).startswith("=COUNTIF(Banks!")
+
+
+def test_special_cap_estimate_and_closest(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    _add(conn, 1, {**_r(5_000), "tier1_leverage_ratio": 4.5})                      # below well capitalized
+    _add(conn, 2, {**_r(8_000), "tier1_leverage_ratio": 8.6, "total_rbc_ratio": None})   # CBLR bank under 9%
+    _add(conn, 3, {**_r(8_000), "total_rbc_ratio": 10.4})                           # 0.4 pts above 10%
+    _add(conn, 4, _r(8_000))
+    net = network.collect(conn, None, date(2026, 10, 26), prior_lookup=lambda rssd, p: _r(3_000))
+    spec = net.special()[0]
+    assert spec.bank.name == "Bank 1" and spec.special_cap_est == (5_000 + 3 * 3_000) / 4 and spec.over_special == 1_500
+    close = net.closest_to_special()
+    assert [b.bank.name for b in close][:2] == ["Bank 2", "Bank 3"]
+    assert round(close[0].cushion, 2) == -0.4 and close[0].binding == "CBLR leverage (9%)"
+    assert round(close[1].cushion, 2) == 0.4 and close[1].binding.startswith("total risk-based")
+    c = net.concentration()
+    assert round(c["top10"]) == 100 and c["n50"] == 2
