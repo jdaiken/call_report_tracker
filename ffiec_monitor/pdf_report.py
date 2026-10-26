@@ -50,6 +50,7 @@ def _a(text: str, url) -> str:
 
 def _links(b: Bank) -> str:
     return " · ".join(x for x in (_a("Call Report", b.call_report_url) if b.call_report_url else "",
+                                  _a("UBPR", b.ubpr_url) if b.ubpr_url else "",
                                   _a("FDIC profile", b.bankfind_url) if b.bankfind_url else "") if x)
 
 

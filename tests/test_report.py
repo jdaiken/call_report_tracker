@@ -357,3 +357,13 @@ def test_email_does_not_say_no_orders_when_there_are_some(monkeypatch):
     acts = [enforcement.Action("FDIC", "First Prairie Bank", "IL", "Consent Order", date(2025, 3, 1), "u", "", "9001")]
     _, html, _ = email_report.compose(**ev, enforcement_sources=enforcement.Sources(actions=acts, loaded={"FDIC": 1}))
     assert "First Prairie Bank" in html and "No bank is under an active" not in html
+
+
+def test_ubpr_links():
+    from ffiec_monitor.ubpr import ubpr_url
+    assert ubpr_url("142179", Q3) == "https://cdr.ffiec.gov/Public/Reports/UbprReport.aspx?rptCycleIds=154&rptid=283&idrssd=142179"
+    assert ubpr_url("142179", date(2026, 6, 30)).endswith("rptCycleIds=152&rptid=283&idrssd=142179")
+    assert ubpr_url("142179", date(2031, 3, 31), discover=False).endswith("ManageFacsimiles.aspx")
+    ev = sample_events(2, 0)
+    _, html, _ = email_report.compose(**ev)
+    assert "UbprReport.aspx?rptCycleIds=" in html and ">UBPR<" in html

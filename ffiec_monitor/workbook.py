@@ -123,7 +123,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
     _title(fs, f"{NAME}: every filing", f"{label}. Ratios from each bank's Call Report. Filter with the header arrows.")
     headers = (["Type", "Institution", "City", "State", "RSSD", "FDIC cert", "Period", "Total assets ($000)"]
                + [h for h, _ in RATIO_COLS]
-               + ["Capital status", "Screen", "Flags", "Enforcement", "Call Report", "FDIC profile"])
+               + ["Capital status", "Screen", "Flags", "Enforcement", "Call Report", "UBPR", "FDIC profile"])
     hr = 4
     _header_row(fs, hr, headers)
     events = [("New filing", e) for e in new_filing_events] + [("Refiling", e) for e in restatement_events]
@@ -152,7 +152,8 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
             cell.font = _font()
             cell.border = Border(bottom=THIN)
         _link(fs.cell(row=r, column=len(row) + 1), b.call_report_url, "Call Report")
-        _link(fs.cell(row=r, column=len(row) + 2), b.bankfind_url, "FDIC profile")
+        _link(fs.cell(row=r, column=len(row) + 2), b.ubpr_url, "UBPR")
+        _link(fs.cell(row=r, column=len(row) + 3), b.bankfind_url, "FDIC profile")
     last = max(r, hr + 1)
     first_ratio = 9
     for c in range(first_ratio, first_ratio + len(RATIO_COLS)):
@@ -182,7 +183,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
     for i in range(first_ratio, first_ratio + len(RATIO_COLS)):
         fs.column_dimensions[get_column_letter(i)].width = 12
     _widths(fs, {col["Capital status"]: 22, col["Screen"]: 9, col["Flags"]: 60, col["Enforcement"]: 38,
-                 col["Call Report"]: 12, col["FDIC profile"]: 12})
+                 col["Call Report"]: 12, col["UBPR"]: 8, col["FDIC profile"]: 12})
 
     # ---------------------------------------------------------- Summary (formulas over Filings)
     ss = wb.create_sheet("Summary", 0)
@@ -275,7 +276,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
     _title(es, "Banks under enforcement orders", "Active Fed, OCC and FDIC orders and agreements; FinCEN BSA actions, last 3 years. "
            "Civil money penalties excluded.")
     eh = ["Institution", "Location", "Total assets", "Agency", "Order", "Issued", "Type", "Matched on", "Discussion", "Order link",
-          "Call Report", "FDIC profile"]
+          "Call Report", "FDIC profile", "UBPR"]
     _header_row(es, 4, eh)
     rr = 4
     for m in [x for x in rep.enforcement if not x.action.stale]:
@@ -291,6 +292,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
         _link(es.cell(row=rr, column=10), m.action.url, "Order")
         _link(es.cell(row=rr, column=11), m.bank.call_report_url, "Call Report")
         _link(es.cell(row=rr, column=12), m.bank.bankfind_url, "FDIC profile")
+        _link(es.cell(row=rr, column=13), m.bank.ubpr_url, "UBPR")
     stale = [m for m in rep.enforcement if m.action.stale]
     if stale:
         es.cell(row=rr + 2, column=1, value="Not counted (over 10 years old, no termination date; most likely closed): "
@@ -302,7 +304,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
     # ---------------------------------------------------------- Capital watch
     cs = wb.create_sheet("Capital watch")
     _title(cs, "Capital watch", "Below a PCA well-capitalized minimum, and community bank leverage ratio (CBLR) banks under 9%.")
-    _header_row(cs, 4, ["Group", "Institution", "Location", "Total assets", "Period", "Detail", "Call Report", "FDIC profile"])
+    _header_row(cs, 4, ["Group", "Institution", "Location", "Total assets", "Period", "Detail", "Call Report", "FDIC profile", "UBPR"])
     rr = 4
     for grp, items in (("Below well capitalized", rep.ltwc), ("CBLR under 9%", rep.cblr)):
         for b, rs in items:
@@ -313,6 +315,7 @@ def build_workbook(rep: Report, restatement_events, new_filing_events) -> bytes:
                 cell.fill = RED_FILL if grp.startswith("Below") else AMBER_FILL if c == 1 else PatternFill()
             _link(cs.cell(row=rr, column=7), b.call_report_url, "Call Report")
             _link(cs.cell(row=rr, column=8), b.bankfind_url, "FDIC profile")
+            _link(cs.cell(row=rr, column=9), b.ubpr_url, "UBPR")
     if rr == 4:
         cs.cell(row=5, column=1, value="None.").font = _font(italic=True)
     _widths(cs, {"A": 22, "B": 34, "C": 22, "D": 11, "E": 9, "F": 90, "G": 12, "H": 12})

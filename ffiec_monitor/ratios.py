@@ -67,6 +67,13 @@ RATIO_SPECS: list[RatioSpec] = [
     ),
 ]
 
+RECIPROCAL_RAW_KEY = "_reciprocal_raw"
+LIABILITIES_RAW_KEY = "_total_liabilities_raw"
+UNINSURED_RAW_KEY = "_uninsured_raw"
+DEPOSITS_RAW_KEY = "_total_deposits_raw"
+RECIPROCAL_CAP_DOLLARS_000 = 5_000_000          # $5 billion, in $000
+NETWORK_KEYS = (RECIPROCAL_RAW_KEY, LIABILITIES_RAW_KEY, UNINSURED_RAW_KEY, DEPOSITS_RAW_KEY)
+
 # CET1 is needed for Watch List LTWC determination (spec §4) but is NOT one of the 12
 # ratios of concern shown in the report (spec §5's table only has 3 capital ratios).
 CET1_KEY = "cet1_ratio"
@@ -204,6 +211,19 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
         out["net_noncore_funding_dependence_ratio"] = None
 
     out["brokered_reciprocal_deposits_to_total_deposits"] = _ratio_pct(brokered + reciprocal, total_deposits)
+
+    # Network exposure (ffiec_monitor/network.py). Reciprocal deposits (RC-E memo, JH83) can be
+    # excepted from "brokered" up to the lesser of $5 billion or 20% of total liabilities (12 CFR
+    # 337.6(e)); uninsured deposits = RC-O memo item 2 estimate (5597). Raw figures in $000.
+    total_liabilities = _pick(c, "RCFD2948", "RCON2948")
+    uninsured = _pick(c, "RCON5597")
+    out[RECIPROCAL_RAW_KEY] = _pick(c, "RCONJH83")
+    out[LIABILITIES_RAW_KEY] = total_liabilities
+    out[UNINSURED_RAW_KEY] = uninsured
+    out[DEPOSITS_RAW_KEY] = total_deposits
+    cap = min(RECIPROCAL_CAP_DOLLARS_000, 0.20 * total_liabilities) if total_liabilities else None
+    out["reciprocal_cap_used"] = _ratio_pct(out[RECIPROCAL_RAW_KEY], cap) if out[RECIPROCAL_RAW_KEY] is not None else None
+    out["uninsured_deposit_share"] = _ratio_pct(uninsured, total_deposits)
 
     if total_deposits is not None:
         core_deposits = total_deposits - brokered - time_gt_250k

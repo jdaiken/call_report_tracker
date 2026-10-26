@@ -27,6 +27,10 @@ ffiec_monitor/
   enforcement.py   Fed/OCC/FinCEN fetch + FDIC export (data/fdic_active_orders.csv), matching
   performance.py   flagged banks this quarter vs. last
   analytics.py     filing-season progress and charts
+  network.py       Network Exposure: reciprocal deposits vs. the cap, uninsured deposits, special cap
+  network_render.py  its email, four-page PDF and spreadsheet
+  ubpr.py          UBPR links (FFIEC report-cycle ids)
+  workbook.py      the daily/weekly spreadsheet
   narrative.py     plain-English "What's going on" paragraph, written by Claude when
                    ANTHROPIC_API_KEY is set (numbers checked against the data), else rule-based
   pipeline.py       daily-run orchestration
@@ -42,6 +46,7 @@ scripts/
 tests/             unit tests (ratio extraction/diffing, materiality floor, Watch List, tiers)
 .github/workflows/daily.yml      scheduled daily run
 .github/workflows/ffiec_weekly.yml  Monday weekly edition (previous week's filings, full checks)
+.github/workflows/network_weekly.yml  Monday Network Exposure report (reciprocal cap use, uninsured deposits)
 ```
 
 ## Secrets (GitHub Actions: Settings -> Secrets and variables -> Actions)

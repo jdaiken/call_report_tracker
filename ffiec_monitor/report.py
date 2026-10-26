@@ -42,6 +42,11 @@ def bankfind_url(fdic_cert: Optional[str]) -> Optional[str]:
     return f"{BANKFIND_HOME}?cert={fdic_cert}" if fdic_cert else None
 
 
+def _ubpr(rssd, period) -> Optional[str]:
+    from .ubpr import ubpr_url
+    return ubpr_url(str(rssd).strip(), period) if period else None
+
+
 def quarter(period_end: date) -> str:
     return f"Q{(period_end.month - 1) // 3 + 1} {period_end.year}"
 
@@ -77,6 +82,7 @@ class Bank:
     period: str
     call_report_url: Optional[str]
     bankfind_url: Optional[str]
+    ubpr_url: Optional[str] = None
 
 
 @dataclass
@@ -155,6 +161,7 @@ def _bank(meta, period_end: Optional[date]) -> Bank:
         period=quarter(period) if period else "n/a",
         call_report_url=cdr_report_url(meta.id_rssd, period) if period else None,
         bankfind_url=bankfind_url(meta.fdic_cert),
+        ubpr_url=_ubpr(meta.id_rssd, period),
     )
 
 
@@ -403,6 +410,8 @@ def _links(b: Bank) -> str:
     parts = []
     if b.call_report_url:
         parts.append(_a("Call Report", b.call_report_url))
+    if b.ubpr_url:
+        parts.append(_a("UBPR", b.ubpr_url))
     if b.bankfind_url:
         parts.append(_a("FDIC profile", b.bankfind_url))
     return " · ".join(parts)

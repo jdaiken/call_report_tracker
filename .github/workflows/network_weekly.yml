@@ -1,0 +1,54 @@
+name: Weekly Network Exposure Report
+
+# Mondays, after the weekly FFIEC edition: reciprocal cap use and uninsured deposits for
+# every bank. Writes back to the monitor's saved state (adds the new fields to stored
+# snapshots), so it shares the daily run's concurrency group and saves the cache after.
+on:
+  schedule:
+    - cron: "13 15 * * 1"     # Mondays 15:13 UTC = 11:13am EDT / 10:13am EST
+  workflow_dispatch:
+    inputs:
+      max_pulls:
+        description: "Most Call Reports to re-pull this run (first run fills in ~4,300; later runs only new ones)"
+        type: string
+        default: "5000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffiec-daily
+  cancel-in-progress: false
+
+jobs:
+  network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}
+          restore-keys: |
+            duckdb-
+      - name: Build and send the Network Exposure report
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/send_network_report.py "${{ inputs.max_pulls || '5000' }}"
+      - name: Save DuckDB state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}
