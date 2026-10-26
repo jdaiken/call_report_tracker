@@ -379,14 +379,19 @@ def _glance_html(rep: Report, image_src=None) -> str:
     return out
 
 
+def tile_specs(c: dict) -> list[tuple[str, int, str]]:
+    """Count tiles for the top of the email/PDF. Tier 1, Tier 2 and Watch List tiles only
+    appear when they are non-zero; filings, refilings and flagged always show."""
+    tiles = [("TIER 1 ALERTS", c["tier1"], RED), ("TIER 2", c["tier2"], AMBER), ("WATCH LIST", c["watch"], GRAY)]
+    tiles = [t for t in tiles if t[1]]
+    return tiles + [("NEW FILINGS", c["new"], GREEN), ("REFILINGS", c["refilings"], GRAY),
+                    ("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)]
+
+
 def render_html(rep: Report) -> str:
-    c = rep.counts
     b = ""
     b += ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-          + '<td width="8"></td>'.join([_tile("TIER 1 ALERTS", c["tier1"], RED), _tile("TIER 2", c["tier2"], AMBER),
-                                        _tile("WATCH LIST", c["watch"], GRAY),
-                                        _tile("REFILINGS", c["refilings"], GRAY), _tile("NEW FILINGS", c["new"], GREEN),
-                                        _tile("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)])
+          + '<td width="8"></td>'.join(_tile(label, n, color) for label, n, color in tile_specs(rep.counts))
           + "</tr></table></td></tr>")
     b += _glance_html(rep)
     if rep.summary:

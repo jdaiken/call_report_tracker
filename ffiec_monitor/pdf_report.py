@@ -15,7 +15,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .report import (AMBER, BANKFIND_HOME, CDR_HOME, GRAY, GREEN, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
+from .report import (AMBER, BANKFIND_HOME, CDR_HOME, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
                      Report)
 
 INK, MUTED, RULE, SOFT = colors.HexColor("#14181f"), colors.HexColor("#5b626c"), colors.HexColor("#dde0e4"), colors.HexColor("#f5f6f8")
@@ -143,18 +143,17 @@ def render_pdf(rep: Report) -> bytes:
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
                             bottomMargin=0.6 * inch, title=f"{NAME} {rep.run_date:%Y-%m-%d}", author=NAME)
     c = rep.counts
-    tw = (WIDTH - 5 * 6) / 6
+    from .report import tile_specs
+    specs = tile_specs(c)
+    tw = (WIDTH - (len(specs) - 1) * 6) / len(specs)
     tiles = []
-    for label, n, color in (("TIER 1 ALERTS", c["tier1"], RED), ("TIER 2", c["tier2"], AMBER),
-                            ("WATCH LIST", c["watch"], GRAY), ("REFILINGS", c["refilings"], GRAY),
-                            ("NEW FILINGS", c["new"], GREEN),
-                            ("NEW, FLAGGED", c["flagged"], RED if c["flagged"] else GRAY)):
+    for label, n, color in specs:
         t = Table([[_p(str(n), "tile")], [_p(label, "label")]], colWidths=[tw])
         t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("LINEABOVE", (0, 0), (-1, 0), 3.5, colors.HexColor(color)),
                                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("TOPPADDING", (0, 0), (0, 0), 6),
                                ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
         tiles += [t, ""]
-    row = Table([tiles[:-1]], colWidths=[tw, 6] * 5 + [tw])
+    row = Table([tiles[:-1]], colWidths=[tw, 6] * (len(specs) - 1) + [tw])
     row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
     story: list = [row, Spacer(1, 12)] + _glance(rep)
     if rep.summary:

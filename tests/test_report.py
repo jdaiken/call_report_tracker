@@ -158,3 +158,17 @@ def test_at_a_glance_analytics_and_inline_charts(monkeypatch):
     assert 'src="cid:activity"' in html and 'src="cid:flags"' in html
     assert dict((l, r) for l, r, _ in rep.flag_counts)["Capital near the line"] == 1
     assert b"/Subtype /Image" in pdf
+
+
+
+def test_zero_alert_tiles_are_hidden(monkeypatch):
+    from ffiec_monitor.report import tile_specs
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    quiet = {"tier1": 0, "tier2": 0, "watch": 0, "refilings": 3, "new": 5, "flagged": 1}
+    assert [t[0] for t in tile_specs(quiet)] == ["NEW FILINGS", "REFILINGS", "NEW, FLAGGED"]
+    busy = dict(quiet, tier1=2, watch=1)
+    assert [t[0] for t in tile_specs(busy)][:2] == ["TIER 1 ALERTS", "WATCH LIST"]
+    ev = sample_events(3, 2)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[])
+    _, html, _ = email_report.compose(**ev)
+    assert "TIER 1 ALERTS" not in html and ">TIER 2<" not in html and ">WATCH LIST<" not in html
