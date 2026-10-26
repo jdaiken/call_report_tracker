@@ -63,7 +63,7 @@ class EmailConfig:
         return cls(
             address=address,
             app_password=_require("EMAIL_APP_PASSWORD"),
-            recipient=os.environ.get("ALERT_RECIPIENT", address),
+            recipient=os.environ.get("ALERT_RECIPIENT") or address,   # an unset GitHub secret arrives as ""
         )
 
 
