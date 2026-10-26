@@ -11,6 +11,10 @@ on:
       end:
         description: "Logged before (UTC), e.g. 2026-10-26 00:00"
         type: string
+      penalty_years:
+        description: "Show civil money penalties from the last N years"
+        type: string
+        default: "3"
 
 permissions:
   contents: read
@@ -32,4 +36,6 @@ jobs:
           key: duckdb-none
           restore-keys: |
             duckdb-
-      - run: python scripts/enforcement_matches.py "${{ inputs.start }}" "${{ inputs.end }}"
+      - env:
+          ENF_PENALTY_YEARS: ${{ inputs.penalty_years }}
+        run: python scripts/enforcement_matches.py "${{ inputs.start }}" "${{ inputs.end }}"

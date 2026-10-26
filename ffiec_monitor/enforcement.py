@@ -65,7 +65,9 @@ class Action:
     url: str
 
 
-PENALTY_YEARS = 3
+import os as _os
+
+PENALTY_YEARS = int(_os.environ.get("ENF_PENALTY_YEARS", "3"))   # override to list older fines
 
 
 def is_penalty(a: "Action") -> bool:
