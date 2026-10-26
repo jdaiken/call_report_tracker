@@ -68,6 +68,12 @@ on:
 permissions:
   contents: read
 
+# One run at a time: a manual run and the scheduled one never overlap, so the
+# second waits, restores the first's saved state, and doesn't re-send its items.
+concurrency:
+  group: ffiec-daily
+  cancel-in-progress: false
+
 jobs:
   run:
     # NOTE: every 403 seen so far (on both hosted and self-hosted runners, with
