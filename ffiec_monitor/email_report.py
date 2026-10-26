@@ -63,6 +63,7 @@ class RestatementEvent:
     meta: InstitutionMeta
     period_end: date
     reason: str
+    ratios: Optional[dict] = None   # the refiled report's ratios, when pulled (capital check)
 
 
 @dataclass
@@ -227,13 +228,16 @@ def compose(
     new_filing_events: list[NewFilingEvent],
     run_date: date,
     analytics=None,
+    enforcement_sources=None,
+    edition: str = "",
 ):
     """(Report, html, pdf bytes) for one day's events: the designed email body and the
     same report as a PDF (ffiec_monitor/report.py, pdf_report.py). Builds the summary
     paragraph once (one Claude call) and shares it between the two."""
     from . import pdf_report, report
     rep = report.build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
-                              restatement_events, new_filing_events, run_date, analytics)
+                              restatement_events, new_filing_events, run_date, analytics,
+                              enforcement_sources, edition)
     return rep, report.render_html(rep), pdf_report.render_pdf(rep)
 
 

@@ -49,7 +49,7 @@ on:
         type: string
         default: ""
       window_digest:
-        description: 'Send the daily-style email for every Call Report SUBMITTED in a window: "START|END|LABEL", e.g. "2026-10-23 17:00|2026-10-26 00:00|Weekend Oct 23-25" (Eastern). Blank = skip.'
+        description: 'Send the daily-style email for a stretch of time: "MODE|START|END|LABEL". MODE logged (UTC, when the monitor logged it) or submitted (Eastern, FFIEC submission time). e.g. "logged|2026-10-18 21:00|2026-10-26 00:00|Week ending Sun Oct 25". Blank = skip.'
         type: string
         default: ""
       preview_full_days:
@@ -178,8 +178,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           WINDOW: ${{ inputs.window_digest }}
         run: |
-          IFS='|' read -r START END LABEL <<< "$WINDOW"
-          python scripts/send_window_digest.py "$START" "$END" "$LABEL"
+          IFS='|' read -r MODE START END LABEL <<< "$WINDOW"
+          python scripts/send_window_digest.py "$MODE" "$START" "$END" "$LABEL"
 
       - name: Preview full email with real data
         if: ${{ inputs.preview_full_days != '' }}

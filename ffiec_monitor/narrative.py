@@ -28,8 +28,9 @@ STATUS = "not run"           # last outcome; run.py prints it as a GitHub annota
 PROMPT = """You write the opening paragraph of a daily bank Call Report monitoring email read by a bank risk manager.
 Plain English for a risk professional; explain any term a non-specialist would not know in a few words.
 
-Write ONE paragraph of 2 to 5 sentences, at most 100 words, saying what happened in today's filings and what deserves
-attention. Lead with the most important thing: Tier 1 alerts first (name the bank and what crossed), then Watch List
+Write ONE paragraph of 2 to 5 sentences, at most 120 words, saying what happened in today's filings and what deserves
+attention. Lead with the most important thing: banks below well capitalized and banks matched to an enforcement
+action first (name them), then Tier 1 alerts (name the bank and what crossed), then Watch List
 changes, then Tier 2, then new filings the level screen flagged (name the most concerning and say in a few words
 why it matters for a bank that takes reciprocal or brokered deposits: capital near the well-capitalized line, losses,
 tight liquidity, or heavy brokered/reciprocal funding). If there are no alerts or flags, say so plainly, then briefly
@@ -119,6 +120,22 @@ def _names(rows, n: int = 3) -> str:
 def rule_summary(rep: "Report") -> str:
     c = rep.counts
     parts = []
+    if rep.capital_checked:
+        if rep.ltwc:
+            b, rs = rep.ltwc[0]
+            more = f" and {len(rep.ltwc) - 1} more" if len(rep.ltwc) > 1 else ""
+            parts.append(f"{len(rep.ltwc)} {'filing is' if len(rep.ltwc) == 1 else 'filings are'} below well "
+                         f"capitalized: {b.name} ({b.location}){more}, {rs[0]}.")
+        else:
+            parts.append("No filing is below well capitalized.")
+    if rep.enforcement_sources is not None:
+        if rep.enforcement:
+            m = rep.enforcement[0]
+            parts.append(f"{c.get('enforcement', 0)} {'bank matches' if c.get('enforcement') == 1 else 'banks match'} "
+                         f"a public enforcement action, including {m.bank.name} ({m.action.agency} "
+                         f"{m.action.action.lower()}).")
+        else:
+            parts.append("No filer matched an active Fed or OCC action or a FinCEN action.")
     if rep.tier1:
         a = rep.tier1[0]
         first = a.triggers[0] if a.triggers else "a threshold was crossed"

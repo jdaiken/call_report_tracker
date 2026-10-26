@@ -172,3 +172,45 @@ def test_zero_alert_tiles_are_hidden(monkeypatch):
     ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[])
     _, html, _ = email_report.compose(**ev)
     assert "TIER 1 ALERTS" not in html and ">TIER 2<" not in html and ">WATCH LIST<" not in html
+
+
+def test_capital_status_and_enforcement_matching(monkeypatch):
+    from ffiec_monitor import enforcement
+    from ffiec_monitor.report import capital_status
+    assert capital_status({"tier1_leverage_ratio": 9.5, "total_rbc_ratio": 14.0}) == []
+    assert capital_status({"tier1_leverage_ratio": 4.8, "total_rbc_ratio": 9.1})[0].startswith("Leverage ratio 4.80%")
+    assert "community bank leverage ratio" in capital_status({"tier1_leverage_ratio": 8.4})[0]   # CBLR filer
+    assert capital_status(None) == []
+
+    fed = ("Banking Organization,Entity,Individual,Individual Affiliation,Effective Date,Termination Date,Action,Note,URL\n"
+           '"First Prairie Bank, Springfield, Illinois",,,,03/01/2025,,Written Agreement,,https://fed.example/1\n'
+           '"Old Bank, Dover, Delaware",,,,01/01/2019,06/01/2021,Cease and Desist,,https://fed.example/2\n'
+           '"Some Bank, Austin, Texas",,Jane Doe,Some Bank,01/01/2024,,Prohibition,,https://fed.example/3\n')
+    acts = enforcement.parse_fed(fed)
+    assert [(a.name, a.state, a.action) for a in acts] == [("First Prairie Bank", "IL", "Written Agreement")]
+    occ = enforcement.parse_occ([
+        {"Institution": "Community Bank 2, National Association", "Location": "Springfield, IL", "Individual": "",
+         "StartDate": "2026-02-01T00:00:00", "TerminationDate": None, "TypeDescription": "Formal Agreement"},
+        {"Institution": "Gone Bank", "Location": "Austin, TX", "Individual": "", "StartDate": "2020-01-01T00:00:00",
+         "TerminationDate": "2022-01-01T00:00:00", "TypeDescription": "Formal Agreement"}])
+    assert [(a.name, a.state) for a in occ] == [("Community Bank 2, National Association", "IL")]
+    html = ("<table><tr><th>Enforcement Action</th><th>Date</th><th>Matter</th><th>Institution</th></tr>"
+            "<tr><td><a href='/x'>In the Matter of Community Bank 10</a></td><td>05/02/2025</td><td>2025-01</td>"
+            "<td>Depository Institution</td></tr>"
+            "<tr><td>In the Matter of Coin Shop LLC</td><td>05/02/2025</td><td>2025-02</td><td>Money Services Business</td></tr></table>")
+    fin = enforcement.parse_fincen(html, date(2026, 10, 26))
+    assert [(a.name, a.url) for a in fin] == [("Community Bank 10", "https://www.fincen.gov/x")]
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    ev = sample_events(3, 0)
+    ev["new_filing_events"] = [email_report.NewFilingEvent(_meta(1, 2_400_000, "First Prairie Bank"), Q3,
+                                                            {"tier1_leverage_ratio": 4.7, "total_rbc_ratio": 9.0})]
+    src = enforcement.Sources(actions=acts + occ + fin, loaded={"Fed": 1, "OCC": 1, "FinCEN": 1})
+    rep, html_out, pdf = email_report.compose(**ev, enforcement_sources=src, edition="Week ending Sun Oct 25")
+    names = sorted({m.bank.name for m in rep.enforcement})
+    assert names == ["Community Bank 10", "Community Bank 2", "First Prairie Bank"]
+    assert rep.counts["ltwc"] == 1 and rep.ltwc[0][0].name == "First Prairie Bank"
+    assert "Less than well capitalized" in html_out and "Enforcement actions" in html_out
+    assert "FDIC orders aren" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
+    assert ">ENFORCEMENT<" in html_out and "BELOW WELL CAP." in html_out
+    assert rep.summary.startswith("1 filing is below well capitalized: First Prairie Bank")

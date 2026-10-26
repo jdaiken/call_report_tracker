@@ -138,6 +138,38 @@ def _glance(rep: Report) -> list:
     return out
 
 
+def _risk_sections(rep: Report) -> list:
+    from .report import coverage_note
+    out: list = []
+    if rep.capital_checked:
+        out += _section("Less than well capitalized",
+                        "Below a Prompt Corrective Action well-capitalized minimum (leverage 5%, Tier 1 risk-based 8%, "
+                        "total risk-based 10%, CET1 6.5%), or a community bank leverage ratio bank below 9%. Below well "
+                        "capitalized, a bank faces limits on brokered deposits and on reciprocal deposits it can exclude.")
+        if rep.ltwc:
+            head = [_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("BELOW THE LINE", "label"), _p("LINKS", "label")]
+            body = [[_bank(b), _p(escape(b.period), "cell"), _p("<br/>".join(escape(x) for x in rs), "cell"),
+                     _p(_links(b), "small")] for b, rs in rep.ltwc]
+            out.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 4.25 * inch, 1.4 * inch]))
+        else:
+            out.append(_p("None. Every filing with capital data is at or above the well-capitalized lines.", "cell"))
+    if rep.enforcement_sources is not None:
+        out += _section("Enforcement actions", coverage_note(rep))
+        if rep.enforcement:
+            head = [_p("INSTITUTION", "label"), _p("AGENCY", "label"), _p("ACTION", "label"), _p("SINCE", "label"),
+                    _p("LINKS", "label")]
+            body = [[_bank(m.bank), _p(f"<b>{escape(m.action.agency)}</b>", "cell"),
+                     _p(f"{escape(m.action.action)}<br/><font size='7' color='#5b626c'>as listed: {escape(m.action.name)}"
+                        f" · matched on {escape(m.how)}</font>", "cell"),
+                     _p(f"{m.action.start:%b %-d, %Y}" if m.action.start else "", "cell"),
+                     _p(_a("Source", m.action.url) + " · " + _links(m.bank), "small")] for m in rep.enforcement]
+            out.append(_table([head] + body, [2.0 * inch, 0.6 * inch, WIDTH - 5.0 * inch, 0.9 * inch, 1.5 * inch]))
+        else:
+            out.append(_p("No bank in this report matched an active Fed or OCC action or a FinCEN action. "
+                          + _a("Search FDIC orders", "https://orders.fdic.gov/s/"), "cell"))
+    return out
+
+
 def render_pdf(rep: Report) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
@@ -165,6 +197,8 @@ def render_pdf(rep: Report) -> bytes:
                                  ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(box)
+
+    story += _risk_sections(rep)
 
     if rep.watch_changes:
         story += _section("Watch List changes")
@@ -237,7 +271,7 @@ def render_pdf(rep: Report) -> bytes:
         canvas.drawString(MARGIN, PAGE_H - 0.42 * inch, NAME)
         canvas.setFont("Helvetica", 8.5)
         canvas.setFillColor(colors.HexColor("#c8cdd3"))
-        canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.run_date:%A, %B %-d, %Y}  ·  {rep.status}")
+        canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.edition or f'{rep.run_date:%A, %B %-d, %Y}'}  ·  {rep.status}")
         canvas.setFillColor(MUTED)
         canvas.setFont("Helvetica", 7)
         canvas.drawString(MARGIN, 0.35 * inch, f"{NAME} · {rep.run_date:%B %-d, %Y}")
