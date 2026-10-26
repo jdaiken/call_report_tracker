@@ -63,11 +63,30 @@ class Action:
     action: str            # e.g. "Cease and Desist Order", "Formal Agreement"
     start: Optional[date]
     url: str
+    detail: str = ""       # extra text from the source (Fed note, OCC subject matters) for topic tagging
+
+    @property
+    def topic(self) -> str:
+        """AML (Bank Secrecy Act / anti-money-laundering) or Safety & soundness (incl. capital)."""
+        t = f"{self.action} {self.detail}".lower()
+        if self.agency == "FinCEN" or any(k in t for k in ("bank secrecy", "bsa", "aml", "money laundering", "ofac")):
+            return "AML"
+        if any(k in t for k in ("capital", "prompt corrective", "pca")):
+            return "Capital"
+        return "Safety & soundness"
+
+    @property
+    def stale(self) -> bool:
+        """An order over 10 years old with no termination date may simply never have been closed out in the data."""
+        return self.agency != "FinCEN" and self.start is not None and self.start < date.today() - timedelta(days=3650)
 
 
 import os as _os
 
-PENALTY_YEARS = int(_os.environ.get("ENF_PENALTY_YEARS", "3"))   # override to list older fines
+FINCEN_YEARS = 3
+# Fed/OCC civil money penalties (one-time fines, mostly flood insurance) are excluded: the
+# report covers active orders/agreements and AML. Set ENF_PENALTY_YEARS to list them anyway.
+PENALTY_YEARS = int(_os.environ.get("ENF_PENALTY_YEARS", "0"))
 
 
 def is_penalty(a: "Action") -> bool:
@@ -114,7 +133,7 @@ def parse_fed(text: str) -> list[Action]:
         state = _state(parts[-1]) if len(parts) >= 3 else ""
         name = parts[0] if state else org
         out.append(Action("Fed", name, state, row.get("Action", ""), _date(row.get("Effective Date")),
-                          row.get("URL") or FED_PAGE))
+                          row.get("URL") or FED_PAGE, row.get("Note", "")))
     return out
 
 
@@ -130,8 +149,10 @@ def parse_occ(records: list[dict]) -> list[Action]:
             continue
         loc = (r.get("Location") or "").strip()
         state = _state(loc.split(",")[-1]) if "," in loc else _state(loc)
+        subj = r.get("SubjectMatters") or ""
+        subj = " ".join(subj) if isinstance(subj, list) else str(subj)
         out.append(Action("OCC", name, state, (r.get("TypeDescription") or "").strip(), _date(r.get("StartDate")),
-                          OCC_PAGE))
+                          OCC_PAGE, subj))
     return out
 
 
@@ -156,7 +177,7 @@ def parse_fincen(html: str, today: date) -> list[Action]:
         href = cells[0].xpath(".//a/@href")
         url = href[0] if href else FINCEN_PAGE
         url = url if url.startswith("http") else "https://www.fincen.gov" + url
-        out.append(Action("FinCEN", name, "", "FinCEN civil money penalty / consent order", when, url))
+        out.append(Action("FinCEN", name, "", "FinCEN Bank Secrecy Act enforcement action", when, url))
     return out
 
 
@@ -220,8 +241,11 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
     out, seen = [], set()
     today = date.today()
     for a in actions:
-        if is_penalty(a) and a.agency != "FinCEN" and (a.start is None or a.start < today - timedelta(days=365 * PENALTY_YEARS)):
-            continue                                   # old one-time fines aren't a live issue
+        if a.agency == "FinCEN":
+            if a.start is not None and a.start < today - timedelta(days=365 * FINCEN_YEARS):
+                continue
+        elif is_penalty(a) and (a.start is None or a.start < today - timedelta(days=365 * PENALTY_YEARS)):
+            continue                                   # one-time fines aren't an active order
         n = normalize_bank_name(a.name)
         if a.state:
             hits, how = idx.get((n, a.state), []), "name + state"
@@ -234,5 +258,5 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
                 seen.add(key)
                 out.append(Match(b, a, how))
     # Orders and agreements first, then penalties; newest first within each.
-    out.sort(key=lambda m: (not is_penalty(m.action), m.action.start or date.min), reverse=True)
+    out.sort(key=lambda m: (m.action.topic == "AML", m.action.start or date.min), reverse=True)
     return out

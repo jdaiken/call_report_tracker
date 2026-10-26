@@ -214,7 +214,7 @@ def test_capital_status_and_enforcement_matching(monkeypatch):
     assert rep.counts["ltwc"] == 1 and rep.ltwc[0][0].name == "First Prairie Bank"
     assert "Less than well capitalized" in html_out and "Enforcement actions" in html_out
     assert "FDIC orders aren" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
-    assert ">ENFORCEMENT ORDERS<" in html_out and "BELOW WELL CAP." in html_out
+    assert ">ENFORCEMENT / AML<" in html_out and "BELOW WELL CAP." in html_out
     assert rep.summary.startswith("1 filing is below well capitalized: First Prairie Bank")
 
 
@@ -226,6 +226,8 @@ def test_old_penalties_dropped_orders_kept():
     today = date.today()
     acts = [enforcement.Action("Fed", "First Prairie Bank", "IL", "Civil Money Penalty", today - timedelta(days=2000), "u"),
             enforcement.Action("Fed", "First Prairie Bank", "IL", "Civil Money Penalty", today - timedelta(days=100), "u"),
-            enforcement.Action("OCC", "First Prairie Bank", "IL", "Formal Agreement", today - timedelta(days=3000), "u")]
-    got = [(m.action.action, enforcement.is_penalty(m.action)) for m in enforcement.match([b], acts)]
-    assert got == [("Formal Agreement", False), ("Civil Money Penalty", True)]
+            enforcement.Action("OCC", "First Prairie Bank", "IL", "Formal Agreement", today - timedelta(days=4000), "u")]
+    got = [(m.action.action, m.action.stale) for m in enforcement.match([b], acts)]
+    assert got == [("Formal Agreement", True)]                 # penalties dropped; old order flagged to confirm
+    aml = enforcement.Action("OCC", "X", "IL", "Consent Order", today, "u", "Bank Secrecy Act/Anti-Money Laundering")
+    assert aml.topic == "AML" and acts[2].topic == "Safety & soundness"

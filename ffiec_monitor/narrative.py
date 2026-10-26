@@ -137,13 +137,11 @@ def rule_summary(rep: "Report") -> str:
         orders = c.get("enforcement", 0)
         if orders:
             m = rep.enforcement[0]
-            parts.append(f"{orders} {'bank is' if orders == 1 else 'banks are'} under an active enforcement order or "
-                         f"agreement, including {m.bank.name} ({m.action.agency} {m.action.action.lower()}).")
+            parts.append(f"{orders} {'bank has' if orders == 1 else 'banks have'} an active enforcement or AML action, "
+                         f"including {m.bank.name} ({m.action.agency} {m.action.action.lower()}"
+                         + (", over 10 years old, so confirm it is still in force" if m.action.stale else "") + ").")
         else:
-            parts.append("No filer is under an active Fed or OCC enforcement order or agreement.")
-        if c.get("penalties"):
-            parts.append(f"{c['penalties']} {'has' if c['penalties'] == 1 else 'have'} a civil money penalty from "
-                         "the last 3 years.")
+            parts.append("No filer has an active Fed or OCC enforcement order or a recent FinCEN AML action.")
     if rep.tier1:
         a = rep.tier1[0]
         first = a.triggers[0] if a.triggers else "a threshold was crossed"

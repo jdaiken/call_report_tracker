@@ -162,14 +162,17 @@ def _risk_sections(rep: Report) -> list:
         if rep.enforcement:
             head = [_p("INSTITUTION", "label"), _p("AGENCY", "label"), _p("ACTION", "label"), _p("SINCE", "label"),
                     _p("LINKS", "label")]
-            body = [[_bank(m.bank), _p(f"<b>{escape(m.action.agency)}</b>", "cell"),
+            body = [[_bank(m.bank), _p(f"<b>{escape(m.action.agency)}</b><br/><font size='7' color='#5b626c'>"
+                                       f"{escape(m.action.topic)}</font>", "cell"),
                      _p(f"{escape(m.action.action)}<br/><font size='7' color='#5b626c'>as listed: {escape(m.action.name)}"
-                        f" · matched on {escape(m.how)}</font>", "cell"),
+                        f" · matched on {escape(m.how)}"
+                        + (" · over 10 years old with no termination date: confirm it is still in force" if m.action.stale else "")
+                        + "</font>", "cell"),
                      _p(f"{m.action.start:%b %-d, %Y}" if m.action.start else "", "cell"),
                      _p(_a("Source", m.action.url) + " · " + _links(m.bank), "small")] for m in rep.enforcement]
             out.append(_table([head] + body, [2.0 * inch, 0.6 * inch, WIDTH - 5.0 * inch, 0.9 * inch, 1.5 * inch]))
         else:
-            out.append(_p("No bank in this report matched an active Fed or OCC action or a FinCEN action. "
+            out.append(_p("No bank in this report matched an active Fed or OCC order or agreement or a recent FinCEN action. "
                           + _a("Search FDIC orders", "https://orders.fdic.gov/s/"), "cell"))
     return out
 

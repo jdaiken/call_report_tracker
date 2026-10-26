@@ -276,14 +276,13 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
         all_banks = ([r.bank for r in refilings] + [r.bank for r in new_all] + [a.bank for a in tier1]
                      + [a.bank for a in tier2] + [a.bank for a in snapshot] + [w.bank for w in watch])
         uniq = list({b.rssd: b for b in all_banks}.values())
-        from .enforcement import is_penalty
         matches = match(uniq, enforcement_sources.actions)
-        counts["enforcement"] = len({m.bank.rssd for m in matches if not is_penalty(m.action)})
-        counts["penalties"] = len({m.bank.rssd for m in matches if is_penalty(m.action)})
+        counts["enforcement"] = len({m.bank.rssd for m in matches})
     if ltwc:
         status = _plural(len(ltwc), "bank below well capitalized", "banks below well capitalized") + " · " + status
     if counts.get("enforcement"):
-        status = _plural(counts["enforcement"], "bank under an enforcement order", "banks under enforcement orders") \
+        status = _plural(counts["enforcement"], "bank with an active enforcement or AML action",
+                         "banks with active enforcement or AML actions") \
                  + " · " + status
     subject = f"{NAME} · {edition or f'{run_date:%a %b %-d}'} · {status}"
     rep = Report(run_date, subject, status, counts, watch, tier1, snapshot, tier2,
@@ -327,12 +326,10 @@ def facts(rep: Report, limit: int = 40) -> str:
         out.append(f"CBLR BANKS UNDER THE 9% LEVERAGE LINE (not less than well capitalized by themselves): {len(rep.cblr)}.")
         out += [f"  {b_.name} ({b_.location}), assets {b_.assets}: {rs[0]}" for b_, rs in rep.cblr[:limit]]
     if rep.enforcement_sources is not None:
-        from .enforcement import is_penalty
-        out.append(f"ENFORCEMENT: {rep.counts.get('enforcement', 0)} banks under an active order or agreement; "
-                   f"{rep.counts.get('penalties', 0)} banks with a civil money penalty in the last 3 years. "
-                   + coverage_note(rep))
-        out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} "
-                f"{'PENALTY' if is_penalty(m.action) else 'ORDER'} {m.action.action}"
+        out.append(f"ENFORCEMENT / AML: {rep.counts.get('enforcement', 0)} banks with an active order, agreement or "
+                   f"recent FinCEN action. " + coverage_note(rep))
+        out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} {m.action.topic}: {m.action.action}"
+                + (" (over 10 years old, may no longer be in force)" if m.action.stale else "")
                 + (f" since {m.action.start:%B %-d, %Y}" if m.action.start else "") for m in rep.enforcement[:limit]]
     for w in rep.watch_changes:
         out.append(f"WATCH LIST {w.verb.upper()}: {w.bank.name} ({w.bank.location}), reason: {w.reason}")
@@ -478,6 +475,11 @@ def coverage_note(rep: Report) -> str:
     if src is None:
         return ""
     parts = [f"{k} ({v:,} {'active' if k != 'FinCEN' else 'last 5 years'})" for k, v in src.loaded.items()]
+    return ("Active Fed and OCC orders and agreements (cease and desist, written or formal agreements, consent orders, "
+            "capital directives) and FinCEN Bank Secrecy Act actions from the last 3 years. One-time civil money "
+            "penalties are left out. Checked against " + ", ".join(parts + [f"{k} unavailable today" for k in src.errors])
+            + ". FDIC orders aren't published as a data feed, so they aren't checked automatically. Matches are by "
+            "bank name and state; confirm with the source.")
     bad = [f"{k} unavailable today" for k in src.errors]
     return ("Checked against " + ", ".join(parts + bad) + ". Orders and agreements (cease and desist, written or formal "
             "agreements, consent orders, PCA directives) are listed first; civil money penalties are one-time fines, shown "
@@ -506,15 +508,18 @@ def _risk_sections_html(rep: Report) -> str:
         b += _section("Enforcement actions", coverage_note(rep))
         if rep.enforcement:
             rows = "".join(
-                f'<tr>{_bank_cell(m.bank)}<td {TD}><b>{_e(m.action.agency)}</b></td><td {TD}>{_e(m.action.action)}'
-                f'<div style="font-size:11px;color:{MUTED}">as listed: {_e(m.action.name)} · matched on {_e(m.how)}</div></td>'
+                f'<tr>{_bank_cell(m.bank)}<td {TD}><b>{_e(m.action.agency)}</b><div style="font-size:11px;color:{MUTED}">'
+                f'{_e(m.action.topic)}</div></td><td {TD}>{_e(m.action.action)}'
+                f'<div style="font-size:11px;color:{MUTED}">as listed: {_e(m.action.name)} · matched on {_e(m.how)}'
+                + (' · over 10 years old with no termination date: confirm it is still in force' if m.action.stale else '')
+                + '</div></td>'
                 f'<td {TDM}>{_e(f"{m.action.start:%b %-d, %Y}" if m.action.start else "")}</td>'
                 f'<td {TD} nowrap>{_a("Source", m.action.url)} · {_links(m.bank)}</td></tr>' for m in rep.enforcement)
             b += (f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>INSTITUTION</th>'
                   f'<th {TH}>AGENCY</th><th {TH}>ACTION</th><th {TH}>SINCE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
         else:
             b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report matched an active Fed or '
-                  f'OCC order or agreement, a recent penalty, or a FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
+                  f'OCC order or agreement or a recent FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
     return b
 
 
@@ -524,9 +529,7 @@ def tile_specs(c: dict) -> list[tuple[str, int, str]]:
     tiles = [("TIER 1 ALERTS", c["tier1"], RED), ("TIER 2", c["tier2"], AMBER), ("WATCH LIST", c["watch"], GRAY)]
     tiles = [t for t in tiles if t[1]]
     if "enforcement" in c:
-        tiles.append(("ENFORCEMENT ORDERS", c["enforcement"], RED if c["enforcement"] else GRAY))
-        if c.get("penalties"):
-            tiles.append(("RECENT PENALTIES", c["penalties"], AMBER))
+        tiles.append(("ENFORCEMENT / AML", c["enforcement"], RED if c["enforcement"] else GRAY))
     if "ltwc" in c:
         tiles.append(("BELOW WELL CAP.", c["ltwc"], RED if c["ltwc"] else GRAY))
     if c.get("cblr"):
