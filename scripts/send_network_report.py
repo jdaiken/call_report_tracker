@@ -41,7 +41,7 @@ def main(max_pulls: int) -> None:
         print(f"::notice title=Network report::{msg}")
     stamp = run_date.isoformat()
     email_report.send_email(
-        EmailConfig.from_env(), network_render.subject(net), net.summary, html_body=network_render.render_html(net),
+        EmailConfig.from_env(), os.environ.get("SUBJECT_PREFIX", "") + network_render.subject(net), net.summary, html_body=network_render.render_html(net),
         attachments=[(f"Network-Exposure-{stamp}.pdf", network_render.render_pdf(net), "pdf"),
                      (f"Network-Exposure-{stamp}.xlsx", network_render.build_workbook(net), XLSX)],
         images={f"net_{k}": v for k, v in net.images.items()})

@@ -12,6 +12,10 @@ on:
         description: "Most Call Reports to re-pull this run (first run fills in ~4,300; later runs only new ones)"
         type: string
         default: "5000"
+      test:
+        description: "Mark the email TEST (e.g. a partial run)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,6 +49,7 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUBJECT_PREFIX: ${{ inputs.test && 'TEST · ' || '' }}
         run: python scripts/send_network_report.py "${{ inputs.max_pulls || '5000' }}"
       - name: Save DuckDB state
         if: always()
