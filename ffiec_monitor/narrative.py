@@ -134,13 +134,16 @@ def rule_summary(rep: "Report") -> str:
                          f"{'bank is' if len(rep.cblr) == 1 else 'banks are'} under the 9% line (thin cushion, "
                          "not less than well capitalized by itself).")
     if rep.enforcement_sources is not None:
-        if rep.enforcement:
+        orders = c.get("enforcement", 0)
+        if orders:
             m = rep.enforcement[0]
-            parts.append(f"{c.get('enforcement', 0)} {'bank matches' if c.get('enforcement') == 1 else 'banks match'} "
-                         f"a public enforcement action, including {m.bank.name} ({m.action.agency} "
-                         f"{m.action.action.lower()}).")
+            parts.append(f"{orders} {'bank is' if orders == 1 else 'banks are'} under an active enforcement order or "
+                         f"agreement, including {m.bank.name} ({m.action.agency} {m.action.action.lower()}).")
         else:
-            parts.append("No filer matched an active Fed or OCC action or a FinCEN action.")
+            parts.append("No filer is under an active Fed or OCC enforcement order or agreement.")
+        if c.get("penalties"):
+            parts.append(f"{c['penalties']} {'has' if c['penalties'] == 1 else 'have'} a civil money penalty from "
+                         "the last 3 years.")
     if rep.tier1:
         a = rep.tier1[0]
         first = a.triggers[0] if a.triggers else "a threshold was crossed"

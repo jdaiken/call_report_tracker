@@ -276,12 +276,14 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
         all_banks = ([r.bank for r in refilings] + [r.bank for r in new_all] + [a.bank for a in tier1]
                      + [a.bank for a in tier2] + [a.bank for a in snapshot] + [w.bank for w in watch])
         uniq = list({b.rssd: b for b in all_banks}.values())
+        from .enforcement import is_penalty
         matches = match(uniq, enforcement_sources.actions)
-        counts["enforcement"] = len({m.bank.rssd for m in matches})
+        counts["enforcement"] = len({m.bank.rssd for m in matches if not is_penalty(m.action)})
+        counts["penalties"] = len({m.bank.rssd for m in matches if is_penalty(m.action)})
     if ltwc:
         status = _plural(len(ltwc), "bank below well capitalized", "banks below well capitalized") + " · " + status
-    if matches:
-        status = _plural(counts["enforcement"], "bank with an enforcement action", "banks with enforcement actions") \
+    if counts.get("enforcement"):
+        status = _plural(counts["enforcement"], "bank under an enforcement order", "banks under enforcement orders") \
                  + " · " + status
     subject = f"{NAME} · {edition or f'{run_date:%a %b %-d}'} · {status}"
     rep = Report(run_date, subject, status, counts, watch, tier1, snapshot, tier2,
@@ -325,8 +327,12 @@ def facts(rep: Report, limit: int = 40) -> str:
         out.append(f"CBLR BANKS UNDER THE 9% LEVERAGE LINE (not less than well capitalized by themselves): {len(rep.cblr)}.")
         out += [f"  {b_.name} ({b_.location}), assets {b_.assets}: {rs[0]}" for b_, rs in rep.cblr[:limit]]
     if rep.enforcement_sources is not None:
-        out.append(f"ENFORCEMENT ACTION MATCHES: {len(rep.enforcement)} (" + coverage_note(rep) + ")")
-        out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} {m.action.action}"
+        from .enforcement import is_penalty
+        out.append(f"ENFORCEMENT: {rep.counts.get('enforcement', 0)} banks under an active order or agreement; "
+                   f"{rep.counts.get('penalties', 0)} banks with a civil money penalty in the last 3 years. "
+                   + coverage_note(rep))
+        out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} "
+                f"{'PENALTY' if is_penalty(m.action) else 'ORDER'} {m.action.action}"
                 + (f" since {m.action.start:%B %-d, %Y}" if m.action.start else "") for m in rep.enforcement[:limit]]
     for w in rep.watch_changes:
         out.append(f"WATCH LIST {w.verb.upper()}: {w.bank.name} ({w.bank.location}), reason: {w.reason}")
@@ -473,8 +479,10 @@ def coverage_note(rep: Report) -> str:
         return ""
     parts = [f"{k} ({v:,} {'active' if k != 'FinCEN' else 'last 5 years'})" for k, v in src.loaded.items()]
     bad = [f"{k} unavailable today" for k in src.errors]
-    return ("Checked against " + ", ".join(parts + bad) + ". FDIC orders aren't published as a data feed, so they "
-            "aren't checked automatically. Matches are by bank name and state; confirm with the source.")
+    return ("Checked against " + ", ".join(parts + bad) + ". Orders and agreements (cease and desist, written or formal "
+            "agreements, consent orders, PCA directives) are listed first; civil money penalties are one-time fines, shown "
+            "only from the last 3 years. FDIC orders aren't published as a data feed, so they aren't checked automatically. "
+            "Matches are by bank name and state; confirm with the source.")
 
 
 def _risk_sections_html(rep: Report) -> str:
@@ -506,7 +514,7 @@ def _risk_sections_html(rep: Report) -> str:
                   f'<th {TH}>AGENCY</th><th {TH}>ACTION</th><th {TH}>SINCE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
         else:
             b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report matched an active Fed or '
-                  f'OCC action or a FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
+                  f'OCC order or agreement, a recent penalty, or a FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
     return b
 
 
@@ -516,7 +524,9 @@ def tile_specs(c: dict) -> list[tuple[str, int, str]]:
     tiles = [("TIER 1 ALERTS", c["tier1"], RED), ("TIER 2", c["tier2"], AMBER), ("WATCH LIST", c["watch"], GRAY)]
     tiles = [t for t in tiles if t[1]]
     if "enforcement" in c:
-        tiles.append(("ENFORCEMENT", c["enforcement"], RED if c["enforcement"] else GRAY))
+        tiles.append(("ENFORCEMENT ORDERS", c["enforcement"], RED if c["enforcement"] else GRAY))
+        if c.get("penalties"):
+            tiles.append(("RECENT PENALTIES", c["penalties"], AMBER))
     if "ltwc" in c:
         tiles.append(("BELOW WELL CAP.", c["ltwc"], RED if c["ltwc"] else GRAY))
     if c.get("cblr"):

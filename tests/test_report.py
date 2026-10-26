@@ -214,5 +214,18 @@ def test_capital_status_and_enforcement_matching(monkeypatch):
     assert rep.counts["ltwc"] == 1 and rep.ltwc[0][0].name == "First Prairie Bank"
     assert "Less than well capitalized" in html_out and "Enforcement actions" in html_out
     assert "FDIC orders aren" in html_out and rep.subject.startswith("FFIEC Call Report Monitor · Week ending Sun Oct 25 · ")
-    assert ">ENFORCEMENT<" in html_out and "BELOW WELL CAP." in html_out
+    assert ">ENFORCEMENT ORDERS<" in html_out and "BELOW WELL CAP." in html_out
     assert rep.summary.startswith("1 filing is below well capitalized: First Prairie Bank")
+
+
+def test_old_penalties_dropped_orders_kept():
+    from datetime import timedelta
+    from ffiec_monitor import enforcement
+    from ffiec_monitor.report import _bank
+    b = _bank(_meta(1, 1000, "First Prairie Bank"), Q3)
+    today = date.today()
+    acts = [enforcement.Action("Fed", "First Prairie Bank", "IL", "Civil Money Penalty", today - timedelta(days=2000), "u"),
+            enforcement.Action("Fed", "First Prairie Bank", "IL", "Civil Money Penalty", today - timedelta(days=100), "u"),
+            enforcement.Action("OCC", "First Prairie Bank", "IL", "Formal Agreement", today - timedelta(days=3000), "u")]
+    got = [(m.action.action, enforcement.is_penalty(m.action)) for m in enforcement.match([b], acts)]
+    assert got == [("Formal Agreement", False), ("Civil Money Penalty", True)]

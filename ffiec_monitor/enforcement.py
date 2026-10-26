@@ -65,6 +65,15 @@ class Action:
     url: str
 
 
+PENALTY_YEARS = 3
+
+
+def is_penalty(a: "Action") -> bool:
+    """Civil money penalties are one-time fines (often for flood-insurance lapses) and never
+    'terminate', so they stay listed as active forever. Kept apart from orders/agreements."""
+    return a.agency == "FinCEN" or "penalt" in a.action.lower()
+
+
 @dataclass
 class Sources:
     actions: list[Action] = field(default_factory=list)
@@ -207,7 +216,10 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
         idx.setdefault((n, st), []).append(b)
         by_name.setdefault(n, []).append(b)
     out, seen = [], set()
+    today = date.today()
     for a in actions:
+        if is_penalty(a) and a.agency != "FinCEN" and (a.start is None or a.start < today - timedelta(days=365 * PENALTY_YEARS)):
+            continue                                   # old one-time fines aren't a live issue
         n = normalize_bank_name(a.name)
         if a.state:
             hits, how = idx.get((n, a.state), []), "name + state"
@@ -219,5 +231,6 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
             if key not in seen:
                 seen.add(key)
                 out.append(Match(b, a, how))
-    out.sort(key=lambda m: (m.bank.assets_raw, m.action.start or date.min), reverse=True)
+    # Orders and agreements first, then penalties; newest first within each.
+    out.sort(key=lambda m: (not is_penalty(m.action), m.action.start or date.min), reverse=True)
     return out
