@@ -173,10 +173,12 @@ def run_daily(
         return heartbeat_body if heartbeat else "Nothing to report today."
 
     if send and email_config is not None:
-        from . import analytics
+        from . import analytics, enforcement, performance
         rep, html_body, pdf_bytes = email_report.compose(
             watch_list_changes, tier1_events, snapshot_entries, tier2_events,
             restatement_events, new_filing_events, run_date, analytics.compute(conn, run_date),
+            enforcement_sources=enforcement.fetch_all(run_date),
+            prior_lookup=performance.make_prior_lookup(conn, client),
         )
         from . import narrative
         logger.info("Summary: %s", narrative.STATUS)
@@ -255,7 +257,7 @@ def _process_one(
             # Not a real alert (no capital ratio moved >50bp), but per user request
             # 2026-09-18, still surfaced as a one-line email mention rather than
             # staying invisible in alert_log.
-            restatement_events.append(email_report.RestatementEvent(meta, period_end, reason))
+            restatement_events.append(email_report.RestatementEvent(meta, period_end, reason, new_ratios))
     else:
         prior_snapshot = _latest_prior_snapshot(conn, id_rssd, period_end)
         prior_ratios = prior_snapshot.ratios if prior_snapshot else {}

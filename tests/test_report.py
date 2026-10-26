@@ -244,3 +244,32 @@ def test_fdic_orders_match_by_cert(tmp_path):
     banks = [_bank(_meta(1, 1000, "First Prairie Bank"), Q3), _bank(_meta(3, 1000, "Bank C"), Q3)]
     got = enforcement.match(banks, acts)
     assert [(m.bank.name, m.how, m.action.topic) for m in got] == [("First Prairie Bank", "FDIC cert", "Capital")]
+
+
+def test_flagged_bank_performance(monkeypatch):
+    from ffiec_monitor import enforcement, performance
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert performance.prior_quarter_end(Q3) == date(2026, 6, 30)
+    assert performance.prior_quarter_end(date(2026, 3, 31)) == date(2025, 12, 31)
+    cur = {"tier1_leverage_ratio": 8.4, "roaa": -0.2, "noncurrent_loans_oreo_ratio": 2.6,
+           "brokered_reciprocal_deposits_to_total_deposits": 18.0}
+    prior = {"tier1_leverage_ratio": 9.1, "roaa": 0.3, "noncurrent_loans_oreo_ratio": 1.9,
+             "brokered_reciprocal_deposits_to_total_deposits": 12.0}
+    seen = []
+
+    def lookup(rssd, p):
+        seen.append((rssd, p))
+        return prior
+    ev = sample_events(0, 0)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[],
+              new_filing_events=[email_report.NewFilingEvent(_meta(1, 500_000, "Thin Bank"), Q3, cur),
+                                 email_report.NewFilingEvent(_meta(2, 500_000, "Fine Bank"), Q3,
+                                                             {"tier1_leverage_ratio": 11, "total_rbc_ratio": 15})])
+    src = enforcement.Sources(loaded={"Fed": 0})
+    rep, html, pdf = email_report.compose(**ev, enforcement_sources=src, prior_lookup=lookup)
+    assert seen == [("100001", date(2026, 6, 30))]                  # only the flagged (CBLR < 9%) bank
+    bp = rep.performance[0]
+    assert bp.bank.name == "Thin Bank" and bp.why == ["CBLR bank under 9%"]
+    assert bp.read.startswith("Mostly worsening: capital down 0.70 pts, losing money, problem loans 2.60% (up 0.70)")
+    assert "How the flagged banks are performing" in html and "Q2 2026" in html
+    assert "1 mostly worsening" in rep.summary

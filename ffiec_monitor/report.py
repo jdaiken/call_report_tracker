@@ -139,6 +139,7 @@ class Report:
     enforcement: list = field(default_factory=list)          # enforcement.Match
     enforcement_sources: object = None                       # enforcement.Sources, when checked
     edition: str = ""                                        # e.g. "Week ending Sun Oct 25" (default: the date)
+    performance: list = field(default_factory=list)          # performance.BankPerformance for focus banks
 
 
 # ------------------------------------------------------------------ building
@@ -206,7 +207,7 @@ def cblr_status(r: Optional[dict]) -> Optional[str]:
 
 def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
                  restatement_events, new_filing_events, run_date: date, analytics=None,
-                 enforcement_sources=None, edition: str = "") -> Report:
+                 enforcement_sources=None, edition: str = "", prior_lookup=None) -> Report:
     watch = []
     for e in watch_list_changes:
         verb = {"ADDED": "Added", "REMOVED": "Removed"}.get(e.change.change_type, "Reason changed")
@@ -289,6 +290,26 @@ def build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_ev
                  refilings[:LIST_CAP], len(refilings), new_filings[:LIST_CAP // 2], len(new_filings),
                  flagged[:LIST_CAP], len(flagged))
     rep.capital_checked, rep.ltwc, rep.cblr = checked, ltwc, cblr
+    # Performance of the banks that matter most: under an order, below well capitalized, CBLR under 9%.
+    current = {}
+    for e in list(new_filing_events) + list(restatement_events):
+        if getattr(e, "ratios", None):
+            current[str(e.meta.id_rssd).strip()] = (e.ratios, e.period_end)
+    focus: dict[str, tuple] = {}
+    def add(b, why):
+        if b.rssd in current:
+            entry = focus.setdefault(b.rssd, (b, [], *current[b.rssd]))
+            if why not in entry[1]:
+                entry[1].append(why)
+    for m in matches:
+        add(m.bank, f"{m.action.agency} {m.action.action.split(',')[0].lower()}")
+    for b_, _rs in ltwc:
+        add(b_, "below well capitalized")
+    for b_, _rs in cblr:
+        add(b_, "CBLR bank under 9%")
+    if focus:
+        from .performance import build as build_perf
+        rep.performance = build_perf(list(focus.values()), prior_lookup)
     rep.enforcement, rep.enforcement_sources, rep.edition = matches, enforcement_sources, edition
     from . import analytics as an
     rep.analytics = analytics
@@ -331,6 +352,13 @@ def facts(rep: Report, limit: int = 40) -> str:
         out += [f"  {m.bank.name} ({m.bank.location}): {m.action.agency} {m.action.topic}: {m.action.action}"
                 + (" (over 10 years old, may no longer be in force)" if m.action.stale else "")
                 + (f" since {m.action.start:%B %-d, %Y}" if m.action.start else "") for m in rep.enforcement[:limit]]
+    if rep.performance:
+        out.append("PERFORMANCE OF FLAGGED BANKS (this quarter vs. last):")
+        for bp in rep.performance:
+            vals = "; ".join(f"{r.label} {'n/a' if r.prior is None else f'{r.prior:.2f}%'} to "
+                             f"{'n/a' if r.current is None else f'{r.current:.2f}%'}" for r in bp.rows
+                             if r.current is not None)
+            out.append(f"  {bp.bank.name} ({bp.bank.location}, {bp.bank.assets}; {', '.join(bp.why)}): {bp.read} {vals}")
     for w in rep.watch_changes:
         out.append(f"WATCH LIST {w.verb.upper()}: {w.bank.name} ({w.bank.location}), reason: {w.reason}")
     for a in rep.tier1:
@@ -526,6 +554,34 @@ def _risk_sections_html(rep: Report) -> str:
     return b
 
 
+PERF_NOTE = ("Banks under an active enforcement order, below well capitalized, or a community bank leverage ratio bank "
+             "under 9%: this quarter vs. last quarter. Green = moved the healthy way, red = the wrong way.")
+
+
+def _performance_html(rep: Report) -> str:
+    if not rep.performance:
+        return ""
+    b = _section("How the flagged banks are performing", PERF_NOTE)
+    for bp in rep.performance:
+        rows = ""
+        for r in bp.rows:
+            if r.current is None and r.prior is None:
+                continue
+            ch = "" if r.change is None else f"{'+' if r.change >= 0 else '-'}{abs(r.change):.2f}"
+            color = GREEN if r.better is True else RED if r.better is False else MUTED
+            rows += (f'<tr><td {TD}>{_e(r.label)}</td><td {TDR}>{"" if r.prior is None else f"{r.prior:.2f}%"}</td>'
+                     f'<td {TDR}><b>{"" if r.current is None else f"{r.current:.2f}%"}</b></td>'
+                     f'<td {TDR}><span style="color:{color}">{ch}</span></td></tr>')
+        b += (f'<tr><td style="padding-top:14px"><div style="font-size:14px;font-weight:700;color:{INK}">{_e(bp.bank.name)}</div>'
+              f'<div style="font-size:12px;color:{MUTED}">{_e(bp.bank.location)} · {_e(bp.bank.assets)} · '
+              f'{_e("; ".join(bp.why))} · {_links(bp.bank)}</div>'
+              f'<div style="font-size:13px;color:{INK};margin:5px 0">{_e(bp.read)}</div>'
+              f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><th {TH}>RATIO</th>'
+              f'<th {THR}>{_e(bp.prior_label.upper())}</th><th {THR}>{_e(bp.bank.period.upper())}</th><th {THR}>CHANGE</th></tr>'
+              f'{rows}</table></td></tr>')
+    return b
+
+
 def tile_specs(c: dict) -> list[tuple[str, int, str]]:
     """Count tiles for the top of the email/PDF. Tier 1, Tier 2 and Watch List tiles only
     appear when they are non-zero; filings, refilings and flagged always show."""
@@ -555,6 +611,7 @@ def render_html(rep: Report) -> str:
               f'<div style="font-size:13.5px;line-height:1.5;color:{INK};margin-top:4px">{_e(rep.summary)}</div>{by}</div></td></tr>')
 
     b += _risk_sections_html(rep)
+    b += _performance_html(rep)
 
     if rep.watch_changes:
         b += _section("Watch List changes")

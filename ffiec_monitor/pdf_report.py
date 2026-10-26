@@ -15,7 +15,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .report import (AMBER, BANKFIND_HOME, CDR_HOME, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
+from .report import (AMBER, BANKFIND_HOME, CDR_HOME, GREEN, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
                      Report)
 
 INK, MUTED, RULE, SOFT = colors.HexColor("#14181f"), colors.HexColor("#5b626c"), colors.HexColor("#dde0e4"), colors.HexColor("#f5f6f8")
@@ -177,6 +177,31 @@ def _risk_sections(rep: Report) -> list:
     return out
 
 
+def _performance(rep: Report) -> list:
+    from .report import PERF_NOTE
+    if not rep.performance:
+        return []
+    out = _section("How the flagged banks are performing", PERF_NOTE)
+    for bp in rep.performance:
+        head = [_p("RATIO", "label"), _p(escape(bp.prior_label.upper()), "labr"), _p(escape(bp.bank.period.upper()), "labr"),
+                _p("CHANGE", "labr")]
+        body = []
+        for r in bp.rows:
+            if r.current is None and r.prior is None:
+                continue
+            ch = "" if r.change is None else f"{'+' if r.change >= 0 else '-'}{abs(r.change):.2f}"
+            color = GREEN if r.better is True else RED if r.better is False else "#5b626c"
+            body.append([_p(escape(r.label), "cell"), _p("" if r.prior is None else f"{r.prior:.2f}%", "num"),
+                         _p("" if r.current is None else f"{r.current:.2f}%", "numb"),
+                         _p(f"<font color='{color}'>{ch}</font>", "num")])
+        out.append(KeepTogether([
+            _p(f"<b>{escape(bp.bank.name)}</b>", "cell"),
+            _p(f"{escape(bp.bank.location)} · {escape(bp.bank.assets)} · {escape('; '.join(bp.why))} · {_links(bp.bank)}", "note"),
+            Spacer(1, 2), _p(escape(bp.read), "cell"), Spacer(1, 3),
+            _table([head] + body, [WIDTH - 3.3 * inch, 1.1 * inch, 1.1 * inch, 1.1 * inch]), Spacer(1, 10)]))
+    return out
+
+
 def render_pdf(rep: Report) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
@@ -205,7 +230,7 @@ def render_pdf(rep: Report) -> bytes:
                                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(box)
 
-    story += _risk_sections(rep)
+    story += _risk_sections(rep) + _performance(rep)
 
     if rep.watch_changes:
         story += _section("Watch List changes")

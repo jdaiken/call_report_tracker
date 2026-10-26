@@ -62,8 +62,10 @@ def main(mode: str, start: str, end: str, label: str) -> None:
             new.append(email_report.NewFilingEvent(meta, period_end, r))
     run_date = datetime.now(timezone.utc).date()
     src = enforcement.fetch_all(run_date)
+    from ffiec_monitor import performance
     rep, html, pdf = email_report.compose([], [], [], [], refilings, new, run_date, analytics.compute(conn, run_date),
-                                          enforcement_sources=src, edition=label)
+                                          enforcement_sources=src, edition=label,
+                                          prior_lookup=performance.make_prior_lookup(conn, client))
     body = email_report.build_email_body([], [], [], [], refilings, new, run_date) or "No filings in this window."
     msg = (f"{len(filings)} filings: {len(new)} new, {len(refilings)} refilings ({failed} pulls failed); "
            f"{rep.counts.get('ltwc', 0)} below well capitalized; {rep.counts.get('cblr', 0)} CBLR under 9%; {rep.counts.get('enforcement', 0)} enforcement matches; "

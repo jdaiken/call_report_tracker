@@ -28,10 +28,11 @@ STATUS = "not run"           # last outcome; run.py prints it as a GitHub annota
 PROMPT = """You write the opening paragraph of a daily bank Call Report monitoring email read by a bank risk manager.
 Plain English for a risk professional; explain any term a non-specialist would not know in a few words.
 
-Write ONE paragraph of 2 to 5 sentences, at most 120 words, saying what happened in today's filings and what deserves
+Write ONE paragraph of 2 to 5 sentences, at most 140 words, saying what happened in today's filings and what deserves
 attention. Lead with the most important thing: banks below a well-capitalized minimum and banks matched to an enforcement
 action first (name them; community bank leverage ratio banks under 9% are a thin cushion, not less than well
-capitalized), then Tier 1 alerts (name the bank and what crossed), then Watch List
+capitalized), then how those flagged banks are performing this quarter vs.
+last (improving or worsening, in a few words), then Tier 1 alerts (name the bank and what crossed), then Watch List
 changes, then Tier 2, then new filings the level screen flagged (name the most concerning and say in a few words
 why it matters for a bank that takes reciprocal or brokered deposits: capital near the well-capitalized line, losses,
 tight liquidity, or heavy brokered/reciprocal funding). If there are no alerts or flags, say so plainly, then briefly
@@ -142,6 +143,13 @@ def rule_summary(rep: "Report") -> str:
                          + (", over 10 years old, so confirm it is still in force" if m.action.stale else "") + ").")
         else:
             parts.append("No filer has an active Fed, OCC or FDIC enforcement order or a recent FinCEN AML action.")
+    if rep.performance:
+        worse = [bp for bp in rep.performance if bp.read.startswith("Mostly worsening")]
+        better = [bp for bp in rep.performance if bp.read.startswith("Mostly improving")]
+        parts.append(f"Of the {len(rep.performance)} flagged banks, {len(better)} are mostly improving and "
+                     f"{len(worse)} mostly worsening quarter over quarter"
+                     + (f"; watch {worse[0].bank.name} ({worse[0].read.split(': ', 1)[-1].rstrip('.')})" if worse else "")
+                     + ".")
     if rep.tier1:
         a = rep.tier1[0]
         first = a.triggers[0] if a.triggers else "a threshold was crossed"

@@ -230,6 +230,7 @@ def compose(
     analytics=None,
     enforcement_sources=None,
     edition: str = "",
+    prior_lookup=None,
 ):
     """(Report, html, pdf bytes) for one day's events: the designed email body and the
     same report as a PDF (ffiec_monitor/report.py, pdf_report.py). Builds the summary
@@ -237,7 +238,7 @@ def compose(
     from . import pdf_report, report
     rep = report.build_report(watch_list_changes, tier1_events, watch_list_snapshot, tier2_events,
                               restatement_events, new_filing_events, run_date, analytics,
-                              enforcement_sources, edition)
+                              enforcement_sources, edition, prior_lookup)
     return rep, report.render_html(rep), pdf_report.render_pdf(rep)
 
 
