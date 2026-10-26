@@ -141,7 +141,7 @@ def rule_summary(rep: "Report") -> str:
                          f"including {m.bank.name} ({m.action.agency} {m.action.action.lower()}"
                          + (", over 10 years old, so confirm it is still in force" if m.action.stale else "") + ").")
         else:
-            parts.append("No filer has an active Fed or OCC enforcement order or a recent FinCEN AML action.")
+            parts.append("No filer has an active Fed, OCC or FDIC enforcement order or a recent FinCEN AML action.")
     if rep.tier1:
         a = rep.tier1[0]
         first = a.triggers[0] if a.triggers else "a threshold was crossed"

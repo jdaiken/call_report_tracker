@@ -4,8 +4,12 @@ Sources (all public, fetched fresh each run; a source that fails is reported, no
   Fed     https://www.federalreserve.gov/supervisionreg/files/enforcementactions.csv
   OCC     https://apps.occ.gov/EASearch/Search/ExportToJSON  (all actions)
   FinCEN  https://www.fincen.gov/news/enforcement-actions    (HTML table, paged)
-  FDIC    no machine-readable feed (orders.fdic.gov is an interactive search), so FDIC
-          orders are NOT checked automatically; the report says so and links the search.
+  FDIC    data/fdic_active_orders.csv, built from an export of the FDIC's Enforcement
+          Decisions and Orders search (orders.fdic.gov has no live data feed) by
+          scripts/build_fdic_orders.py: institution-level consent/C&D orders, written
+          agreements, PCA and capital directives issued since 2016 with no later
+          termination, withdrawal or dismissal under the same docket. Matched by FDIC cert.
+          Refresh it by re-exporting and re-running the script.
 
 Fed and OCC: only ACTIVE actions (no termination date) against an institution, not an
 individual. FinCEN: actions in the last 5 years (FinCEN actions don't terminate).
@@ -64,6 +68,7 @@ class Action:
     start: Optional[date]
     url: str
     detail: str = ""       # extra text from the source (Fed note, OCC subject matters) for topic tagging
+    cert: str = ""         # FDIC cert, when the source gives it (FDIC orders): matched exactly
 
     @property
     def topic(self) -> str:
@@ -71,8 +76,10 @@ class Action:
         t = f"{self.action} {self.detail}".lower()
         if self.agency == "FinCEN" or any(k in t for k in ("bank secrecy", "bsa", "aml", "money laundering", "ofac")):
             return "AML"
-        if any(k in t for k in ("capital", "prompt corrective", "pca")):
+        if any(k in t for k in ("capital", "prompt corrective", "pca")) and "consent" not in t:
             return "Capital"
+        if self.agency == "FDIC":
+            return "Safety & soundness or BSA (see order)"
         return "Safety & soundness"
 
     @property
@@ -100,6 +107,7 @@ class Sources:
     actions: list[Action] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
     loaded: dict[str, int] = field(default_factory=dict)
+    fdic_as_of: str = ""
 
 
 def _date(s) -> Optional[date]:
@@ -181,9 +189,33 @@ def parse_fincen(html: str, today: date) -> list[Action]:
     return out
 
 
+FDIC_FILE = __import__("pathlib").Path(__file__).resolve().parent.parent / "data" / "fdic_active_orders.csv"
+
+
+def load_fdic(path=FDIC_FILE) -> tuple[list[Action], str]:
+    """(actions, as-of date) from the prepared FDIC file; ([], "") if it isn't there."""
+    p = __import__("pathlib").Path(path)
+    if not p.exists():
+        return [], ""
+    out = []
+    with p.open(newline="", encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            out.append(Action("FDIC", r["bank"], _state(r["state"]), r["action"].replace(";", ", "), _date(r["issued"]),
+                              r["url"] or FDIC_SEARCH, r.get("title", ""), r["cert"].strip()))
+    as_of = (p.with_suffix(".asof").read_text().strip() if p.with_suffix(".asof").exists() else "")
+    return out, as_of
+
+
 # ------------------------------------------------------------------ fetching
 def fetch_all(today: date) -> Sources:
     src = Sources()
+    try:
+        acts, src.fdic_as_of = load_fdic()
+        if acts:
+            src.actions += acts
+            src.loaded["FDIC"] = len(acts)
+    except Exception as e:
+        src.errors["FDIC"] = str(e)[:200]
     s = requests.Session()
     s.headers.update(UA)
     try:
@@ -233,7 +265,10 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
     """banks: report.Bank objects (name, location "City, ST")."""
     idx: dict[tuple[str, str], list] = {}
     by_name: dict[str, list] = {}
+    by_cert: dict[str, list] = {}
     for b in banks:
+        if b.cert:
+            by_cert.setdefault(b.cert.lstrip("0"), []).append(b)
         st = b.location.split(",")[-1].strip().upper() if "," in b.location else ""
         n = normalize_bank_name(b.name)
         idx.setdefault((n, st), []).append(b)
@@ -247,7 +282,9 @@ def match(banks: list, actions: list[Action]) -> list[Match]:
         elif is_penalty(a) and (a.start is None or a.start < today - timedelta(days=365 * PENALTY_YEARS)):
             continue                                   # one-time fines aren't an active order
         n = normalize_bank_name(a.name)
-        if a.state:
+        if a.cert:
+            hits, how = by_cert.get(a.cert.lstrip("0"), []), "FDIC cert"
+        elif a.state:
             hits, how = idx.get((n, a.state), []), "name + state"
         else:
             hits = by_name.get(n, [])

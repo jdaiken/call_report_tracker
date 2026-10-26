@@ -231,3 +231,16 @@ def test_old_penalties_dropped_orders_kept():
     assert got == [("Formal Agreement", True)]                 # penalties dropped; old order flagged to confirm
     aml = enforcement.Action("OCC", "X", "IL", "Consent Order", today, "u", "Bank Secrecy Act/Anti-Money Laundering")
     assert aml.topic == "AML" and acts[2].topic == "Safety & soundness"
+
+
+def test_fdic_orders_match_by_cert(tmp_path):
+    from ffiec_monitor import enforcement
+    from ffiec_monitor.report import _bank
+    f = tmp_path / "o.csv"
+    f.write_text("cert,bank,city,state,action,title,issued,docket,url\n"
+                 "9001,Some Other Name Bank,X,IL,Prompt Corrective Action,Supervisory PCA Directive,2026-08-28,FDIC-1,u\n"
+                 "9002,Bank B,Y,IL,Cease and Desist / Consent Orders,Consent Order,2025-01-01,FDIC-2,u\n")
+    acts, _ = enforcement.load_fdic(f)
+    banks = [_bank(_meta(1, 1000, "First Prairie Bank"), Q3), _bank(_meta(3, 1000, "Bank C"), Q3)]
+    got = enforcement.match(banks, acts)
+    assert [(m.bank.name, m.how, m.action.topic) for m in got] == [("First Prairie Bank", "FDIC cert", "Capital")]

@@ -172,7 +172,7 @@ def _risk_sections(rep: Report) -> list:
                      _p(_a("Source", m.action.url) + " · " + _links(m.bank), "small")] for m in rep.enforcement]
             out.append(_table([head] + body, [2.0 * inch, 0.6 * inch, WIDTH - 5.0 * inch, 0.9 * inch, 1.5 * inch]))
         else:
-            out.append(_p("No bank in this report matched an active Fed or OCC order or agreement or a recent FinCEN action. "
+            out.append(_p("No bank in this report matched an active Fed, OCC or FDIC order or agreement or a recent FinCEN action. "
                           + _a("Search FDIC orders", "https://orders.fdic.gov/s/"), "cell"))
     return out
 

@@ -475,11 +475,14 @@ def coverage_note(rep: Report) -> str:
     if src is None:
         return ""
     parts = [f"{k} ({v:,} {'active' if k != 'FinCEN' else 'last 5 years'})" for k, v in src.loaded.items()]
-    return ("Active Fed and OCC orders and agreements (cease and desist, written or formal agreements, consent orders, "
-            "capital directives) and FinCEN Bank Secrecy Act actions from the last 3 years. One-time civil money "
-            "penalties are left out. Checked against " + ", ".join(parts + [f"{k} unavailable today" for k in src.errors])
-            + ". FDIC orders aren't published as a data feed, so they aren't checked automatically. Matches are by "
-            "bank name and state; confirm with the source.")
+    fdic = (f"FDIC orders come from the FDIC's order search as exported {src.fdic_as_of} (no live feed), matched by "
+            "FDIC cert; FDIC consent orders cover safety and soundness and/or BSA/AML, so open the order for its scope."
+            if "FDIC" in src.loaded else
+            "FDIC orders aren't published as a data feed and no FDIC export is loaded, so they aren't checked.")
+    return ("Active Fed, OCC and FDIC orders and agreements (cease and desist, written or formal agreements, consent "
+            "orders, capital and PCA directives) and FinCEN Bank Secrecy Act actions from the last 3 years. One-time "
+            "civil money penalties are left out. Checked against " + ", ".join(parts + [f"{k} unavailable today" for k in src.errors])
+            + ". " + fdic + " Fed, OCC and FinCEN matches are by bank name and state; confirm with the source.")
     bad = [f"{k} unavailable today" for k in src.errors]
     return ("Checked against " + ", ".join(parts + bad) + ". Orders and agreements (cease and desist, written or formal "
             "agreements, consent orders, PCA directives) are listed first; civil money penalties are one-time fines, shown "
@@ -519,7 +522,7 @@ def _risk_sections_html(rep: Report) -> str:
                   f'<th {TH}>AGENCY</th><th {TH}>ACTION</th><th {TH}>SINCE</th><th {TH}>LINKS</th></tr>{rows}</table></td></tr>')
         else:
             b += (f'<tr><td style="padding:8px 0;font-size:13px;color:{INK}">No bank in this report matched an active Fed or '
-                  f'OCC order or agreement or a recent FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
+                  f'OCC or FDIC order or agreement or a recent FinCEN action. {_a("Search FDIC orders", "https://orders.fdic.gov/s/")}</td></tr>')
     return b
 
 
