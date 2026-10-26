@@ -48,6 +48,10 @@ on:
         description: "TEST: email a preview of the new REFILINGS template using real (already-processed) restatements logged in the last N days -- no FFIEC API call. Blank = skip."
         type: string
         default: ""
+      window_digest:
+        description: 'Send the daily-style email for every Call Report SUBMITTED in a window: "START|END|LABEL", e.g. "2026-10-23 17:00|2026-10-26 00:00|Weekend Oct 23-25" (Eastern). Blank = skip.'
+        type: string
+        default: ""
       preview_full_days:
         description: "TEST: email the designed daily report from REAL refilings + new filings logged in the last N days (new filings re-pulled and screened). Blank = skip."
         type: string
@@ -163,6 +167,20 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python scripts/preview_refilings_template.py "${{ inputs.preview_refilings_days }}"
 
+      - name: Window digest (filings submitted in a time window)
+        if: ${{ inputs.window_digest != '' }}
+        shell: bash
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WINDOW: ${{ inputs.window_digest }}
+        run: |
+          IFS='|' read -r START END LABEL <<< "$WINDOW"
+          python scripts/send_window_digest.py "$START" "$END" "$LABEL"
+
       - name: Preview full email with real data
         if: ${{ inputs.preview_full_days != '' }}
         shell: bash
@@ -193,7 +211,7 @@ jobs:
         run: python scripts/restatement_rssds.py "${{ inputs.restatement_rssds_days }}"
 
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true && inputs.preview_full_days == '' }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true && inputs.preview_full_days == '' && inputs.window_digest == '' }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
