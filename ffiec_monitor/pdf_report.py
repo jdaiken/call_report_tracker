@@ -13,7 +13,7 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .report import (AMBER, BANKFIND_HOME, CDR_HOME, GREEN, NAME, RED, SCREEN_NOTE, Bank, ListRow, RatioRow,
                      Report)
@@ -205,13 +205,54 @@ def _performance(rep: Report) -> list:
     return out
 
 
-def render_pdf(rep: Report) -> bytes:
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.05 * inch,
-                            bottomMargin=0.6 * inch, title=f"{NAME} {rep.run_date:%Y-%m-%d}", author=NAME)
-    c = rep.counts
+PAGES = 5
+TOP, BOTTOM = 1.05 * inch, 0.6 * inch
+FRAME_H = PAGE_H - TOP - BOTTOM - 14          # small allowance for platypus frame padding
+
+
+def _header(title: str, n: int) -> list:
+    t = Table([[_p(escape(title), "h"), _p(f"{n} / {PAGES}", "labr")]], colWidths=[WIDTH * 0.8, WIDTH * 0.2])
+    t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, 0), 1.5, INK), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                           ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+    return [t, Spacer(1, 8)]
+
+
+def _height(flowables: list) -> float:
+    return sum(f.wrap(WIDTH, PAGE_H)[1] + getattr(f, "getSpaceBefore", lambda: 0)() + getattr(f, "getSpaceAfter", lambda: 0)()
+               for f in flowables)
+
+
+def _fit(build, start: int) -> list:
+    """build(cap) -> flowables; largest cap (<= start) whose page fits on one page."""
+    for cap in range(start, -1, -1):
+        page = build(cap)
+        if _height(page) <= FRAME_H:
+            return page
+    return build(0)
+
+
+def _more(shown: int, total: int, where: str = "the attached CSV") -> list:
+    return [Spacer(1, 4), _p(f"Showing {shown} of {total}. All {total} are in {where}.", "note")] if total > shown else []
+
+
+def _chart(rep: Report, cid: str, title: str, height_in: float) -> list:
+    if cid not in rep.images:
+        return []
+    img = Image(io.BytesIO(rep.images[cid]))
+    w = WIDTH
+    h = w * img.imageHeight / img.imageWidth
+    if h > height_in * inch:                     # keep proportions; shrink to the height budget
+        h = height_in * inch
+        w = h * img.imageWidth / img.imageHeight
+    img.drawWidth, img.drawHeight = w, h
+    return [_p(f"<b>{escape(title)}</b>", "cell"), Spacer(1, 3), img, Spacer(1, 8)]
+
+
+# ------------------------------------------------------------------ the five pages
+def _page_summary(rep: Report) -> list:
     from .report import tile_specs
-    specs = tile_specs(c)
+    specs = tile_specs(rep.counts)
     tw = (WIDTH - (len(specs) - 1) * 6) / len(specs)
     tiles = []
     for label, n, color in specs:
@@ -222,78 +263,177 @@ def render_pdf(rep: Report) -> bytes:
         tiles += [t, ""]
     row = Table([tiles[:-1]], colWidths=[tw, 6] * (len(specs) - 1) + [tw])
     row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    story: list = [row, Spacer(1, 12)] + _glance(rep)
+    out = _header("Summary", 1) + [row, Spacer(1, 10)]
+    a = rep.analytics
+    if a is not None and a.period_end and a.universe:
+        left = a.days_left
+        due = f" ({left} days left)" if left and left > 1 else ""
+        out += [_p(f"{escape(a.quarter.upper())} FILING SEASON", "label"), Spacer(1, 2),
+                _p(f"<b>{a.filed:,}</b> of {a.universe:,} banks have filed ({a.pct:.0f}%) · due {a.deadline:%a %b %-d}{due}", "cell"),
+                Spacer(1, 4)]
+        done = max(min(a.pct, 100), 0.5) / 100 * WIDTH
+        bar = Table([["", ""]], colWidths=[done, WIDTH - done], rowHeights=[7])
+        bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#2a78d6")),
+                                 ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#e6e8eb"))]))
+        out += [bar, Spacer(1, 10)]
     if rep.summary:
-        inner = [_p("WHAT'S GOING ON", "label"), Spacer(1, 3), _p(escape(rep.summary), "body")]
-        box = Table([[inner]], colWidths=[WIDTH])
+        box = Table([[[_p("WHAT'S GOING ON", "label"), Spacer(1, 3), _p(escape(rep.summary), "body")]]], colWidths=[WIDTH])
         box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SOFT), ("LINEBEFORE", (0, 0), (0, -1), 2.5, INK),
                                  ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
-        story.append(box)
+        out += [box, Spacer(1, 10)]
+    room = (FRAME_H - _height(out)) / inch - 0.5
+    return out + _chart(rep, "activity", "Filings logged per day, last 21 days", max(1.2, min(3.4, room)))
 
-    story += _risk_sections(rep) + _performance(rep)
 
-    if rep.watch_changes:
-        story += _section("Watch List changes")
-        head = [_p("CHANGE", "label"), _p("INSTITUTION", "label"), _p("REASON", "label"), _p("LINKS", "label")]
-        body = [[_p(f"<b>{escape(w.verb)}</b>", "cell"), _bank(w.bank), _p(escape(w.reason), "cell"), _p(_links(w.bank), "small")]
-                for w in rep.watch_changes]
-        story.append(_table([head] + body, [0.9 * inch, 2.4 * inch, WIDTH - 4.75 * inch, 1.45 * inch]))
+def _page_risk(rep: Report):
+    """Page 2: enforcement orders (with the discussion) and capital."""
+    from .narrative import RECIPROCAL_NOTE
+    from .report import CBLR_NOTE, LTWC_NOTE, coverage_note
+    active = [m for m in rep.enforcement if not m.action.stale]
+    stale = [m for m in rep.enforcement if m.action.stale]
 
-    if rep.tier1:
-        head = _section("Tier 1 alerts", "A capital, earnings or asset-quality threshold was crossed. Review today.")
-        for i, a in enumerate(rep.tier1):
-            b = a.bank
-            content = [_p(escape(b.name) + (" <font color='#8a5a00' size='8'>WATCH LIST</font>" if a.on_watch_list else ""), "card"),
-                       _p(f"{escape(b.location)} · {escape(b.assets)} assets · {escape(b.period)} · FDIC Cert {escape(b.cert or 'n/a')} · "
-                          f"RSSD {escape(b.rssd)} · {_links(b)}", "note"), Spacer(1, 5)]
-            content += [_p(f"• {escape(t)}", "cell") for t in a.triggers]
-            if a.ratios:
-                content += [Spacer(1, 5), _ratio_table(a.ratios)]
-            if a.snapshot:
-                content += [Spacer(1, 8), _p("ALL CURRENT RATIOS (WATCH LIST BANK)", "label"), Spacer(1, 2), _current_table(a.snapshot)]
-            card = Table([[content]], colWidths=[WIDTH])
-            card.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, RULE), ("LINEABOVE", (0, 0), (-1, 0), 3.5, colors.HexColor(RED)),
-                                      ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-                                      ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
-            # keep the section heading with its first card
-            story += [KeepTogether(head + [card]), Spacer(1, 8)] if i == 0 else [card, Spacer(1, 8)]
+    def build(cap):
+        out = _header("Enforcement orders and capital", 2)
+        if rep.enforcement_sources is not None:
+            out += [_p("<b>BANKS UNDER ENFORCEMENT ORDERS</b>", "label"), Spacer(1, 2), _p(escape(coverage_note(rep)), "small"),
+                    Spacer(1, 6)]
+            for m in active[:cap]:
+                note, _by = rep.enforcement_notes.get(m.bank.rssd, ("", ""))
+                issued = f" · issued {m.action.start:%b %-d, %Y}" if m.action.start else ""
+                block = [_p(f"<b>{escape(m.bank.name)}</b> · {escape(m.bank.location)} · {escape(m.bank.assets)}", "cell"),
+                         _p(f"<b>{escape(m.action.agency)}</b> {escape(m.action.action)}{escape(issued)} · "
+                            f"{escape(m.action.topic)} · {_a('Order', m.action.url)} · {_links(m.bank)}", "small")]
+                if note:
+                    block += [Spacer(1, 2), _p(escape(note), "cell")]
+                card = Table([[block]], colWidths=[WIDTH])
+                card.setStyle(TableStyle([("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor(RED)),
+                                          ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 3),
+                                          ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+                out += [card, Spacer(1, 5)]
+            if active:
+                out += _more(min(cap, len(active)), len(active), "the email") + [_p(escape(RECIPROCAL_NOTE), "small")]
+            else:
+                out.append(_p("No bank in this report is under an active Fed, OCC or FDIC order or a recent FinCEN action.", "cell"))
+            if stale:
+                out += [Spacer(1, 3), _p("Not counted: " + "; ".join(
+                    f"{escape(m.bank.name)} ({escape(m.action.agency)}, {m.action.start:%Y}): over 10 years old with no "
+                    f"termination date, most likely closed" for m in stale), "small")]
+        if rep.capital_checked:
+            out += [Spacer(1, 10), _p("<b>LESS THAN WELL CAPITALIZED</b>", "label"), Spacer(1, 2), _p(escape(LTWC_NOTE), "small"),
+                    Spacer(1, 4)]
+            if rep.ltwc:
+                body = [[_bank(b), _p("<br/>".join(escape(x) for x in rs), "cell"), _p(_links(b), "small")]
+                        for b, rs in rep.ltwc[:cap]]
+                out += [_table([[_p("INSTITUTION", "label"), _p("BELOW THE LINE", "label"), _p("LINKS", "label")]] + body,
+                               [2.4 * inch, WIDTH - 3.8 * inch, 1.4 * inch])] + _more(min(cap, len(rep.ltwc)), len(rep.ltwc))
+            else:
+                out.append(_p("None. Every filing with capital data is at or above the well-capitalized minimums.", "cell"))
+            if rep.cblr:
+                out += [Spacer(1, 8), _p(f"<b>COMMUNITY BANK LEVERAGE RATIO BANKS UNDER 9% ({len(rep.cblr)})</b>", "label"),
+                        Spacer(1, 2), _p(escape(CBLR_NOTE), "small"), Spacer(1, 3),
+                        _p(" · ".join(f"{escape(b.name)} ({escape(b.location.split(',')[-1].strip())}) "
+                                      f"{rs[0].split('%')[0].replace('Leverage ratio ', '')}%" for b, rs in rep.cblr[:cap * 3]),
+                           "cell")] + _more(min(cap * 3, len(rep.cblr)), len(rep.cblr))
+        return out
+    return _fit(build, 8)
 
-    if rep.snapshot:
-        head = _section("Watch List: current ratios", "Every Watch List bank, every day, whether or not anything changed.")
-        for i, a in enumerate(rep.snapshot):
-            block = [_p(f"<b>{escape(a.bank.name)}</b>", "cell"),
-                     _p(f"{escape(a.bank.location)} · {escape(a.bank.assets)} · {_links(a.bank)}", "note"),
-                     Spacer(1, 2), _current_table(a.ratios), Spacer(1, 10)]
-            story.append(KeepTogether((head if i == 0 else []) + block))
 
-    if rep.tier2:
-        story += _section("Tier 2", "Slower-moving deterioration worth watching.")
-        head = [_p("INSTITUTION", "label"), _p("WHAT CHANGED", "label"), _p("LINKS", "label")]
-        body = [[_bank(a.bank), _p("<br/>".join(escape(t) for t in a.triggers), "cell"), _p(_links(a.bank), "small")] for a in rep.tier2]
-        story.append(_table([head] + body, [2.4 * inch, WIDTH - 3.85 * inch, 1.45 * inch]))
+def _page_performance(rep: Report):
+    """Page 3: one row per flagged bank, this quarter vs. last."""
+    keys = [("Leverage ratio", "LEVERAGE"), ("Return on assets", "ROA"), ("Noncurrent loans + OREO", "PROBLEM LOANS"),
+            ("Loans to deposits", "LOANS/DEP."), ("Brokered/reciprocal share", "BROK./RECIP.")]
+    perf = sorted(rep.performance, key=lambda bp: ("Mostly worsening" not in bp.read, "order" not in " ".join(bp.why)))
 
-    if rep.flagged:
-        story += _section("New filings to review", SCREEN_NOTE)
-        head = [_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("WHAT STANDS OUT", "label"), _p("LINKS", "label")]
-        body = [[_bank(r.bank), _p(escape(r.bank.period), "cell"),
-                 _p("<br/>".join(f"<font color='{RED if f.level == 'concern' else AMBER}'>•</font> {escape(f.text)}"
-                                 for f in r.flags), "cell"), _p(_links(r.bank), "small")] for r in rep.flagged]
-        story.append(_table([head] + body, [2.2 * inch, 0.65 * inch, WIDTH - 2.2 * inch - 0.65 * inch - 1.4 * inch, 1.4 * inch]))
-        if rep.flagged_total > len(rep.flagged):
-            story += [Spacer(1, 4), _p(f"Showing {len(rep.flagged)} of {rep.flagged_total}. All are in the CSV (Flags column).", "note")]
+    def cell(bp, label):
+        r = next((x for x in bp.rows if x.label == label), None)
+        if r is None or r.current is None:
+            return _p("", "num")
+        ch = "" if r.change is None else f"<br/><font size='8' color='{GREEN if r.better else RED if r.better is False else '#5b626c'}'>" \
+                                         f"{'+' if r.change >= 0 else '-'}{abs(r.change):.2f}</font>"
+        return _p(f"{r.current:.2f}%{ch}", "num")
 
-    if rep.refilings:
-        story += _section("Refilings", "Amended Call Reports where no capital ratio moved more than 0.50 points.")
-        story += _list(rep.refilings, rep.refilings_total, True)
-    if rep.new_filings:
-        story += _section("Other new filings", "First filing for the quarter; no threshold crossed and no red flags "
-                          "(amber flags are in the CSV).")
-        story += _list(rep.new_filings, rep.new_filings_total, False)
+    def build(cap):
+        from .report import PERF_NOTE
+        out = _header("How the flagged banks are performing", 3) + [_p(escape(PERF_NOTE), "note"), Spacer(1, 6)]
+        if not perf:
+            return out + [_p("No bank in this report is under an order, below well capitalized, or a CBLR bank under 9%.", "cell")]
+        head = [_p("BANK", "label"), _p("WHY", "label")] + [_p(h, "labr") for _, h in keys]
+        body = [[_p(f"<b>{escape(bp.bank.name)}</b><br/><font size='8' color='#5b626c'>{escape(bp.bank.location)} · "
+                    f"{escape(bp.bank.assets)}</font>", "cell"),
+                 _p(f"{escape('; '.join(bp.why))}<br/><font size='8' color='#5b626c'>{escape(bp.read.split(':')[0])}</font>", "small")]
+                + [cell(bp, k) for k, _ in keys] for bp in perf[:cap]]
+        w = 0.82 * inch
+        out.append(_table([head] + body, [WIDTH - 1.55 * inch - 5 * w, 1.55 * inch] + [w] * 5))
+        return out + _more(min(cap, len(perf)), len(perf), "the email") + [
+            Spacer(1, 4), _p(f"Change vs. {perf[0].prior_label} under each value. Full nine-ratio comparison per bank is in the email.",
+                             "small")]
+    return _fit(build, 30)
 
-    story += [Spacer(1, 16), _p(f"<b>Sources:</b> {_a('FFIEC Central Data Repository', CDR_HOME)} (Call Reports) · "
-                                f"{_a('FDIC BankFind', BANKFIND_HOME)} (institution profiles). The full list is in the CSV "
-                                "attached to the email.", "small")]
+
+def _page_flags(rep: Report):
+    """Page 4: new filings the screen flagged."""
+    def build(cap):
+        out = _header("New filings to review", 4) + [_p(escape(SCREEN_NOTE), "note"), Spacer(1, 6)]
+        out += _chart(rep, "flags", "Today's new filings: what was flagged", 2.3 if cap > 6 else 1.6)
+        if not rep.flagged:
+            return out + [_p("No new filing has a red flag.", "cell")]
+        body = [[_bank(r.bank), _p("<br/>".join(f"<font color='{RED if f.level == 'concern' else AMBER}'>•</font> {escape(f.text)}"
+                                                 for f in r.flags[:3]), "cell"), _p(_links(r.bank), "small")]
+                for r in rep.flagged[:cap]]
+        out.append(_table([[_p("INSTITUTION", "label"), _p("WHAT STANDS OUT (TOP 3)", "label"), _p("LINKS", "label")]] + body,
+                          [2.3 * inch, WIDTH - 3.7 * inch, 1.4 * inch]))
+        return out + _more(min(cap, rep.flagged_total), rep.flagged_total, "the attached CSV (Flags column)")
+    return _fit(build, 20)
+
+
+def _page_rest(rep: Report):
+    """Page 5: alerts and Watch List (when any), refilings, other new filings, sources."""
+    def build(cap):
+        out = _header("Alerts, refilings and other filings", 5)
+        if rep.tier1 or rep.tier2 or rep.watch_changes:
+            rows = ([[_p("<b>Tier 1</b>", "cell"), _bank(a.bank), _p("<br/>".join(escape(t) for t in a.triggers[:2]), "cell"),
+                      _p(_links(a.bank), "small")]
+                     for a in rep.tier1[:cap]]
+                    + [[_p("Tier 2", "cell"), _bank(a.bank), _p("<br/>".join(escape(t) for t in a.triggers[:2]), "cell"),
+                      _p(_links(a.bank), "small")]
+                       for a in rep.tier2[:cap]]
+                    + [[_p(f"Watch List: {escape(w.verb.lower())}", "cell"), _bank(w.bank), _p(escape(w.reason), "cell"),
+                      _p(_links(w.bank), "small")]
+                       for w in rep.watch_changes[:cap]])
+            out += [_p("<b>ALERTS</b> (full detail and ratio tables in the email)", "label"), Spacer(1, 3),
+                    _table([[_p("TYPE", "label"), _p("INSTITUTION", "label"), _p("WHAT HAPPENED", "label"),
+                             _p("LINKS", "label")]] + rows,
+                           [1.2 * inch, 2.2 * inch, WIDTH - 4.8 * inch, 1.4 * inch]), Spacer(1, 10)]
+        if rep.refilings:
+            body = [[_bank(r.bank), _p(escape(r.bank.period), "cell"), _p(escape(r.detail), "cell"), _p(_links(r.bank), "small")]
+                    for r in rep.refilings[:cap]]
+            out += [_p(f"<b>REFILINGS ({rep.refilings_total})</b>, largest first", "label"), Spacer(1, 3),
+                    _table([[_p("INSTITUTION", "label"), _p("PERIOD", "label"), _p("WHAT CHANGED", "label"), _p("LINKS", "label")]] + body,
+                           [2.3 * inch, 0.7 * inch, WIDTH - 4.4 * inch, 1.4 * inch])]
+            out += _more(min(cap, rep.refilings_total), rep.refilings_total) + [Spacer(1, 10)]
+        if rep.new_filings_total:
+            names = ", ".join(f"{escape(r.bank.name)} ({escape(r.bank.assets)})" for r in rep.new_filings[:cap])
+            out += [_p(f"<b>OTHER NEW FILINGS ({rep.new_filings_total})</b>, no red flags; largest first", "label"), Spacer(1, 3),
+                    _p(names, "cell")] + _more(min(cap, rep.new_filings_total), rep.new_filings_total) + [Spacer(1, 10)]
+        out += [_p(f"<b>Sources:</b> {_a('FFIEC Central Data Repository', CDR_HOME)} (Call Reports) · "
+                   f"{_a('FDIC BankFind', BANKFIND_HOME)} (institution profiles) · Fed, OCC and FinCEN enforcement pages · "
+                   "FDIC Enforcement Decisions and Orders. Every bank and filing is in the attached CSV.", "small")]
+        return out
+    return _fit(build, 15)
+
+
+def render_pdf(rep: Report) -> bytes:
+    """Always exactly five pages: each page is fitted to one page (long lists are cut, with a count,
+    and are complete in the email and the CSV)."""
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=TOP,
+                            bottomMargin=BOTTOM, title=f"{NAME} {rep.run_date:%Y-%m-%d}", author=NAME)
+    pages = [_fit(lambda _cap: _page_summary(rep), 0), _page_risk(rep), _page_performance(rep), _page_flags(rep),
+             _page_rest(rep)]
+    story: list = []
+    for i, page in enumerate(pages):
+        story += page + ([PageBreak()] if i < len(pages) - 1 else [])
 
     def chrome(canvas, doc_):
         canvas.saveState()
@@ -304,11 +444,11 @@ def render_pdf(rep: Report) -> bytes:
         canvas.drawString(MARGIN, PAGE_H - 0.42 * inch, NAME)
         canvas.setFont("Helvetica", 10)
         canvas.setFillColor(colors.HexColor("#c8cdd3"))
-        canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.edition or f'{rep.run_date:%A, %B %-d, %Y}'}  ·  {rep.status}")
+        canvas.drawString(MARGIN, PAGE_H - 0.6 * inch, f"{rep.edition or f'{rep.run_date:%A, %B %-d, %Y}'}  ·  {rep.status}"[:120])
         canvas.setFillColor(MUTED)
         canvas.setFont("Helvetica", 8.5)
         canvas.drawString(MARGIN, 0.35 * inch, f"{NAME} · {rep.run_date:%B %-d, %Y}")
-        canvas.drawRightString(PAGE_W - MARGIN, 0.35 * inch, f"Page {doc_.page}")
+        canvas.drawRightString(PAGE_W - MARGIN, 0.35 * inch, f"{doc_.page} / {PAGES}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=chrome, onLaterPages=chrome)

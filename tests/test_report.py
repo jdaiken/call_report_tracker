@@ -62,7 +62,7 @@ def test_quiet_day_summary_and_subject(monkeypatch):
     assert rep.subject.endswith("3 refilings, 2 new filings")
     assert rep.summary.startswith("No alerts today")
     assert "Tier 1 alerts" not in html.split("WHAT")[1]          # empty sections are left out
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 1
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5      # the PDF is always five pages
 
 
 def test_claude_summary_is_grounded(monkeypatch):
@@ -296,3 +296,33 @@ def test_enforcement_discussion_and_stale_orders(monkeypatch):
     assert by == "rules" and note.startswith("First Prairie Bank has been under an FDIC cease and desist / consent orders since")
     assert "Not counted: Community Bank 2" in html and "most likely closed" in html
     assert "special cap" in html and "Banks under enforcement orders" in html
+
+
+def _pages(pdf: bytes) -> int:
+    return len(re.findall(rb"/Type /Page[^s]", pdf))
+
+
+def test_pdf_is_always_five_pages(monkeypatch):
+    from datetime import timedelta
+    from ffiec_monitor import analytics, enforcement
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # quiet day
+    ev = sample_events(0, 0)
+    ev.update(watch_list_changes=[], tier1_events=[], watch_list_snapshot=[], tier2_events=[])
+    assert _pages(email_report.compose(**ev)[2]) == 5
+    # very busy day: alerts, 60 refilings, 300 new filings (many flagged), orders, capital problems
+    weak = {"tier1_leverage_ratio": 4.6, "total_rbc_ratio": 9.0, "roaa": -0.4, "net_loans_leases_to_deposits": 118,
+            "brokered_reciprocal_deposits_to_total_deposits": 30, "core_deposits_to_total_deposits": 55}
+    cblr = {"tier1_leverage_ratio": 8.4}
+    ev = sample_events(60, 0)
+    ev["new_filing_events"] = [email_report.NewFilingEvent(_meta(500 + i, 90_000 + i * 1000, f"Bank {i}"), Q3,
+                                                            weak if i % 3 == 0 else cblr if i % 3 == 1 else {"tier1_leverage_ratio": 11})
+                               for i in range(300)]
+    acts = [enforcement.Action("FDIC", f"Bank {i}", "IL", "Cease and Desist / Consent Orders",
+                               date.today() - timedelta(days=200), "u", "Consent Order", str(9500 + i)) for i in range(0, 60, 3)]
+    a = analytics.Analytics(run_date=date(2026, 10, 26), period_end=Q3, filed=1500, universe=4343, deadline=date(2026, 10, 30))
+    a.days = [(date(2026, 10, 6) + timedelta(days=i), 100 + i, 5) for i in range(21)]
+    rep, html, pdf = email_report.compose(**ev, analytics=a, enforcement_sources=enforcement.Sources(actions=acts, loaded={"FDIC": 20}),
+                                          prior_lookup=lambda r, p: {"tier1_leverage_ratio": 9.0, "roaa": 0.5})
+    assert rep.counts["enforcement"] == 20 and rep.ltwc and rep.cblr and rep.flagged_total > 50
+    assert _pages(pdf) == 5
