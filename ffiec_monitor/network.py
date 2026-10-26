@@ -152,8 +152,10 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                 net.pull_failed += 1
                 continue
             net.pulled += 1
-            if on_progress and net.pulled % 250 == 0:
-                on_progress(net.pulled)
+            if net.pulled % 100 == 0:
+                conn.execute("CHECKPOINT")      # flush to the database file, so a stopped run keeps its progress
+                if on_progress:
+                    on_progress(net.pulled)
             merged = {**(json.loads(raw) if raw else {}), **{k: v for k, v in r.items() if v is not None}}
             conn.execute("UPDATE call_report_snapshots SET ratios = ? WHERE id_rssd = ? AND period_end = ?",
                          [json.dumps(merged), rssd, period_end])
