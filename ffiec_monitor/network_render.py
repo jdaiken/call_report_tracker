@@ -9,6 +9,7 @@ from .network import (DISTRESS_RULES, GROUP_NOTES, RISK_MEASURES, SEGMENTS, dist
                       short, takeaways)
 
 PAGES = 7
+OVERFLOW: list = []      # set when a page had to drop content to fit (shown in the run notice)
 RISK_NOTE = ("Reciprocal users with **two or more** of: over or near the cap, likely on (or over) the special cap, within "
              "0.5 pts of a capital minimum, a widening gap to the cap, 50%+ uninsured. Bar = reciprocal deposits at stake; "
              "the issues are listed beside it.")
@@ -203,7 +204,7 @@ def render_pdf(net: Network) -> bytes:
         if cid not in net.images:
             return []
         im = Image(io.BytesIO(net.images[cid]))
-        w = WIDTH
+        w = WIDTH - 12                                   # the frame's usable width
         h = w * im.imageHeight / im.imageWidth
         if h > max_h * inch:
             h = max_h * inch
@@ -421,8 +422,10 @@ def render_pdf(net: Network) -> bytes:
             out += [p(md(t, *BOLD_NAVY), "body"), Spacer(1, 8)]
         return out
 
+    FRAME_W = WIDTH - 12                                     # platypus frames pad 6pt each side
+
     def height(fl):
-        return sum(f.wrap(WIDTH, PH)[1] + f.getSpaceBefore() + f.getSpaceAfter() for f in fl)
+        return sum(f.wrap(FRAME_W, PH)[1] + f.getSpaceBefore() + f.getSpaceAfter() for f in fl) + 10   # 10pt margin
 
     def fit(build, start):
         for cap in range(start, -1, -1):
@@ -440,8 +443,12 @@ def render_pdf(net: Network) -> bytes:
             for f in ims:
                 f.drawHeight *= k
                 f.drawWidth *= k
+        while height(pg) > FRAME_H and len(pg) > 4:           # last resort: drop from the bottom, never spill a page
+            pg = pg[:-1]
+            OVERFLOW.append(len(pg))
         return pg
 
+    OVERFLOW.clear()
     pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 60)]
     story = []
     for i, pg in enumerate(pages):
