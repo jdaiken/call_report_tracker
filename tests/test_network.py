@@ -45,10 +45,11 @@ def test_network_report(monkeypatch):
                           prior_lookup=lambda rssd, p: _r(10_000))
     assert net.missing == 1 and len(net.banks) == 5
     s = net.stats()
-    assert (s["users"], s["near_cap"], s["over_cap"], s["special"]) == (4, 1, 1, 2)
+    assert (s["users"], s["near_cap"], s["over_cap"], s["special"]) == (4, 1, 1, 1)   # only the order bank
     assert [b.bank.name for b in net.near_cap()] == ["Bank 2", "Bank 1"]
     assert [b.bank.name for b in net.prospects()] == ["Bank 4"]
-    assert {b.bank.name for b in net.special()} == {"Bank 3", "Bank 5"}
+    assert {b.bank.name for b in net.special()} == {"Bank 5"}
+    assert next(b for b in net.banks if b.bank.name == "Bank 3").below_wc
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
     assert net.summary_by == "rules" and "in this report" in net.summary
@@ -66,18 +67,23 @@ def test_network_report(monkeypatch):
 def test_special_cap_estimate_and_closest(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     conn = db.connect(":memory:")
-    _add(conn, 1, {**_r(5_000), "tier1_leverage_ratio": 4.5})                      # below well capitalized
+    _add(conn, 1, {**_r(5_000), "tier1_leverage_ratio": 4.5})                      # below WC, no order: no special cap
     _add(conn, 2, {**_r(8_000), "tier1_leverage_ratio": 8.6, "total_rbc_ratio": None})   # CBLR bank under 9%
     _add(conn, 3, {**_r(8_000), "total_rbc_ratio": 10.4})                           # 0.4 pts above 10%
-    _add(conn, 4, _r(8_000))
-    net = network.collect(conn, None, date(2026, 10, 26), prior_lookup=lambda rssd, p: _r(3_000))
+    _add(conn, 4, _r(9_000))                                                         # under an order dated May 2026
+    src = enforcement.Sources(actions=[enforcement.Action("FDIC", "Bank 4", "IL", "Consent Order", date(2026, 5, 6),
+                                                          "u", "", "9004")], loaded={"FDIC": 1})
+    hist = {date(2026, 3, 31): 4_000, date(2025, 12, 31): 3_000, date(2025, 9, 30): 2_000, date(2025, 6, 30): 1_000}
+    net = network.collect(conn, None, date(2026, 10, 26), enforcement_sources=src,
+                          prior_lookup=lambda rssd, p: _r(hist.get(p, 500)))
+    b1 = next(b for b in net.banks if b.bank.name == "Bank 1")
+    assert b1.below_wc and not b1.special_cap and b1.special_cap_est is None
     spec = net.special()[0]
-    assert spec.bank.name == "Bank 1" and spec.special_cap_est == 3_000 and spec.over_special == 2_000 and spec.est_basis == "4Q avg"
+    assert spec.bank.name == "Bank 4" and spec.special_cap_est == 2_500 and spec.over_special == 6_500
+    assert "Q2 2025 to Q1 2026" in spec.special_basis and "May 2026" in spec.special_basis
     close = net.closest_to_special()
-    assert [b.bank.name for b in close][:2] == ["Bank 2", "Bank 3"]
-    assert round(close[0].cushion, 2) == -0.4 and close[0].binding == "CBLR leverage (9%)"
-    assert round(close[1].cushion, 2) == 0.4 and close[1].binding.startswith("total risk-based")
-    assert [b.bank.name for b in net.top_exposure(2)] == ["Bank 2", "Bank 3"] or net.top_exposure(1)[0].reciprocal == 8_000
+    assert [b.bank.name for b in close][:3] == ["Bank 1", "Bank 2", "Bank 3"]   # below WC without an order: closest
+    assert round(close[1].cushion, 2) == -0.4 and close[1].binding == "CBLR leverage (9%)"
 
 
 def test_large_banks_left_out(monkeypatch):

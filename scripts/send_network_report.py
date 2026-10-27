@@ -60,6 +60,22 @@ def main(max_pulls: int) -> None:
     print(tinfo)
     if gha:
         print(f"::notice title=Treasury list::{tinfo[:3900]}")
+    for name in [x.strip() for x in os.environ.get("INSPECT", "").split(";") if x.strip()]:
+        found = [b for b in net.banks if name.upper() in b.bank.name.upper()]
+        if found:
+            msg = "; ".join(f"{b.bank.name} ({b.bank.location}, RSSD {b.bank.rssd}, cert {b.bank.cert}) period {b.period} "
+                            f"orders {len(b.orders)} in report for: {', '.join(net.reasons(b)) or 'nothing'}" for b in found)
+        else:
+            rows = conn.execute("SELECT m.id_rssd, m.name, m.city, m.state, m.fdic_cert, m.total_assets, "
+                                "(SELECT string_agg(CAST(period_end AS VARCHAR), ',') FROM call_report_snapshots s "
+                                "WHERE s.id_rssd = m.id_rssd) FROM institution_meta m WHERE upper(m.name) LIKE ?",
+                                [f"%{name.upper()}%"]).fetchall()
+            msg = ("not in the report's bank list; stored: " + "; ".join(
+                f"{r[1]} ({r[2]}, {r[3]}, RSSD {r[0]}, cert {r[4]}, assets {r[5]}) snapshots [{r[6] or 'none'}]" for r in rows)
+                   if rows else "not in the report and no stored Call Report or institution record at all")
+        print(f"INSPECT {name}: {msg}")
+        if gha:
+            print(f"::notice title=Inspect {name}::{msg[:3500]}")
     if os.environ.get("DRY_RUN", "").lower() == "true":
         print("dry run: no email sent")
         return

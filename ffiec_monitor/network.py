@@ -81,6 +81,8 @@ class NetBank:
     special_basis: str = ""                                # plain-English note on which quarters, and why
     orders: list = field(default_factory=list)             # active enforcement actions matched to this bank
     treasury: str = ""                                     # the treasury desk list entry this bank matched, if any
+    below_wc: bool = False                                 # below a well-capitalized minimum this quarter (a capital flag,
+                                                           # not a special cap: only banks under order get one)
 
     @property
     def leverage(self) -> Optional[float]:
@@ -95,6 +97,8 @@ class NetBank:
         '''Estimated special cap: average quarter-end reciprocal deposits over the four quarters before this one
         (what the bank would be held to if it lost well-capitalized/well-rated status now). With fewer than two of
         those on hand, the quarters available including this one; None if under two in all.'''
+        if not self.special_cap:                 # only banks under an active order are held to a special cap
+            return None
         if self.special_hist:
             vals = [v for _, v in self.special_hist if v is not None]
             return sum(vals) / len(vals) if vals else None
@@ -318,8 +322,8 @@ def risk_levels(b: "NetBank") -> dict[str, tuple[int, str]]:
         out["Special cap"] = (0, "no")
     c = b.cushion
     if c is None or b.special_cap:
-        out["Capital cushion"] = (3 if b.special_cap and "below well capitalized" in b.special_cap else 0,
-                                  "below WC" if b.special_cap and "below well capitalized" in b.special_cap else
+        out["Capital cushion"] = (3 if b.below_wc else 0,
+                                  "below WC" if b.below_wc else
                                   ("n/a" if c is None else f"{c:+.1f} pts"))
     else:
         out["Capital cushion"] = ((3 if c < 0 else 2 if c < 0.5 else 1 if c < 1.0 else 0), f"{c:+.1f} pts")
@@ -414,7 +418,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         nb = NetBank(b, period_end, rec, cap, (rec / cap * 100) if (rec is not None and cap) else None, unins,
                      (unins / deps * 100) if (unins is not None and deps) else None, deps, size)
         if capital_status(r):
-            nb.special_cap.append("below well capitalized")
+            nb.below_wc = True
         nb.state = b.location.rsplit(",", 1)[-1].strip()
         nb.treasury = tname or ""
         nb.capital = {k: _num(r, k) for k in ("tier1_leverage_ratio", "tier1_rbc_ratio", "total_rbc_ratio", "cet1_ratio")}
@@ -442,7 +446,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         for b in net.special() + net.focus():
             focus[id(b)] = b
         for nb in focus.values():
-            nb.history = [(nb.period, nb.reciprocal, nb.cap, "below well capitalized" in nb.special_cap)]
+            nb.history = [(nb.period, nb.reciprocal, nb.cap, nb.below_wc)]
             q = nb.period
             for i in range(QUARTERS - 1):
                 q = prior_quarter_end(q)
@@ -490,20 +494,8 @@ def special_quarters(nb: "NetBank", lookup) -> None:
     capitalized in the Call Reports on hand."""
     from .performance import prior_quarter_end
     trig, why = None, ""
-    if "below well capitalized" in nb.special_cap:
-        run = nb.history[0][0]
-        for h in nb.history:
-            if len(h) > 3 and h[3]:
-                run = h[0]
-            elif len(h) > 3 and h[3] is False:
-                break
-        trig, why = run, f"first below well capitalized in {_quarter(run)}"
-        if run == nb.history[-1][0] and len(nb.history) >= 5:
-            why = f"below well capitalized since at least {_quarter(run)}"
     if nb.order_date:
-        oq = _qend(nb.order_date)
-        if trig is None or oq < trig:
-            trig, why = oq, f"enforcement order dated {nb.order_date:%b %Y}"
+        trig, why = _qend(nb.order_date), f"order dated {nb.order_date:%b %Y}"
     if trig is None:
         return
     have = {h[0]: h[1] for h in nb.history}
@@ -553,7 +545,7 @@ DISTRESS_RULES = [
 
 def distress_flags(b: "NetBank") -> dict[str, str]:
     f = {}
-    if "below well capitalized" in b.special_cap:
+    if b.below_wc:
         f["Capital"] = "below well capitalized"
     elif b.cushion is not None and b.cushion < 0.5:
         f["Capital"] = f"{b.cushion:+.2f} pts"
@@ -668,7 +660,7 @@ def facts(net: Network) -> str:
         out.append(f"  {b.bank.name}: noncurrent {_pct(b.noncurrent)}; leverage {_pct(b.leverage)}; reciprocal {_fmt_money(b.reciprocal)}"
                    + (f"; also {', '.join(r for r in net.reasons(b) if r != 'weak asset quality')}" if len(net.reasons(b)) > 1 else ""))
     over = [b for b in fo if b.special_cap and (b.over_special or 0) > 0]
-    out.append(f"ABOVE ESTIMATED SPECIAL CAP: {len(over)} banks: " + "; ".join(
+    out.append(f"ORDER BANKS ABOVE OUR SPECIAL-CAP ESTIMATE (an estimate, not a finding): {len(over)} banks: " + "; ".join(
         f"{b.bank.name} {_fmt_money(b.over_special)} above" for b in sorted(over, key=lambda b: -(b.over_special or 0))[:5]))
     multi = net.treasury_multi()
     out.append(f"TREASURY DESK LIST: {net.treasury_loaded} names; {net.treasury_loaded - len(net.treasury_unmatched)} found in "
@@ -737,7 +729,7 @@ def rule_summary(net: Network) -> str:
     fo, uo, lc, wa = net.focus(), net.under_order(), net.lowest_capital(), net.weakest_assets()
     over = [b for b in fo if b.special_cap and (b.over_special or 0) > 0]
     parts = [f"**{len(fo)} banks** are in this report, holding {_fmt_money(sum(b.reciprocal or 0 for b in fo))} of reciprocal deposits."]
-    parts.append(f"**{len(uo)} {'is' if len(uo) == 1 else 'are'} under an active enforcement order**" + (f"; {len(over)} hold more than their estimated special cap." if over else "."))
+    parts.append(f"**{len(uo)} {'is' if len(uo) == 1 else 'are'} under an active enforcement order**" + (f"; {len(over)} hold more than our special-cap estimate." if over else "."))
     if lc:
         parts.append(f"Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}% Tier 1 leverage.")
     if wa:
@@ -776,7 +768,7 @@ def takeaways(net: Network) -> list[str]:
                    + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in uo[:3] if b.reciprocal) + ".")
     over = sorted([b for b in fo if b.special_cap and (b.over_special or 0) > 0], key=lambda b: -(b.over_special or 0))
     if over:
-        out.append(f"**{len(over)} {'holds' if len(over) == 1 else 'hold'} more than their estimated special cap**; most above: {short(over[0].bank.name)} "
+        out.append(f"**{len(over)} {'holds' if len(over) == 1 else 'hold'} more than our special-cap estimate**; most above: {short(over[0].bank.name)} "
                    f"(+{_fmt_money(over[0].over_special)}).")
     if lc:
         below = sum(1 for b in lc if (b.leverage or 99) < 5)

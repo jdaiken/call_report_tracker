@@ -59,7 +59,7 @@ def _tiles(net: Network) -> list[tuple[str, str]]:
     fo = net.focus()
     return [("BANKS IN REPORT", f"{len(fo):,}"), ("RECIPROCAL HELD", _fmt_money(sum(b.reciprocal or 0 for b in fo))),
             ("UNDER ORDER", f"{len(net.under_order()):,}"), ("LOWEST CAPITAL", f"{len(net.lowest_capital())}"),
-            ("WEAK ASSETS", f"{len(net.weakest_assets())}"), ("OVER SPECIAL CAP", f"{sum(1 for b in fo if b.special_cap and (b.over_special or 0) > 0)}")]
+            ("WEAK ASSETS", f"{len(net.weakest_assets())}"), ("ABOVE EST. SPECIAL CAP", f"{sum(1 for b in fo if b.special_cap and (b.over_special or 0) > 0)}")]
 
 
 def md(text: str, bold_open: str = "<b>", bold_close: str = "</b>") -> str:
@@ -128,7 +128,7 @@ def subject(net: Network) -> str:
     fo = net.focus()
     over = sum(1 for b in fo if b.special_cap and (b.over_special or 0) > 0)
     return (f"{NAME} · {net.run_date:%a %b %-d} · {len(fo)} banks · {len(net.under_order())} under order · "
-            f"{over} over special cap · {_fmt_money(sum(b.reciprocal or 0 for b in fo))} reciprocal")
+            f"{over} above est. special cap · {_fmt_money(sum(b.reciprocal or 0 for b in fo))} reciprocal")
 
 
 # ------------------------------------------------------------------ PDF (always seven pages)
@@ -158,7 +158,7 @@ def headlines(net: Network) -> list[str]:
         (f"{net.treasury_loaded - len(net.treasury_unmatched)} of the treasury desk's {net.treasury_loaded} banks found in "
          f"the Call Reports" if net.treasury_loaded
          else "The treasury desk's list hasn't been loaded yet"),
-        f"{len(over)} of these banks {'holds' if len(over) == 1 else 'hold'} more than their estimated special cap",
+        f"{len(over)} order {'bank holds' if len(over) == 1 else 'banks hold'} more than our special-cap estimate",
         "How the measures are built",
     ]
 
@@ -244,7 +244,7 @@ def render_pdf(net: Network) -> bytes:
     USED = ("% OF CAP", 0.8, lambda nb: num(_pct(nb.used)))
     YAGO = ("A YEAR AGO", 0.85, lambda nb: num(_pct(nb.year_ago_used()) if nb.year_ago_used() is not None else "—"))
     UNI = ("UNINSURED", 0.8, lambda nb: num(_pct(nb.uninsured_share)))
-    EST = ("EST. SPECIAL CAP", 1.1, lambda nb: num(_fmt_money(nb.special_cap_est)))
+    EST = ("EST. SPECIAL CAP", 1.1, lambda nb: num(_fmt_money(nb.special_cap_est) if nb.special_cap else "—"))
     ABOVE = ("ABOVE IT", 0.8, lambda nb: num(_over(nb) or "—"))
 
     def money_delta(v):
@@ -337,9 +337,9 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(tl[:cap], [BANK, LEV, NCL, ROA, REC, USED, EST])] + more(min(cap, len(tl)), len(tl)) if tl else none())
 
     def p6(cap):
-        out = section(6) + lead("Every bank in this report that holds reciprocal deposits. Navy tick = estimated special cap "
-                                "for banks likely on it; **red = over the estimate**, so further placements would count as "
-                                "brokered.") + chart("exposure", 4.4)
+        out = section(6) + lead("Every bank in this report that holds reciprocal deposits. **Only banks under an active order "
+                                "get a special-cap estimate** (navy tick); red = balance above that estimate, which is a "
+                                "question to ask, not a finding.") + chart("exposure", 4.4)
         withrec = [b for b in fo if (b.reciprocal or 0) > 0]
         return out + ([tbl(withrec[:cap], [BANK, WHY, REC, USED, EST, ABOVE])] + more(min(cap, len(withrec)), len(withrec))
                       if withrec else none("None of these banks holds reciprocal deposits."))
@@ -353,11 +353,12 @@ def render_pdf(net: Network) -> bytes:
                   "composite exam rating of 1 or 2) may take reciprocal deposits as non-brokered only up to the average of its "
                   "quarter-end reciprocal deposits over the **four quarters before the quarter it slipped**. Capital comes "
                   "from the Call Report; exam ratings are confidential.",
-                  "**Special cap: how we estimate it.** We date the slip as the earlier of (1) the quarter of the bank's "
-                  "earliest active FDIC, Fed, OCC or FinCEN order and (2) the first quarter of its current run below well "
-                  "capitalized in the Call Reports on hand. We then **average its reported reciprocal deposits (RC-E) for the "
-                  "four quarter-ends before that quarter**. The table on page 4 shows the quarters used. A bank downgraded "
-                  "privately (rating only, no public order) can't be seen in public data.",
+                  "**Special cap: who gets one here.** Only banks under an active FDIC, Fed, OCC or FinCEN order. Banks "
+                  "below well capitalized without an order are flagged on capital but get no special-cap estimate.",
+                  "**Special cap: how we estimate it.** We take the quarter of the bank's earliest active order as the "
+                  "quarter it slipped and **average its reported reciprocal deposits (RC-E) for the four quarter-ends before "
+                  "it**. The real downgrade usually comes months before the order, so this is an estimate: a balance above it "
+                  "is worth a question, not a finding. A bank downgraded privately (no public order) can't be seen.",
                   "**Who is in this report.** Every bank under an active FDIC, Fed, OCC or FinCEN order; the 25 Q3 2026 "
                   "filers with the lowest Tier 1 leverage ratio; the 25 with the highest noncurrent loans plus foreclosed "
                   "real estate (both rankings skip banks under $50 million); and the treasury desk's list.",
