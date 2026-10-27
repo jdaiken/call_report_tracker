@@ -4,11 +4,14 @@ from __future__ import annotations
 import io
 from xml.sax.saxutils import escape
 
-from .network import (EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
+from .network import (RISK_MEASURES, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
                       short, takeaways)
 
 PAGES = 10
-EMAIL_IMAGES = ("map", "trend_cap", "special", "trend_special")
+EMAIL_IMAGES = ("risk", "map", "trend_cap", "special", "trend_special")
+RISK_NOTE = ("Every reciprocal user scored on five measures, 0 (fine) to 3 (high) each: cap used (60/80/100%), likely special "
+             "cap (3; over its estimate shown), capital cushion above well capitalized (under 1/0.5/0 pts), uninsured share "
+             "(40/50/60%), and the change over the past year in the gap to the cap or the special cap.")
 CAP_NOTE = ("Reciprocal deposits are excepted from brokered only up to the lesser of $5 billion or 20% of total liabilities "
             "(12 CFR 337.6(e)). Banks not well capitalized and well rated are held to a special cap, their four-quarter "
             "average; ratings aren't public, so banks below well capitalized or under an enforcement order are shown as "
@@ -78,6 +81,10 @@ def render_html(net: Network) -> str:
         return (f'<tr><td style="padding:22px 0 6px;border-bottom:2px solid {INK}"><div style="font-size:18px;'
                 f'font-weight:700;color:{INK}">{_e(title)}</div>{n}</td></tr>')
 
+    if "risk" in net.images:
+        b += h("Highest-risk banks this week", RISK_NOTE)
+        b += (f'<tr><td style="padding:8px 0 0"><img src="cid:net_risk" width="712" alt="Highest-risk banks" '
+              f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
     if "map" in net.images:
         top = net.top_exposure()
         b += h(f"Exposure map: the {len(top)} largest reciprocal holders",
@@ -232,15 +239,18 @@ def render_pdf(net: Network) -> bytes:
     for t in takeaways(net):
         p1 += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
     p1 += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
-           P._p("2 Cap use by segment · 3 Exposure map · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
-                "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 Uninsured deposits and notes",
+           P._p("2 Highest-risk banks · 3 Exposure map · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
+                "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 All banks by size, and notes",
                 "note"),
            Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
 
-    # 2. Cap use and segments
-    p2 = (header("How banks use the reciprocal cap", 2) + chart("usage", "All banks: share of the cap used", 3.1)
-          + chart("size", "By segment: share of banks in each band", 3.9)
-          + note("Most users sit well under the cap. The red and amber bands are where new placements are constrained."))
+    # 2. Highest-risk banks
+    rk = net.risk()
+
+    def p2(cap):
+        out = header("Highest-risk banks this week", 2) + note(RISK_NOTE)
+        out += chart("risk", "", 7.6)
+        return out + ([] if rk else none()) + note("Locations, links and every bank's measures are in the Banks sheet of the attached spreadsheet.")
 
     # 3. Exposure map with numbered key
     top = net.top_exposure()
@@ -312,13 +322,10 @@ def render_pdf(net: Network) -> bytes:
     pro = net.prospects()
 
     def p10(cap):
-        out = header("Uninsured deposits and notes", 10)
-        out += chart("uninsured", "Uninsured share of deposits, by segment", 2.5)
-        out += [P._p(f"<b>HIGH UNINSURED, ROOM UNDER THE CAP ({len(pro)})</b>: uninsured {HIGH_UNINSURED:.0f}%+ of deposits, "
-                     "under half the cap used, not on the special cap.", "small"), Spacer(1, 3)]
-        unin = ("UNINSURED $", 1.0, lambda nb: num(_fmt_money(nb.uninsured)))
-        out += ([tbl(pro[:cap], [BANK, unin, UNI, USED, REC])] + more(min(cap, len(pro)), len(pro)) if pro else none())
-        out += [Spacer(1, 8), P._p("<b>NOTES</b>", "label"), Spacer(1, 3)]
+        out = header("Across all banks, and notes", 10)
+        out += chart("size", "Share of the reciprocal cap used, by bank size", 2.9)
+        out += chart("uninsured", "Uninsured share of deposits, by bank size", 2.4)
+        out += [P._p("<b>NOTES</b>", "label"), Spacer(1, 3)]
         for t in (CAP_NOTE, EXCLUDE_NOTE,
                   "Estimated special cap: average of the four quarter-end reciprocal balances before the current quarter "
                   "(fewer when a bank hasn't filed that long; 'nQ avg' shows how many). Shown when at least two quarters are on hand.",
@@ -373,8 +380,8 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(sp[:cap], [BANK] + qcols(rec_at) + [EST, dirn])] + more(min(cap, len(sp)), len(sp)) if sp else
                       none("Not enough history on hand yet."))
 
-    pages = [P._fit(lambda _c: p1, 0), P._fit(lambda _c: p2, 0), P._fit(p3, TOP_N), P._fit(p4, TOP_N), P._fit(p5, 12),
-             P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 12), P._fit(p9, 12), P._fit(p10, 10)]
+    pages = [P._fit(lambda _c: p1, 0), P._fit(p2, 8), P._fit(p3, TOP_N), P._fit(p4, TOP_N), P._fit(p5, 12),
+             P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 12), P._fit(p9, 12), P._fit(p10, 0)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
@@ -417,7 +424,7 @@ def build_workbook(net: Network) -> bytes:
     heads = ["Institution", "City", "State", "RSSD", "FDIC cert", "Period", "Total assets", "Total deposits",
              "Reciprocal deposits", "Reciprocal cap", "% of cap used", "Headroom", "Uninsured deposits", "Uninsured share",
              "Likely special cap", "Last quarter % of cap", "Call Report", "UBPR", "FDIC profile",
-             "Capital cushion (pts)", "Nearest line", "Est. special cap (4Q avg)", "Above est. special cap"]
+             "Capital cushion (pts)", "Nearest line", "Est. special cap (4Q avg)", "Above est. special cap", "Risk score (0-15)"]
     hr = 4
     _header_row(bs, hr, heads)
     r = hr
@@ -447,6 +454,7 @@ def build_workbook(net: Network) -> bytes:
         bs.cell(row=r, column=22).number_format = "#,##0"
         bs.cell(row=r, column=23, value=f'=IF(AND(ISNUMBER(V{r}),ISNUMBER(I{r})),I{r}-V{r},"")').number_format = "#,##0;(#,##0);-"
         bs.cell(row=r, column=23).font = _font()
+        bs.cell(row=r, column=24, value=risk_score(nb)[0] if (nb.reciprocal or 0) > 0 else None).font = _font(bold=True)
     last = max(r, hr + 1)
     bs.conditional_formatting.add(f"K{hr + 1}:K{last}", CellIsRule(operator="greaterThan", formula=["1"], fill=RED_FILL))
     bs.conditional_formatting.add(f"K{hr + 1}:K{last}", CellIsRule(operator="between", formula=[str(NEAR_CAP / 100), "1"], fill=AMBER_FILL))
@@ -460,7 +468,7 @@ def build_workbook(net: Network) -> bytes:
         bs.add_table(t)
     bs.freeze_panes = f"B{hr + 1}"
     _widths(bs, {"A": 34, "B": 16, "C": 6, "D": 10, "E": 9, "F": 9, "G": 13, "H": 13, "I": 13, "J": 13, "K": 10, "L": 13,
-                 "M": 13, "N": 10, "O": 26, "P": 11, "Q": 12, "R": 8, "S": 12, "T": 11, "U": 22, "V": 15, "W": 15})
+                 "M": 13, "N": 10, "O": 26, "P": 11, "Q": 12, "R": 8, "S": 12, "T": 11, "U": 22, "V": 15, "W": 15, "X": 12})
 
     ss = wb.create_sheet("Summary", 0)
     _title(ss, f"{NAME}: summary", "Live formulas over the Banks sheet. Yellow cells are editable thresholds.")

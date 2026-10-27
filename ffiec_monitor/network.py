@@ -171,6 +171,11 @@ class Network:
         """Banks at or over 80% of the cap with at least two quarters on hand, biggest widening of the gap first."""
         return sorted([b for b in self.near_cap() if b.gap_change() is not None], key=lambda b: -b.gap_change())
 
+    def risk(self, n: int = 15) -> list[NetBank]:
+        """Highest-risk reciprocal users: most points across the five measures, then largest reciprocal balance."""
+        scored = [b for b in self.users if risk_score(b)[0] > 0]
+        return sorted(scored, key=lambda b: (-risk_score(b)[0], -(b.reciprocal or 0)))[:n]
+
     def closest_to_special(self) -> list[NetBank]:
         '''Reciprocal users not yet on the special cap, thinnest capital cushion first.'''
         return sorted([b for b in self.users if not b.special_cap and b.cushion is not None], key=lambda b: b.cushion)
@@ -202,6 +207,45 @@ def due(run_date: date) -> bool:
     from .analytics import latest_quarter_end
     q = latest_quarter_end(run_date)
     return 21 <= (run_date - q).days <= 63 or run_date.day <= 7
+
+
+# ------------------------------------------------------------------ risk score
+# Five measures, each 0 (fine) to 3 (worst); the cell colors on the risk page come from the same levels.
+RISK_MEASURES = ("Cap used", "Special cap", "Capital cushion", "Uninsured", "1-yr trend")
+
+
+def risk_levels(b: "NetBank") -> dict[str, tuple[int, str]]:
+    """{measure: (level 0-3, short text)}."""
+    out = {}
+    u = b.used
+    out["Cap used"] = ((3 if u > 100 else 2 if u >= NEAR_CAP else 1 if u >= 60 else 0), f"{u:.0f}%") if u is not None else (0, "n/a")
+    if b.special_cap:
+        over = b.over_special
+        out["Special cap"] = (3, "over est." if over and over > 0 else "on it")
+    else:
+        out["Special cap"] = (0, "no")
+    c = b.cushion
+    if c is None or b.special_cap:
+        out["Capital cushion"] = (3 if b.special_cap and "below well capitalized" in b.special_cap else 0,
+                                  "below WC" if b.special_cap and "below well capitalized" in b.special_cap else
+                                  ("n/a" if c is None else f"{c:+.1f} pts"))
+    else:
+        out["Capital cushion"] = ((3 if c < 0 else 2 if c < 0.5 else 1 if c < 1.0 else 0), f"{c:+.1f} pts")
+    sh = b.uninsured_share
+    out["Uninsured"] = ((3 if sh >= 60 else 2 if sh >= 50 else 1 if sh >= HIGH_UNINSURED else 0), f"{sh:.0f}%") if sh is not None else (0, "n/a")
+    g = b.special_gap_change() if b.special_cap else (b.gap_change() if (u or 0) >= NEAR_CAP else None)
+    if g is None:
+        out["1-yr trend"] = (0, "—")
+    else:
+        base = (b.series()[0][1] or 0) or 1
+        rel = g / base
+        out["1-yr trend"] = ((2 if rel > 0.25 else 1 if g > 0 else 0), ("+" if g >= 0 else "-") + _fmt_money(abs(g)))
+    return out
+
+
+def risk_score(b: "NetBank") -> tuple[int, dict]:
+    lv = risk_levels(b)
+    return sum(v[0] for v in lv.values()), lv
 
 
 def _num(r: dict, k: str) -> Optional[float]:
@@ -280,7 +324,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
     if prior_lookup is not None:
         focus = {}
         for b in (net.special() + net.top_exposure() + net.near_cap()[:20] + net.closest_to_special()[:15]
-                  + net.prospects()[:10]):
+                  + net.prospects()[:10] + net.risk(25)):
             focus[id(b)] = b
         for nb in focus.values():
             nb.history = [(nb.period, nb.reciprocal, nb.cap)]
@@ -352,7 +396,7 @@ def make_history_lookup(conn, client):
 
 # ------------------------------------------------------------------ narrative
 PROMPT = """You write the opening analysis of a weekly report for a risk manager at a firm that runs a reciprocal deposit
-network. Plain English, ONE paragraph of 5 to 8 sentences. Cover: how widely banks use reciprocal
+network. Plain English, ONE paragraph of 5 to 8 sentences. Lead with the highest-risk banks and why. Then cover: how widely banks use reciprocal
 deposits and how close they are to the reciprocal cap (lesser of $5 billion or 20% of liabilities); the banks nearest or
 over the cap and what that means (more placements would count as brokered); banks likely held to the special cap
 (not well capitalized/rated, so limited to their four-quarter average); and uninsured-deposit exposure, including banks
@@ -408,6 +452,11 @@ def facts(net: Network) -> str:
                      + (f"estimated special cap {_fmt_money(est)}; "
                         + (f"{_fmt_money(over)} above it (would count as brokered)" if over and over > 0 else "within it")
                         if est else "special cap not estimated (history unavailable)"))
+    lines.append("HIGHEST-RISK RECIPROCAL USERS (points across cap used, special cap, capital cushion, uninsured share, 1-yr trend):")
+    for b in net.risk(6):
+        sc, lv = risk_score(b)
+        lines.append(f"  {b.bank.name} ({b.bank.location}): score {sc}; reciprocal {_fmt_money(b.reciprocal)}; "
+                     + "; ".join(f"{k} {v[1]}" for k, v in lv.items()))
     tr = net.trend()
     if tr:
         wid = [b for b in tr if b.gap_change() > 0]
@@ -466,7 +515,12 @@ def write_summary(net: Network) -> tuple[str, str]:
 # ------------------------------------------------------------------ key takeaways (page 1)
 def takeaways(net: Network) -> list[str]:
     s = net.stats()
-    out = [f"{s['users']:,} of {s['banks']:,} banks ({s['user_pct']:.0f}%) hold {_fmt_money(s['reciprocal_total'])} of reciprocal "
+    rk = net.risk(3)
+    out = []
+    if rk:
+        out.append("Highest risk this week: " + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in rk)
+                   + ". See page 2.")
+    out += [f"{s['users']:,} of {s['banks']:,} banks ({s['user_pct']:.0f}%) hold {_fmt_money(s['reciprocal_total'])} of reciprocal "
            "deposits" + (f"; the typical user is at {s['median_used']:.1f}% of its cap." if s["median_used"] is not None else ".")]
     if s["near_cap"] + s["over_cap"]:
         top = net.near_cap()[0]
@@ -732,6 +786,50 @@ def charts(net: Network) -> dict[str, bytes]:
         ax.set_xlim(0, max((x.uninsured or 0) for x in pro) / 1e6 * 1.6)
         ax.set_xlabel(f"Uninsured deposits, {D}B", fontsize=10.5)
         save(fig, "prospects")
+
+    # 0. Highest-risk banks: one row per bank, one colored cell per measure (green = fine ... red = worst)
+    rk = net.risk()
+    if rk:
+        from matplotlib.patches import FancyBboxPatch
+        level_color = {0: "#e8f3ec", 1: "#fdf1cf", 2: "#fbd9b8", 3: "#f6c4bd"}
+        level_ink = {0: "#2f7d4f", 1: "#8a6a00", 2: "#b4541a", 3: "#a3261b"}
+        cols = ["Reciprocal", "Cap\nused", "Special\ncap", "Capital\ncushion", "Uninsured\nshare", "1-yr\ntrend"]
+        fig = plt.figure(figsize=(7.4, 0.36 * len(rk) + 0.75))
+        fig.patch.set_facecolor(SURFACE)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_xlim(0, 100)
+        n = len(rk)
+        ax.set_ylim(n + 1.3, -0.45)
+        ax.axis("off")
+        x_name, x0, w = 0.5, 40.0, 10.0
+        ax.text(x_name, 0.3, "BANK", fontsize=8.5, color=MUTED, fontweight="bold", va="center")
+        ax.text(x0 - 1.2, 0.3, "SCORE", fontsize=8.5, color=MUTED, fontweight="bold", va="center", ha="right")
+        for j, c in enumerate(cols):
+            ax.text(x0 + j * w + w / 2, 0.3, c.upper(), fontsize=7.6, color=MUTED, fontweight="bold", ha="center", va="center",
+                    linespacing=1.1)
+        for i, b in enumerate(rk, 1):
+            sc, lv = risk_score(b)
+            y = i + 0.15
+            ax.text(x_name, y, f"{i}. {short(b.bank.name, 24)}", fontsize=9.5, color=INK, fontweight="bold", va="center")
+            ax.text(x0 - 1.2, y, str(sc), fontsize=9.5, color=INK, ha="right", va="center", fontweight="bold")
+            cells = [(None, _fmt_money(b.reciprocal))] + [(lv[m][0], lv[m][1]) for m in RISK_MEASURES]
+            for j, (lev, txt) in enumerate(cells):
+                cx = x0 + j * w
+                if lev is not None:
+                    ax.add_patch(FancyBboxPatch((cx + 0.5, y - 0.38), w - 1.0, 0.76, boxstyle="round,pad=0,rounding_size=0.25",
+                                                facecolor=level_color[lev], edgecolor="none", mutation_aspect=0.1))
+                ax.text(cx + w / 2, y, txt, fontsize=8.6, ha="center", va="center",
+                        color=INK if lev is None else level_ink[lev], fontweight="bold" if lev and lev >= 2 else "normal")
+        for k, (lab, lev) in enumerate((("fine", 0), ("watch", 1), ("elevated", 2), ("high", 3))):
+            cx = x0 + 10.4 + k * 12.5
+            ax.add_patch(FancyBboxPatch((cx, n + 0.85), 2.2, 0.36, boxstyle="round,pad=0,rounding_size=0.2",
+                                        facecolor=level_color[lev], edgecolor="none", mutation_aspect=0.1))
+            ax.text(cx + 3.0, n + 1.03, lab, fontsize=8, color=MUTED, va="center")
+        ax.text(x_name, n + 1.03, "Score = points across the five measures", fontsize=8, color=MUTED, va="center")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE)
+        plt.close(fig)
+        out["risk"] = buf.getvalue()
 
     # 9. Five-quarter trend: is the gap getting worse? Small multiples, one bank per panel.
     def multiples(key, banks, draw, nrows=2, ncols=3):

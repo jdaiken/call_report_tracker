@@ -52,7 +52,7 @@ def test_network_report(monkeypatch):
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
     assert net.summary_by == "rules" and "4 of 5 banks" in net.summary
-    assert {"usage", "map", "size", "top", "nearcap", "special", "cushion", "uninsured", "trend_cap", "trend_special"} <= set(net.images)
+    assert {"usage", "map", "size", "top", "nearcap", "special", "cushion", "uninsured", "trend_cap", "trend_special", "risk"} <= set(net.images)
     html = network_render.render_html(net)
     assert "Nearest or over the cap (2)" in html and "cid:net_map" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
