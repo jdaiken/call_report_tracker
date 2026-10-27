@@ -57,7 +57,7 @@ def test_network_report(monkeypatch):
     html = network_render.render_html(net)
     assert "Reciprocal exposure" in html and "cid:net_exposure" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 7
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 6
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))
     assert wb.sheetnames == ["Summary", "Banks", "5-quarter trend", "Top 20 holders", "Near cap", "Special cap", "Closest to special cap",
                              "High uninsured"]
@@ -141,6 +141,7 @@ def test_report_banks_rankings_and_treasury(monkeypatch, tmp_path):
     _add(conn, 7, _r(1_000), assets=60_000_000)                                          # $60B, on the list: kept
     db.upsert_institution_meta(conn, db.InstitutionMeta("7", "BIG BANK", "Springfield", "IL", "9007", 60_000_000, Q3))
     monkeypatch.setattr(network, "TREASURY_FILE", str(f))
+    monkeypatch.setattr(network, "USE_TREASURY_LIST", True)        # off in the report now; the matcher still works
     net = network.collect(conn, None, date(2026, 10, 26), prior_lookup=lambda rssd, p: None)
     assert [b.bank.name for b in net.lowest_capital(2)] == ["Bank 1", "Bank 2"]
     assert net.weakest_assets(1)[0].bank.name == "Bank 2"
@@ -172,4 +173,4 @@ def test_pdf_stays_seven_pages_with_many_banks_waiting(monkeypatch):
     net = network.build(network.collect(conn, None, date(2026, 10, 26), enforcement_sources=src, prior_lookup=lambda r, p: None))
     assert len(net.waiting_orders) == 80
     pdf = network_render.render_pdf(net)
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 7
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 6

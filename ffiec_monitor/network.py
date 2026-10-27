@@ -37,6 +37,7 @@ HIGH_UNINSURED = 40.0    # % of deposits
 RANK_N = 25              # banks in each ranking (lowest capital, weakest asset quality)
 RANK_MIN_ASSETS = 50_000  # $000: rankings skip banks under $50M, where one loan swings the ratios
 CURRENT_QUARTER_ONLY = True  # report only banks that have filed this quarter's Call Report
+USE_TREASURY_LIST = False    # treasury desk banks taken off the report 2026-10-27 (list and matcher kept; flip to bring back)
 TREASURY_FILE = "data/treasury-desk.csv"    # the treasury desk's list (name, aliases, optional state)
 TOP_N = 20               # banks on the exposure map and the top-exposure page
 QUARTERS = 5             # quarters of history for the trend pages (current + four before it)
@@ -483,7 +484,7 @@ def _treasury_matcher(net: "Network", path: Optional[str] = None):
     from pathlib import Path
     from .treasury_desk import load
     f = Path(__file__).resolve().parent.parent / (path or TREASURY_FILE)
-    if not f.exists():
+    if not USE_TREASURY_LIST or not f.exists():
         return None
     m = load(f)
     import csv
@@ -630,8 +631,7 @@ def make_history_lookup(conn, client):
 # ------------------------------------------------------------------ narrative
 PROMPT = """You write the opening summary of a weekly risk report for a firm that runs a reciprocal deposit network.
 The report covers a fixed set of banks: those under an active enforcement order, the 25 with the lowest Tier 1 leverage
-ratio this quarter, the 25 with the weakest asset quality (noncurrent loans + foreclosed real estate), and banks on the
-treasury desk's list. Plain English, ONE paragraph of 4 to 6 sentences, up to 130 words: how many banks and how much
+ratio this quarter, and the 25 with the weakest asset quality (noncurrent loans + foreclosed real estate). Plain English, ONE paragraph of 4 to 6 sentences, up to 130 words: how many banks and how much
 reciprocal deposits they hold; the order banks and any above their estimated special cap; the lowest-capital and
 weakest-asset banks that matter most (largest reciprocal balances, or below a minimum); overlaps (banks on more than one
 list). Name at most four banks. Wrap the 2 to 4 most important points in **double asterisks**.
@@ -677,7 +677,8 @@ def facts(net: Network) -> str:
     multi = net.treasury_multi()
     if net.waiting_orders:
         out.append(f"UNDER ORDER BUT NOT YET FILED {net.quarter_label} (left out): {len(net.waiting_orders)}.")
-    out.append(f"TREASURY DESK LIST: {net.treasury_loaded} names; {net.treasury_loaded - len(net.treasury_unmatched)} found in "
+    if net.treasury_loaded:
+        out.append(f"TREASURY DESK LIST: {net.treasury_loaded} names; {net.treasury_loaded - len(net.treasury_unmatched)} found in "
                f"the Call Reports; {len(net.treasury_unmatched)} not found (U.S. branches of foreign banks file a different "
                "report)" + (f"; {len(multi)} generic names matched more than one bank" if multi else "") + ".")
     return "\n".join(out)
@@ -795,8 +796,6 @@ def takeaways(net: Network) -> list[str]:
     if both:
         out.append(f"**{len(both)} banks appear on more than one list**: "
                    + "; ".join(f"{short(b.bank.name)} ({', '.join(net.reasons(b))})" for b in both[:3]) + ".")
-    if not net.treasury_loaded:
-        out.append("The treasury desk's list isn't loaded yet; page 5 says how to add it.")
     return out
 
 

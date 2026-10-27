@@ -8,7 +8,7 @@ from xml.sax.saxutils import escape
 from .network import (DISTRESS_RULES, GROUP_NOTES, RISK_MEASURES, SEGMENTS, distress_flags, issues, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
                       short, takeaways)
 
-PAGES = 7
+PAGES = 6
 OVERFLOW: list = []      # set when a page had to drop content to fit (shown in the run notice)
 RISK_NOTE = ("Reciprocal users with **two or more** of: over or near the cap, likely on (or over) the special cap, within "
              "0.5 pts of a capital minimum, a widening gap to the cap, 50%+ uninsured. Bar = reciprocal deposits at stake; "
@@ -98,7 +98,7 @@ def render_html(net: Network) -> str:
     if "exposure" in net.images:
         b += (f'<tr><td style="padding:30px 0 0">{kicker("Reciprocal exposure")}<div style="font-size:19px;font-weight:600;'
               f'color:{S.NAVY};margin-top:6px">{_e(heads[0])}</div><div style="font-size:13.5px;color:{S.MUTED};margin-top:4px">'
-              f'Banks under order, with the lowest capital, the weakest asset quality, or on the treasury desk list. Navy tick = '
+              f'Banks under order, with the lowest capital, or with the weakest asset quality. Navy tick = '
               f'estimated special cap; red = over it.</div></td></tr>'
               f'<tr><td style="padding:12px 0 0"><img src="cid:net_exposure" width="712" alt="Reciprocal exposure" '
               f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
@@ -133,7 +133,7 @@ def subject(net: Network) -> str:
 
 
 # ------------------------------------------------------------------ PDF (always seven pages)
-SECTIONS = ["Summary", "Banks under order", "Lowest capital", "Weakest asset quality", "Treasury desk banks",
+SECTIONS = ["Summary", "Banks under order", "Lowest capital", "Weakest asset quality",
             "Reciprocal exposure and special caps", "Notes and sources"]
 
 
@@ -156,9 +156,6 @@ def headlines(net: Network) -> list[str]:
         f"{len(uo)} banks are under an active enforcement order",
         (f"Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}% leverage" if lc else "No Q3 filers ranked yet"),
         (f"Weakest asset quality: {short(wa[0].bank.name)} at {wa[0].noncurrent:.1f}% noncurrent" if wa else "No Q3 filers ranked yet"),
-        (f"{len({b.treasury for b in tl})} of the treasury desk's {net.treasury_loaded} banks have filed {net.quarter_label}"
-         if net.treasury_loaded
-         else "The treasury desk's list hasn't been loaded yet"),
         f"{len(over)} order {'bank holds' if len(over) == 1 else 'banks hold'} more than our special-cap estimate",
         "How the measures are built",
     ]
@@ -326,7 +323,7 @@ def render_pdf(net: Network) -> bytes:
         out = section(2) + lead("Every bank matched to an active FDIC, Fed, OCC or FinCEN order (civil money penalties and "
                                 "orders over 10 years old left out), largest reciprocal balance first. **A bank under order is "
                                 "held to its special cap**. Amount = reciprocal deposits (red = above our special-cap estimate; "
-                                "estimates are on page 6).")
+                                "estimates are on page 5).")
         if with_chart:
             out += chart("orders", 3.0)
         if not uo:
@@ -357,26 +354,7 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(wa[:cap], [BANK, NCL, ROA, LEV, REC, USED])] + more(min(cap, len(wa)), len(wa)) if wa else none())
 
     def p5(cap):
-        out = section(5)
-        if not net.treasury_loaded:
-            return out + lead("**The treasury desk's list hasn't been loaded yet** (data/treasury-desk.csv).")
-        if net.waiting_treasury:
-            out += [p(escape("Not filed for " + net.quarter_label + " yet (left out until they do): "
-                             + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_treasury)), "note"), Spacer(1, 4)]
-        out += lead("The banks on the Treasury Desk alert list, with the same measures as the rest of the report. **These are "
-                    "kept even above the $25 billion cutoff**, since the desk asked for them by name.")
-        if net.treasury_unmatched:
-            out += [p(escape("No Call Report at all: " + ", ".join(net.treasury_unmatched)
-                             + " (U.S. branches of foreign banks file the FFIEC 002 instead)."),
-                      "note"), Spacer(1, 4)]
-        multi = net.treasury_multi()
-        if multi:
-            out += [p(escape("Generic names that matched more than one bank (all shown; pin a state in the list to narrow): "
-                             + "; ".join(f"{k} ({len(v)})" for k, v in multi.items())), "note"), Spacer(1, 6)]
-        return out + ([tbl(tl[:cap], [BANK, LEV, NCL, ROA, REC, USED, EST])] + more(min(cap, len(tl)), len(tl)) if tl else none())
-
-    def p6(cap):
-        out = section(6) + lead("Every bank in this report that holds reciprocal deposits. **Only banks under an active order "
+        out = section(5) + lead("Every bank in this report that holds reciprocal deposits. **Only banks under an active order "
                                 "get a special-cap estimate** (navy tick); red = balance above that estimate, which is a "
                                 "question to ask, not a finding.") + chart("exposure", 4.4)
         withrec = [b for b in fo if (b.reciprocal or 0) > 0]
@@ -387,8 +365,8 @@ def render_pdf(net: Network) -> bytes:
         shown = ", ".join(f"{short(b.bank.name)} ({b.state})" for b in lst[:cap])
         return shown + (f" and {len(lst) - cap} more (all in the spreadsheet)" if len(lst) > cap else "")
 
-    def p7(cap):
-        out = section(7)
+    def p6(cap):
+        out = section(6)
         for t in ("**Reciprocal cap.** Reciprocal deposits count as non-brokered only up to the lesser of $5 billion or 20% "
                   "of total liabilities (12 CFR 337.6(e)). Above that, further placements count as brokered.",
                   "**Special cap: what it is.** No regulator publishes or assigns a number. It is set by formula in the FDIC's "
@@ -406,11 +384,10 @@ def render_pdf(net: Network) -> bytes:
                   "Report yet and are left out until they do"
                   + (f". Under order and waiting ({len(net.waiting_orders)}): " + names(net.waiting_orders, cap)
                      if net.waiting_orders else "")
-                  + (f". Treasury desk banks waiting ({len(net.waiting_treasury)}): " + names(net.waiting_treasury, 40)
-                     if net.waiting_treasury else "") + ".",
+                  + ".",
                   "**Who is in this report.** Every bank under an active FDIC, Fed, OCC or FinCEN order; the 25 Q3 2026 "
                   "filers with the lowest Tier 1 leverage ratio; the 25 with the highest noncurrent loans plus foreclosed "
-                  "real estate (both rankings skip banks under $50 million); and the treasury desk's list.",
+                  "real estate (both rankings skip banks under $50 million).",
                   "**Asset quality.** Loans 90+ days past due plus nonaccrual loans plus other real estate owned, divided "
                   "by loans plus OREO (Call Report RC-N and RC). Return on assets annualizes the year-to-date figure.",
                   "**Scope.** " + EXCLUDE_NOTE + f" Coverage: {s['banks']:,} banks"
@@ -449,7 +426,7 @@ def render_pdf(net: Network) -> bytes:
         return pg
 
     OVERFLOW.clear()
-    pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 60)]
+    pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 12), fit(p6, 60)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
