@@ -4,11 +4,11 @@ from __future__ import annotations
 import io
 from xml.sax.saxutils import escape
 
-from .network import (RISK_MEASURES, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
+from .network import (GROUP_NOTES, RISK_MEASURES, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
                       short, takeaways)
 
 PAGES = 10
-EMAIL_IMAGES = ("risk", "map", "trend_cap", "special", "trend_special")
+EMAIL_IMAGES = ("risk", "groups", "trend_cap", "special", "trend_special")
 RISK_NOTE = ("Every reciprocal user scored on five measures, 0 (fine) to 3 (high) each: cap used (60/80/100%), likely special "
              "cap (3; over its estimate shown), capital cushion above well capitalized (under 1/0.5/0 pts), uninsured share "
              "(40/50/60%), and the change over the past year in the gap to the cap or the special cap.")
@@ -85,25 +85,12 @@ def render_html(net: Network) -> str:
         b += h("Highest-risk banks this week", RISK_NOTE)
         b += (f'<tr><td style="padding:8px 0 0"><img src="cid:net_risk" width="712" alt="Highest-risk banks" '
               f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
-    if "map" in net.images:
-        top = net.top_exposure()
-        b += h(f"Exposure map: the {len(top)} largest reciprocal holders",
-               "Numbered by reciprocal deposits; bubble = size of the balance. Red = likely special cap; amber = thin capital cushion.")
-        b += (f'<tr><td style="padding:8px 0 0"><img src="cid:net_map" width="712" alt="Exposure map" '
+    if "groups" in net.images:
+        b += h("Three groups to watch", "Each panel is a different kind of risk. Red “▲ rising” = getting worse over the past year.")
+        b += (f'<tr><td style="padding:8px 0 0"><img src="cid:net_groups" width="712" alt="Three groups to watch" '
               f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
-        half = (len(top) + 1) // 2
-        cell = 'style="padding:3px 6px;font-size:13px;color:{c};border-bottom:1px solid {r}"'
-        def key(i, nb):
-            url = nb.bank.ubpr_url or nb.bank.call_report_url
-            name = _e(short(nb.bank.name, 30))
-            name = f'<a href="{_e(url)}" style="color:{INK};text-decoration:none">{name}</a>' if url else name
-            return (f'<td {cell.format(c=MUTED, r=RULE)} width="18"><b>{i}</b></td><td {cell.format(c=INK, r=RULE)}>{name}</td>'
-                    f'<td {cell.format(c=INK, r=RULE)} align="right" nowrap>{_fmt_money(nb.reciprocal)} · {_pct(nb.used)}</td>')
-        rows = ""
-        for j in range(half):
-            right = key(j + half + 1, top[j + half]) if j + half < len(top) else "<td></td><td></td><td></td>"
-            rows += f"<tr>{key(j + 1, top[j])}<td width='14'></td>{right}</tr>"
-        b += f'<tr><td style="padding:6px 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table></td></tr>'
+        b += "".join(f'<tr><td style="padding:8px 0 0;font-size:13.5px;line-height:1.45;color:{INK}"><b>{_e(t)}.</b> '
+                     f'<span style="color:{MUTED}">{_e(n)}</span></td></tr>' for t, n in GROUP_NOTES)
 
     def mini(title, note, lst, metric):
         if not lst:
@@ -239,7 +226,7 @@ def render_pdf(net: Network) -> bytes:
     for t in takeaways(net):
         p1 += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
     p1 += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
-           P._p("2 Highest-risk banks · 3 Exposure map · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
+           P._p("2 Highest-risk banks · 3 Three groups to watch · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
                 "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 All banks by size, and notes",
                 "note"),
            Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
@@ -252,30 +239,16 @@ def render_pdf(net: Network) -> bytes:
         out += chart("risk", "", 7.6)
         return out + ([] if rk else none()) + note("Locations, links and every bank's measures are in the Banks sheet of the attached spreadsheet.")
 
-    # 3. Exposure map with numbered key
+    # 3. Three groups to watch
     top = net.top_exposure()
 
-    def p3(cap):
-        out = header(f"Exposure map: the {len(top)} largest reciprocal holders", 3)
-        out += note("Each bubble is one of the largest holders, numbered by reciprocal deposits; bubble size = the balance. "
-                    "Up = closer to the cap; right = more uninsured deposits. Banks over 150% of the cap are drawn at the top as triangles.")
-        out += chart("map", "", 4.3)
-        half = (min(cap, len(top)) + 1) // 2
-        cols = [("#", 0.24, None), ("BANK", 1.98, None), ("RECIP.", 0.58, None), ("% CAP", 0.58, None), ("UNINS.", 0.52, None)]
-
-        def side(lst, start):
-            head = [P._p(c[0], "label" if i < 2 else "labr") for i, c in enumerate(cols)]
-            body = [[P._p(f"<b>{i}</b>", "cell"), P._p(f"<font size='9'><b>{escape(short(nb.bank.name, 24))}</b></font> <font size='7' color='#5b626c'>"
-                                                       f"{escape(nb.bank.location.rsplit(',', 1)[-1].strip())}</font>", "cell"),
-                     P._p(f"<font size='9'>{_fmt_money(nb.reciprocal)}</font>", "num"),
-                     P._p(f"<font size='9'>{_pct(nb.used)}</font>", "num"), P._p(f"<font size='9'>{_pct(nb.uninsured_share)}</font>", "num")]
-                    for i, nb in enumerate(lst, start)]
-            return P._table([head] + body, [c[1] * inch for c in cols])
-        shown = top[:cap]
-        both = Table([[side(shown[:half], 1), "", side(shown[half:], half + 1)]], colWidths=[3.9 * inch, 0.1 * inch, 3.9 * inch])
-        both.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                                  ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-        return out + ([both] if shown else none())
+    def p3(_cap):
+        out = header("Three groups to watch", 3)
+        out += note("Each panel is a different kind of risk to the network. Red \"rising\" = getting worse over the past year.")
+        out += chart("groups", "", 7.7)
+        for t, n in GROUP_NOTES:
+            out += [P._p(f"<b>{escape(t)}.</b> {escape(n)}", "small"), Spacer(1, 4)]
+        return out
 
     # 4. Top 20 holders
     def p4(cap):
@@ -380,8 +353,25 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(sp[:cap], [BANK] + qcols(rec_at) + [EST, dirn])] + more(min(cap, len(sp)), len(sp)) if sp else
                       none("Not enough history on hand yet."))
 
-    pages = [P._fit(lambda _c: p1, 0), P._fit(p2, 8), P._fit(p3, TOP_N), P._fit(p4, TOP_N), P._fit(p5, 12),
+    pages = [P._fit(lambda _c: p1, 0), P._fit(p2, 8), P._fit(p3, 0), P._fit(p4, TOP_N), P._fit(p5, 12),
              P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 12), P._fit(p9, 12), P._fit(p10, 0)]
+    def squeeze(page):
+        """Shrink the page's charts until it fits one page, so the PDF is always exactly PAGES long."""
+        for _ in range(12):
+            over = P._height(page) - P.FRAME_H
+            if over <= 0:
+                break
+            ims = [f for f in page if isinstance(f, Image)]
+            if not ims:
+                break
+            total = sum(f.drawHeight for f in ims)
+            k = max(0.5, (total - over - 4) / total)
+            for f in ims:
+                f.drawHeight *= k
+                f.drawWidth *= k
+        return page
+
+    pages = [squeeze(pg) for pg in pages]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])

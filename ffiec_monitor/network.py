@@ -569,6 +569,31 @@ def short(name: str, n: int = 28) -> str:
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
 
 
+GROUP_NOTES = [
+    ("Likely on the special cap",
+     "What it is: banks below well capitalized or under an active enforcement order. They can hold reciprocal deposits only "
+     "up to their four-quarter average; anything above counts as brokered. Watch: red bars are already over the estimate."),
+    ("Largest reciprocal users",
+     "What it is: the biggest reciprocal balances and how much of the cap (lesser of $5B or 20% of liabilities) each uses. "
+     "Watch: over 100% means new placements count as brokered; rising = the gap grew over the past year."),
+    ("Thinnest capital cushion",
+     "What it is: reciprocal users not yet on the special cap with the least capital above a well-capitalized line. Watch: "
+     "the next banks that could become subject to the special cap."),
+]
+GROUP_N = 7
+
+
+def watch_groups(net: "Network") -> list[tuple[str, str, list]]:
+    return [
+        ("Likely on the special cap", "Enforcement order or below well capitalized: held to their four-quarter average",
+         net.special_users()[:GROUP_N]),
+        ("Largest reciprocal users", "Biggest balances, and how much of each bank's cap they use",
+         net.top_exposure(GROUP_N)),
+        ("Thinnest capital cushion", "Not yet on the special cap, closest to slipping below well capitalized",
+         net.closest_to_special()[:GROUP_N]),
+    ]
+
+
 # ------------------------------------------------------------------ charts
 def charts(net: Network) -> dict[str, bytes]:
     import matplotlib
@@ -682,6 +707,73 @@ def charts(net: Network) -> dict[str, bytes]:
         ax.set_yticks([0, 25, 50, 80, 100, 125, 150])
         ax.set_yticklabels(["0", "25", "50", "80", "100", "125", "150+"])
         save(fig, "map")
+
+    # 3b. Three groups to watch, one panel each (replaces the map in the email and on page 3)
+    groups = watch_groups(net)
+    if any(g for _, _, g in groups):
+        heights = [max(1, len(g)) * 0.29 + 0.9 for _, _, g in groups]
+        M = lambda t: t.replace("$", D)                       # noqa: E731  ($ starts math mode in matplotlib)
+        fig, axs = plt.subplots(3, 1, figsize=(7.4, sum(heights) + 0.2), gridspec_kw={"height_ratios": heights})
+        fig.patch.set_facecolor(SURFACE)
+        RISE = "  \u25B2 rising"
+        for ax, (title, sub, lst) in zip(axs, groups):
+            ax.set_facecolor(SURFACE)
+            for side in ("top", "right", "left"):
+                ax.spines[side].set_visible(False)
+            ax.tick_params(length=0, labelsize=9)
+            ax.set_title(title, fontsize=11.5, color=INK, loc="left", fontweight="bold", pad=17)
+            ax.text(0, 1.02, M(sub), transform=ax.transAxes, fontsize=8.8, color=MUTED, va="bottom")
+            if not lst:
+                ax.axis("off")
+                ax.text(0, 0.5, "None this week.", transform=ax.transAxes, fontsize=10, color=MUTED)
+                continue
+            ys = range(len(lst))
+            if title.startswith("Likely"):
+                vals = [(x.reciprocal or 0) / 1e3 for x in lst]
+                cols = [RED if (x.over_special or 0) > 0 else BLUE for x in lst]
+                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
+                for i, x in enumerate(lst):
+                    if x.special_cap_est:
+                        ax.plot([x.special_cap_est / 1e3] * 2, [i - 0.38, i + 0.38], color=INK, linewidth=2.2, zorder=4)
+                    lab = f"  {_fmt_money(x.reciprocal)} vs. est. cap {_fmt_money(x.special_cap_est)}"
+                    lab += " (over)" if (x.over_special or 0) > 0 else ""
+                    up = (x.special_gap_change() or 0) > 0
+                    ax.text(max(vals[i], (x.special_cap_est or 0) / 1e3), i, M(lab + (RISE if up else "")), va="center",
+                            fontsize=8.8, color=RED if up else INK, fontweight="bold" if up else "normal")
+                ax.set_xlim(0, max(max(vals), max(((x.special_cap_est or 0) / 1e3 for x in lst), default=0)) * 2.4)
+                ax.set_xlabel(f"Reciprocal deposits, {D}M (black tick = estimated special cap)", fontsize=9)
+            elif title.startswith("Largest"):
+                vals = [min(x.used or 0, 200) for x in lst]
+                cols = [RED if (x.used or 0) > 100 else AMBER if (x.used or 0) >= NEAR_CAP else BLUE for x in lst]
+                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
+                ax.axvline(100, color=RED, linewidth=1.0, linestyle=(0, (4, 3)), zorder=2)
+                for i, x in enumerate(lst):
+                    up = (x.gap_change() or 0) > 0 and (x.used or 0) >= NEAR_CAP
+                    ax.text(vals[i], i, M(f"  {_pct(x.used)} of cap · {_fmt_money(x.reciprocal)}" + (RISE if up else "")), va="center",
+                            fontsize=8.8, color=RED if up else INK, fontweight="bold" if up else "normal")
+                ax.set_xlim(0, 360)
+                ax.set_xticks([0, 50, 100, 150, 200])
+                ax.set_xlabel("Share of the reciprocal cap used, % (dashed = the cap)", fontsize=9)
+            else:
+                vals = [x.cushion for x in lst]
+                cols = [RED if v < 0 else AMBER if v < 0.5 else BLUE for v in vals]
+                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
+                ax.axvline(0, color=INK, linewidth=1.0, zorder=2)
+                for i, x in enumerate(lst):
+                    ax.text(max(vals[i], 0), i, M(f"  {x.cushion:+.2f} pts ({x.binding.split(' (')[0]}) · {_fmt_money(x.reciprocal)} reciprocal"),
+                            va="center", fontsize=8.8, color=INK)
+                lo = min(0.0, min(vals))
+                hi = max(0.0, max(vals))
+                span = max(hi - lo, 0.5)
+                ax.set_xlim(lo - span * 0.05, hi + span * 2.6)
+                ax.set_xlabel("Points above the nearest well-capitalized line (left of 0 = below it)", fontsize=9)
+            ax.set_yticks(list(ys))
+            ax.set_yticklabels([short(x.bank.name, 26) for x in lst], fontsize=9.8, color=INK)
+            ax.set_ylim(-0.6, len(lst) - 0.4)
+            ax.invert_yaxis()
+            ax.xaxis.grid(True, color=GRID, zorder=0)
+        fig.tight_layout(pad=0.6, h_pad=1.4)
+        save(fig, "groups", tight=False)
 
     # 4. Top 20: reciprocal deposits against the cap and the estimated special cap
     top = net.top_exposure()
