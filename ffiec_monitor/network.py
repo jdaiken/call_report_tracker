@@ -35,14 +35,15 @@ NAME = "Network Exposure Report"
 NEAR_CAP = 80.0          # % of the cap
 HIGH_UNINSURED = 40.0    # % of deposits
 TOP_N = 20               # banks on the exposure map and the top-exposure page
-# Left out: the largest banks ($100B+ in assets, which takes in every U.S. GSIB plus PNC, U.S. Bank, Truist,
-# Capital One and peers). They aren't network prospects and their scale swamps the charts. Names are a backstop
-# for a GSIB subsidiary that reports under $100B.
-EXCLUDE_ASSETS = 100_000_000      # $000
+QUARTERS = 5             # quarters of history for the trend pages (current + four before it)
+# Left out: banks with $25B+ in assets -- every U.S. GSIB, PNC, U.S. Bank, Truist, Capital One, and large regionals and
+# brokerage-affiliated banks such as Raymond James Bank. They aren't network prospects and their scale swamps the
+# charts. Override with NET_MAX_ASSETS_B (in $ billions). Names are a backstop for a GSIB unit reporting under the line.
+EXCLUDE_ASSETS = int(float(os.environ.get("NET_MAX_ASSETS_B") or 25) * 1_000_000)      # $000
 GSIB_NAMES = ("JPMORGAN", "BANK OF AMERICA", "CITIBANK", "WELLS FARGO", "GOLDMAN SACHS", "MORGAN STANLEY",
               "BANK OF NEW YORK MELLON", "STATE STREET BANK", "PNC BANK", "U.S. BANK", "TRUIST", "CAPITAL ONE")
 SEGMENTS = [("Community (<$1B)", 0, 1_000_000), ("Regional ($1B-$10B)", 1_000_000, 10_000_000),
-            ("Large ($10B-$100B)", 10_000_000, EXCLUDE_ASSETS)]
+            (f"Large ($10B-${EXCLUDE_ASSETS // 1_000_000}B)", 10_000_000, EXCLUDE_ASSETS)]
 
 
 def excluded_bank(name: str, assets) -> bool:
@@ -69,14 +70,41 @@ class NetBank:
     capital: dict = field(default_factory=dict)            # leverage / tier1 / total / cet1 (%)
     cushion: Optional[float] = None                        # pts above the nearest well-capitalized line
     binding: str = ""                                      # which ratio that is
-    history: list = field(default_factory=list)            # [(quarter end, reciprocal $000)] newest first
+    history: list = field(default_factory=list)            # [(quarter end, reciprocal $000, cap $000)] newest first
     state: str = ""
 
     @property
     def special_cap_est(self) -> Optional[float]:
-        '''Estimated special cap: average quarter-end reciprocal deposits over the last four quarters.'''
-        vals = [v for _, v in self.history[:4] if v is not None]
+        '''Estimated special cap: average quarter-end reciprocal deposits over the four quarters before this one
+        (what the bank would be held to if it lost well-capitalized/well-rated status now). With fewer than two of
+        those on hand, the quarters available including this one; None if under two in all.'''
+        prior = [h[1] for h in self.history[1:5] if h[1] is not None]
+        vals = prior if len(prior) >= 2 else [h[1] for h in self.history[:5] if h[1] is not None]
         return sum(vals) / len(vals) if len(vals) >= 2 else None
+
+    @property
+    def est_basis(self) -> str:
+        prior = [h for h in self.history[1:5] if h[1] is not None]
+        if len(prior) >= 2:
+            return f"{len(prior)}Q avg"
+        n = sum(1 for h in self.history[:5] if h[1] is not None)
+        return f"{n}Q avg" if n >= 2 else ""
+
+    def series(self) -> list[tuple]:
+        """[(quarter end, reciprocal, cap)] oldest first, quarters with a figure only."""
+        return [h for h in reversed(self.history) if h[1] is not None]
+
+    def gap_change(self) -> Optional[float]:
+        """Change in (reciprocal - cap) from the oldest quarter on hand (up to a year ago) to now; > 0 = widening."""
+        ser = [h for h in self.series() if h[2]]
+        if len(ser) < 2:
+            return None
+        return (ser[-1][1] - ser[-1][2]) - (ser[0][1] - ser[0][2])
+
+    def special_gap_change(self) -> Optional[float]:
+        """Change in reciprocal deposits over the year on hand: > 0 = drifting further above the special cap."""
+        ser = self.series()
+        return None if len(ser) < 2 else ser[-1][1] - ser[0][1]
 
     @property
     def over_special(self) -> Optional[float]:
@@ -117,6 +145,7 @@ class Network:
             "median_used": statistics.median(used) if used else None,
             "near_cap": sum(1 for x in used if NEAR_CAP <= x <= 100), "over_cap": sum(1 for x in used if x > 100),
             "special": sum(1 for b in u if b.special_cap),
+            "special_all": sum(1 for b in self.banks if b.special_cap),
             "uninsured_total": sum(b.uninsured or 0 for b in self.banks),
             "median_uninsured": statistics.median(unshare) if unshare else None,
             "high_uninsured": sum(1 for x in unshare if x >= HIGH_UNINSURED),
@@ -132,7 +161,15 @@ class Network:
                        and not b.special_cap], key=lambda b: -(b.uninsured or 0))
 
     def special(self) -> list[NetBank]:
-        return sorted([b for b in self.users if b.special_cap], key=lambda b: -(b.reciprocal or 0))
+        """Every bank likely held to the special cap (below well capitalized or under an active order), users first."""
+        return sorted([b for b in self.banks if b.special_cap], key=lambda b: -(b.reciprocal or 0))
+
+    def special_users(self) -> list[NetBank]:
+        return [b for b in self.special() if (b.reciprocal or 0) > 0]
+
+    def trend(self) -> list[NetBank]:
+        """Banks at or over 80% of the cap with at least two quarters on hand, biggest widening of the gap first."""
+        return sorted([b for b in self.near_cap() if b.gap_change() is not None], key=lambda b: -b.gap_change())
 
     def closest_to_special(self) -> list[NetBank]:
         '''Reciprocal users not yet on the special cap, thinnest capital cushion first.'''
@@ -238,27 +275,27 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                 for nb in net.banks:
                     if nb.bank.rssd == m.bank.rssd and "under an enforcement order" not in nb.special_cap:
                         nb.special_cap.append("under an enforcement order")
-    # Last quarter (all listed banks) and four quarters of history (special-cap and closest banks,
-    # for the estimated special cap).
+    # Five quarters of history for every bank the report features: reciprocal deposits and the cap each quarter,
+    # for the estimated special cap and the trend pages. Pulled once and cached (network_history).
     if prior_lookup is not None:
-        hist_banks = {id(b): b for b in net.special()[:40] + net.closest_to_special()[:25] + net.top_exposure()}
-        focus = {id(b): b for b in net.near_cap()[:25] + net.prospects()[:15] + net.top_exposure(40)}
-        focus.update(hist_banks)
-        for key, nb in focus.items():
-            nb.history = [(nb.period, nb.reciprocal)]
+        focus = {}
+        for b in (net.special() + net.top_exposure() + net.near_cap()[:20] + net.closest_to_special()[:15]
+                  + net.prospects()[:10]):
+            focus[id(b)] = b
+        for nb in focus.values():
+            nb.history = [(nb.period, nb.reciprocal, nb.cap)]
             q = nb.period
-            for i in range(3 if key in hist_banks else 1):
+            for i in range(QUARTERS - 1):
                 q = prior_quarter_end(q)
                 try:
                     pr = prior_lookup(nb.bank.rssd, q) or {}
                 except Exception:
                     pr = {}
-                prec = _num(pr, RECIPROCAL_RAW_KEY)
-                nb.history.append((q, prec))
+                prec, pliab = _num(pr, RECIPROCAL_RAW_KEY), _num(pr, LIABILITIES_RAW_KEY)
+                pcap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * pliab) if pliab else None
+                nb.history.append((q, prec, pcap))
                 if i == 0 and prec is not None:
                     nb.prior_reciprocal = prec
-                    pliab = _num(pr, LIABILITIES_RAW_KEY)
-                    pcap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * pliab) if pliab else None
                     nb.prior_used = prec / pcap * 100 if pcap else None
     return net
 
@@ -279,17 +316,37 @@ def capital_cushion(cap: dict) -> tuple[Optional[float], str]:
     return min(gaps, key=lambda t: t[0])
 
 
+HISTORY_SQL = """CREATE TABLE IF NOT EXISTS network_history (
+    id_rssd VARCHAR, period_end DATE, reciprocal DOUBLE, liabilities DOUBLE, fetched_at TIMESTAMP,
+    PRIMARY KEY (id_rssd, period_end))"""
+
+
 def make_history_lookup(conn, client):
-    '''A quarter's ratios for a bank: stored snapshot if it already has the network fields, else a Call Report pull.'''
+    '''A past quarter's reciprocal deposits and total liabilities for a bank: cached in network_history, else the
+    stored snapshot, else a Call Report pull (cached, including "nothing filed" so it isn't asked again).'''
+    from datetime import datetime
     from . import db, ratios as ratios_mod
+    conn.execute(HISTORY_SQL)
 
     def lookup(rssd: str, period_end: date) -> Optional[dict]:
+        row = conn.execute("SELECT reciprocal, liabilities FROM network_history WHERE id_rssd = ? AND period_end = ?",
+                           [rssd, period_end]).fetchone()
+        if row is not None:
+            return {RECIPROCAL_RAW_KEY: row[0], LIABILITIES_RAW_KEY: row[1]}
         snap = db.get_snapshot(conn, rssd, period_end)
         if snap is not None and isinstance(snap.ratios.get(RECIPROCAL_RAW_KEY), (int, float)):
-            return snap.ratios
-        if client is None:
+            r = snap.ratios
+        elif client is None:
             return None
-        return ratios_mod.extract_ratios(client.retrieve_facsimile(rssd, period_end), period_end)
+        else:
+            try:
+                r = ratios_mod.extract_ratios(client.retrieve_facsimile(rssd, period_end), period_end)
+            except Exception:
+                r = {}
+        rec, liab = _num(r, RECIPROCAL_RAW_KEY), _num(r, LIABILITIES_RAW_KEY)
+        conn.execute("INSERT OR REPLACE INTO network_history VALUES (?, ?, ?, ?, ?)",
+                     [rssd, period_end, rec, liab, datetime.now()])
+        return {RECIPROCAL_RAW_KEY: rec, LIABILITIES_RAW_KEY: liab}
     return lookup
 
 
@@ -300,7 +357,8 @@ deposits and how close they are to the reciprocal cap (lesser of $5 billion or 2
 over the cap and what that means (more placements would count as brokered); banks likely held to the special cap
 (not well capitalized/rated, so limited to their four-quarter average); and uninsured-deposit exposure, including banks
 with high uninsured deposits and room under the cap; and the banks closest to
-the special cap (thinnest capital cushion) with their estimated special cap. Name at most four banks. Up to 170 words.
+the special cap (thinnest capital cushion) with their estimated special cap; and whether gaps over the cap widened or
+narrowed over the past year. Name at most four banks. Up to 180 words.
 
 Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice, no markdown.
 
@@ -332,7 +390,8 @@ def facts(net: Network) -> str:
              f"{s['high_uninsured']}; of those with under half the cap used and not on the special cap: "
              f"{s['high_unins_low_use']}."]
     if net.excluded:
-        lines.append(f"Left out: {len(net.excluded)} banks with $100B or more in assets (GSIBs and other very large banks).")
+        lines.append(f"Left out: {len(net.excluded)} banks with ${EXCLUDE_ASSETS // 1_000_000}B or more in assets "
+                     "(GSIBs, large regionals and brokerage-affiliated banks).")
     lines.append("LARGEST RECIPROCAL HOLDERS: " + "; ".join(
         f"{b.bank.name} {_fmt_money(b.reciprocal)} ({_pct(b.used)} of cap)" for b in net.top_exposure(5)) + ".")
     lines.append("CLOSEST TO THE SPECIAL CAP (thinnest capital cushion above a well-capitalized line, reciprocal users):")
@@ -340,13 +399,22 @@ def facts(net: Network) -> str:
         est = b.special_cap_est
         lines.append(f"  {b.bank.name} ({b.bank.location}): cushion {b.cushion:.2f} pts on {b.binding}; reciprocal "
                      f"{_fmt_money(b.reciprocal)}" + (f"; estimated special cap if it slips {_fmt_money(est)}" if est else ""))
-    lines.append("LIKELY ON THE SPECIAL CAP, with estimated special cap (four-quarter average):")
+    lines.append(f"LIKELY ON THE SPECIAL CAP: {s['special_all']} banks in all (below well capitalized or under an active "
+                 f"enforcement order), {s['special']} of them holding reciprocal deposits. Estimated special cap "
+                 "(four-quarter average):")
     for b in net.special()[:8]:
         est, over = b.special_cap_est, b.over_special
         lines.append(f"  {b.bank.name} ({b.bank.location}): reciprocal {_fmt_money(b.reciprocal)}; "
                      + (f"estimated special cap {_fmt_money(est)}; "
                         + (f"{_fmt_money(over)} above it (would count as brokered)" if over and over > 0 else "within it")
                         if est else "special cap not estimated (history unavailable)"))
+    tr = net.trend()
+    if tr:
+        wid = [b for b in tr if b.gap_change() > 0]
+        lines.append(f"TREND OVER THE PAST YEAR (banks at {NEAR_CAP:.0f}%+ of cap with history on hand: {len(tr)}): gap between "
+                     f"reciprocal deposits and the cap widened at {len(wid)} and narrowed at {len(tr) - len(wid)}. Largest widening: "
+                     + "; ".join(f"{b.bank.name} {_fmt_money(b.gap_change())} ({_pct(b.series()[0][1] / b.series()[0][2] * 100 if b.series()[0][2] else None)} "
+                                 f"of cap a year ago, {_pct(b.used)} now)" for b in wid[:3]) + ".")
     for title, lst in (("NEAREST OR OVER THE CAP", net.near_cap()[:8]), ("HIGH UNINSURED, ROOM UNDER THE CAP", net.prospects()[:8])):
         lines.append(title + ":")
         for b in lst:
@@ -408,10 +476,16 @@ def takeaways(net: Network) -> list[str]:
     if big:
         b = big[0]
         out.append(f"Largest holder: {short(b.bank.name)}, {_fmt_money(b.reciprocal)} ({_pct(b.used)} of its cap).")
-    if s["special"]:
+    if s["special_all"]:
         over = [b for b in net.special() if (b.over_special or 0) > 0]
-        out.append(f"{s['special']} users are likely on the special cap"
+        out.append(f"{s['special_all']} banks are likely on the special cap (enforcement order or below well capitalized), "
+                   f"{s['special']} of them holding reciprocal deposits"
                    + (f"; {len(over)} hold more than their estimated four-quarter average." if over else "."))
+    tr = net.trend()
+    if tr:
+        wid = [b for b in tr if b.gap_change() > 0]
+        out.append(f"Over the past year the gap to the cap widened at {len(wid)} of {len(tr)} banks at {NEAR_CAP:.0f}%+ of cap"
+                   + (f"; most at {short(wid[0].bank.name)} (+{_fmt_money(wid[0].gap_change())})." if wid else "."))
     close = net.closest_to_special()[:1]
     if close:
         b = close[0]
@@ -582,7 +656,7 @@ def charts(net: Network) -> dict[str, bytes]:
         save(fig, "nearcap")
 
     # 6. Special cap: current reciprocal vs. estimated special cap
-    spec = [x for x in net.special()[:15] if x.reciprocal]
+    spec = net.special_users()[:15]
     if spec:
         fig, ax = axes(7.4, 3.6)
         for i, x in enumerate(spec):
@@ -659,25 +733,76 @@ def charts(net: Network) -> dict[str, bytes]:
         ax.set_xlabel(f"Uninsured deposits, {D}B", fontsize=10.5)
         save(fig, "prospects")
 
-    # 9. Movers: change in reciprocal deposits from last quarter
-    mv = net.movers()
-    if mv:
-        up = sorted([x for x in mv if x.reciprocal > x.prior_reciprocal], key=lambda x: -(x.reciprocal - x.prior_reciprocal))[:8]
-        dn = sorted([x for x in mv if x.reciprocal < x.prior_reciprocal], key=lambda x: x.reciprocal - x.prior_reciprocal)[:8]
-        rows = up + dn[::-1]
-        fig, ax = axes(7.4, 3.6)
-        d = [(x.reciprocal - x.prior_reciprocal) / 1e3 for x in rows]
-        ax.barh(range(len(rows)), d, color=[BLUE if v > 0 else "#eb6834" for v in d], height=0.6, zorder=3)
-        for i, (x, v) in enumerate(zip(rows, d)):
-            pct = (x.reciprocal / x.prior_reciprocal - 1) * 100 if x.prior_reciprocal else None
-            ax.text(v, i, (f"  +{v:,.0f}" if v > 0 else f"{v:,.0f}  ") + (f" ({pct:+.0f}%)" if pct is not None and abs(pct) < 1000 else ""),
-                    va="center", ha="left" if v > 0 else "right", fontsize=8.5, color=MUTED)
-        ax.axvline(0, color=INK, linewidth=1.0)
-        bank_axis(ax, rows)
-        m = max(abs(v) for v in d)
-        ax.set_xlim(-m * 1.6 if dn else 0, m * 1.6 if up else 0)
-        ax.set_xlabel(f"Change in reciprocal deposits from last quarter, {D}M", fontsize=10.5)
-        save(fig, "movers")
+    # 9. Five-quarter trend: is the gap getting worse? Small multiples, one bank per panel.
+    def multiples(key, banks, draw, nrows=2, ncols=3):
+        banks = banks[: nrows * ncols]
+        if not banks:
+            return
+        fig, axs = plt.subplots(nrows, ncols, figsize=(7.4, 2.25 * nrows + 0.3), squeeze=False)
+        fig.patch.set_facecolor(SURFACE)
+        for k, ax in enumerate(axs.flat):
+            ax.set_facecolor(SURFACE)
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+            ax.tick_params(length=0, labelsize=8)
+            if k >= len(banks):
+                ax.axis("off")
+                continue
+            draw(ax, banks[k])
+            ax.yaxis.grid(True, color=GRID, zorder=0)
+        fig.tight_layout(pad=0.5, h_pad=1.2, w_pad=0.8)
+        save(fig, key, tight=False)
+
+    def qlab(d):
+        return f"Q{(d.month - 1) // 3 + 1}\n{str(d.year)[2:]}"
+
+    def money_axis(ax, vals):
+        top = max(v for v in vals if v is not None) or 1
+        div, unit = (1e6, "B") if top >= 1e6 else (1e3, "M")
+        from matplotlib.ticker import FuncFormatter
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{D}{v / div:,.1f}{unit}" if div == 1e6 else f"{D}{v / div:,.0f}{unit}"))
+
+    def draw_cap(ax, x):
+        ser = [h for h in x.series() if h[2]]
+        qs = [qlab(h[0]) for h in ser]
+        rec, cap = [h[1] for h in ser], [h[2] for h in ser]
+        xs = range(len(ser))
+        ax.fill_between(xs, cap, rec, where=[r > c for r, c in zip(rec, cap)], color=RED, alpha=0.15, interpolate=True, zorder=1)
+        ax.plot(xs, cap, color=MUTED, linewidth=1.4, linestyle=(0, (3, 2)), zorder=2)
+        ax.plot(xs, rec, color=RED if rec[-1] > cap[-1] else AMBER, linewidth=2.2, marker="o", markersize=3.5, zorder=3)
+        ax.set_xticks(list(xs))
+        ax.set_xticklabels(qs)
+        money_axis(ax, rec + cap)
+        ax.set_ylim(0, max(rec + cap) * 1.12)
+        g = x.gap_change()
+        ax.set_title(short(x.bank.name, 26), fontsize=9.5, color=INK, loc="left", fontweight="bold", pad=15)
+        ax.text(0, 1.02, f"{x.used:.0f}% of cap · gap {'+' if g >= 0 else '-'}{_fmt_money(abs(g))} "
+                + ("wider" if g > 0 else "narrower"), transform=ax.transAxes, fontsize=8,
+                color=RED if g > 0 else BLUE, va="bottom")
+
+    multiples("trend_cap", [x for x in net.trend() if len([h for h in x.series() if h[2]]) >= 3], draw_cap)
+
+    def draw_special(ax, x):
+        ser = x.series()
+        xs = range(len(ser))
+        rec = [h[1] for h in ser]
+        est = x.special_cap_est
+        if est:
+            ax.axhline(est, color=INK, linewidth=1.3, linestyle=(0, (3, 2)), zorder=2)
+            ax.fill_between(xs, [est] * len(rec), rec, where=[r > est for r in rec], color=RED, alpha=0.15,
+                            interpolate=True, zorder=1)
+        col = RED if est and rec[-1] > est else BLUE
+        ax.plot(xs, rec, color=col, linewidth=2.2, marker="o", markersize=3.5, zorder=3)
+        ax.set_xticks(list(xs))
+        ax.set_xticklabels([qlab(h[0]) for h in ser])
+        money_axis(ax, rec + [est or 0])
+        ax.set_ylim(0, max(rec + [est or 0]) * 1.15)
+        g = x.special_gap_change()
+        ax.set_title(short(x.bank.name, 26), fontsize=9.5, color=INK, loc="left", fontweight="bold", pad=15)
+        ax.text(0, 1.02, (f"est. cap {_fmt_money(est)} · " if est else "") + f"{'+' if g >= 0 else '-'}{_fmt_money(abs(g))} in a year",
+                transform=ax.transAxes, fontsize=8, color=RED if g > 0 else BLUE, va="bottom")
+
+    multiples("trend_special", [x for x in net.special_users() if len(x.series()) >= 3], draw_special)
     return out
 
 

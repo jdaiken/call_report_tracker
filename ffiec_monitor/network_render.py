@@ -1,20 +1,40 @@
-"""Email (highlights), nine-page PDF and spreadsheet for the weekly Network Exposure report (network.py)."""
+"""Email (highlights), ten-page PDF and spreadsheet for the weekly Network Exposure report (network.py)."""
 from __future__ import annotations
 
 import io
 from xml.sax.saxutils import escape
 
-from .network import HIGH_UNINSURED, NAME, NEAR_CAP, TOP_N, Network, NetBank, _fmt_money, _pct, short, takeaways
+from .network import (EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
+                      short, takeaways)
 
-PAGES = 9
-EMAIL_IMAGES = ("map",)
+PAGES = 10
+EMAIL_IMAGES = ("map", "trend_cap", "special", "trend_special")
 CAP_NOTE = ("Reciprocal deposits are excepted from brokered only up to the lesser of $5 billion or 20% of total liabilities "
             "(12 CFR 337.6(e)). Banks not well capitalized and well rated are held to a special cap, their four-quarter "
             "average; ratings aren't public, so banks below well capitalized or under an enforcement order are shown as "
             "likely on it.")
-EXCLUDE_NOTE = ("Banks with $100 billion or more in assets are left out: every U.S. GSIB (JPMorgan Chase, Bank of America, "
-                "Citibank, Wells Fargo, Goldman Sachs, Morgan Stanley, BNY Mellon, State Street) and peers such as PNC, "
-                "U.S. Bank, Truist and Capital One.")
+EXCLUDE_NOTE = (f"Banks with ${EXCLUDE_ASSETS // 1_000_000} billion or more in assets are left out: every U.S. GSIB (JPMorgan "
+                "Chase, Bank of America, Citibank, Wells Fargo, Goldman Sachs, Morgan Stanley, BNY Mellon, State Street), "
+                "PNC, U.S. Bank, Truist, Capital One, and large regionals and brokerage-affiliated banks such as Raymond James Bank.")
+
+
+def _qlab(d) -> str:
+    return f"Q{(d.month - 1) // 3 + 1} {str(d.year)[2:]}"
+
+
+def _quarters(net: Network) -> list:
+    """Quarter ends for the trend tables, oldest first (from the first bank with full history)."""
+    for b in net.banks:
+        if len(b.history) >= QUARTERS:
+            return [h[0] for h in reversed(b.history[:QUARTERS])]
+    return []
+
+
+def _at(nb: NetBank, q):
+    for h in nb.history:
+        if h[0] == q:
+            return h
+    return None
 
 
 def _over(nb: NetBank) -> str:
@@ -36,7 +56,7 @@ def _tiles(net: Network) -> list[tuple[str, str]]:
     return [("BANKS ANALYZED", f"{s['banks']:,}"), ("USE RECIPROCAL", f"{s['users']:,}"),
             ("RECIPROCAL TOTAL", _fmt_money(s["reciprocal_total"])),
             (f"AT {NEAR_CAP:.0f}%+ OF CAP", f"{s['near_cap'] + s['over_cap']}"),
-            ("LIKELY SPECIAL CAP", f"{s['special']}"), (f"UNINSURED {HIGH_UNINSURED:.0f}%+", f"{s['high_uninsured']:,}")]
+            ("LIKELY SPECIAL CAP", f"{s['special_all']}"), (f"UNINSURED {HIGH_UNINSURED:.0f}%+", f"{s['high_uninsured']:,}")]
 
 
 # ------------------------------------------------------------------ email: highlights only
@@ -44,7 +64,7 @@ def render_html(net: Network) -> str:
     from .report import AMBER, GREEN, INK, MUTED, RED, RULE, SOFT, _e, _tile
     s = net.stats()
     colors = ["#4b5563", "#2a78d6", "#2a78d6", AMBER if s["near_cap"] + s["over_cap"] else GREEN,
-              RED if s["special"] else GREEN, "#eb6834"]
+              RED if s["special_all"] else GREEN, "#eb6834"]
     tiles = [(lab, val, col) for (lab, val), col in zip(_tiles(net), colors)]
     b = ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
          + '<td width="8"></td>'.join(_tile(lab, val, col) for lab, val, col in tiles) + "</tr></table></td></tr>")
@@ -88,18 +108,34 @@ def render_html(net: Network) -> str:
             f'{metric(nb)}</td></tr>' for nb in lst[:5])
         return h(title, note) + f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table></td></tr>'
 
+    def img(cid, alt):
+        return (f'<tr><td style="padding:8px 0 0"><img src="cid:net_{cid}" width="712" alt="{_e(alt)}" '
+                f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>' if cid in net.images else "")
+
     near, spec, close = net.near_cap(), net.special(), net.closest_to_special()
     b += mini(f"Nearest or over the cap ({len(near)})", "More placements above 100% count as brokered.", near,
               lambda nb: f"<b>{_pct(nb.used)}</b> of cap · {_fmt_money(nb.reciprocal)}")
-    b += mini(f"Likely on the special cap ({len(spec)})", "Held to the four-quarter average (estimated).", spec,
+    if "trend_cap" in net.images:
+        tr = net.trend()
+        wid = sum(1 for x in tr if x.gap_change() > 0)
+        b += h("Is the gap getting worse? Last five quarters",
+               f"Reciprocal deposits (line) against the cap (dashed); red shading = over the cap. The gap widened at {wid} of "
+               f"{len(tr)} banks at {NEAR_CAP:.0f}%+ of cap over the past year.")
+        b += img("trend_cap", "Five-quarter trend against the cap")
+    b += mini(f"Likely on the special cap ({len(spec)})", "Enforcement order or below well capitalized; held to the "
+              "four-quarter average (estimated).", spec,
               lambda nb: f"{_fmt_money(nb.reciprocal)} vs. est. {_fmt_money(nb.special_cap_est)}")
+    b += img("special", "Reciprocal deposits vs. estimated special cap")
+    if "trend_special" in net.images:
+        b += h("Special-cap banks: last five quarters", "Reciprocal deposits against the estimated special cap (dashed).")
+        b += img("trend_special", "Special-cap banks over five quarters")
     b += mini("Closest to the special cap", "Thinnest capital cushion above a well-capitalized line.", close,
               lambda nb: f"<b>{nb.cushion:+.2f} pts</b> · {_e(nb.binding)}")
 
     cov = (f"{s['banks']:,} banks, latest Call Report ({net.quarter_label} where filed, else the prior quarter)"
-           + (f"; {len(net.excluded)} banks with $100B+ in assets (GSIBs and peers) left out" if net.excluded else "")
+           + (f"; {len(net.excluded)} banks with ${EXCLUDE_ASSETS // 1_000_000}B+ in assets left out" if net.excluded else "")
            + (f"; {net.missing:,} not yet loaded" if net.missing else "") + ".")
-    b += (f'<tr><td style="padding:22px 0 0;font-size:14px;color:{INK}"><b>Full report attached:</b> nine-page PDF with '
+    b += (f'<tr><td style="padding:22px 0 0;font-size:14px;color:{INK}"><b>Full report attached:</b> ten-page PDF with '
           f'charts for every section, and a spreadsheet with every bank.</td></tr>'
           f'<tr><td style="padding:8px 0 0;font-size:12.5px;color:{MUTED}">{_e(cov)} Sources: FFIEC Call Reports; FDIC, '
           f'Fed, OCC and FinCEN enforcement records.</td></tr>')
@@ -116,10 +152,10 @@ def render_html(net: Network) -> str:
 def subject(net: Network) -> str:
     s = net.stats()
     return (f"{NAME} · {net.run_date:%a %b %-d} · {s['near_cap'] + s['over_cap']} at {NEAR_CAP:.0f}%+ of cap · "
-            f"{s['special']} likely on special cap · {s['high_uninsured']:,} with {HIGH_UNINSURED:.0f}%+ uninsured")
+            f"{s['special_all']} likely on special cap · {s['high_uninsured']:,} with {HIGH_UNINSURED:.0f}%+ uninsured")
 
 
-# ------------------------------------------------------------------ PDF (always nine pages)
+# ------------------------------------------------------------------ PDF (always ten pages)
 def render_pdf(net: Network) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
@@ -196,8 +232,9 @@ def render_pdf(net: Network) -> bytes:
     for t in takeaways(net):
         p1 += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
     p1 += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
-           P._p("2 Cap use by segment · 3 Exposure map · 4 Top 20 holders · 5 Nearest the cap · 6 Special cap · "
-                "7 Closest to the special cap · 8 Uninsured deposits · 9 Movers and notes", "note"),
+           P._p("2 Cap use by segment · 3 Exposure map · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
+                "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 Uninsured deposits and notes",
+                "note"),
            Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
 
     # 2. Cap use and segments
@@ -248,19 +285,22 @@ def render_pdf(net: Network) -> bytes:
     # 6. Special cap
     spec = net.special()
 
-    def p6(cap):
-        out = header(f"Likely on the special cap ({len(spec)})", 6)
-        out += note("Reciprocal users below well capitalized or under an active enforcement order. Their reciprocal deposits are "
-                    "limited to the four-quarter average (estimated here from quarter-end balances); anything above counts as brokered.")
-        out += chart("special", "Reciprocal deposits now vs. estimated special cap", 3.6)
-        why = ("WHY", 1.6, lambda nb: P._p(escape("; ".join(nb.special_cap)), "small"))
-        return out + ([tbl(spec[:cap], [BANK, REC, EST, ABOVE, why])] + more(min(cap, len(spec)), len(spec)) if spec else none())
+    def p7(cap):
+        out = header(f"Likely on the special cap ({len(spec)})", 7)
+        out += note("Every bank below well capitalized or under an active FDIC, Fed, OCC or FinCEN order, whether or not it holds "
+                    "reciprocal deposits now. Its reciprocal deposits are limited to the four-quarter average (estimated from the "
+                    "four quarter-ends before this one); anything above counts as brokered.")
+        out += chart("special", "Banks holding reciprocal deposits: now vs. estimated special cap", 3.3)
+        why = ("WHY", 1.45, lambda nb: P._p(escape("; ".join(nb.special_cap)), "small"))
+        estb = ("EST. SPECIAL CAP", 1.15, lambda nb: num(_fmt_money(nb.special_cap_est)
+                                                         + (f"<br/><font size='7' color='#5b626c'>{nb.est_basis}</font>" if nb.est_basis else "")))
+        return out + ([tbl(spec[:cap], [BANK, REC, estb, ABOVE, why])] + more(min(cap, len(spec)), len(spec)) if spec else none())
 
     # 7. Closest to the special cap
     close = net.closest_to_special()
 
-    def p7(cap):
-        out = header("Closest to the special cap", 7)
+    def p9(cap):
+        out = header("Closest to the special cap", 9)
         out += note("Reciprocal users not on the special cap, thinnest capital cushion first (community bank leverage ratio banks "
                     "against 9%). If one slips below well capitalized, it is held to its estimated special cap.")
         out += chart("cushion", "Capital cushion above the nearest well-capitalized line", 3.7)
@@ -271,30 +311,17 @@ def render_pdf(net: Network) -> bytes:
     # 8. Uninsured
     pro = net.prospects()
 
-    def p8(cap):
-        out = header("Uninsured deposits", 8)
-        out += chart("uninsured", "Uninsured share of deposits, by segment", 2.8)
-        out += [P._p(f"<b>HIGH UNINSURED, ROOM UNDER THE CAP ({len(pro)})</b>", "label"), Spacer(1, 2)]
-        out += note(f"Uninsured {HIGH_UNINSURED:.0f}%+ of deposits, under half the cap used, not on the special cap: the most "
-                    "run-exposed deposits and the most room for network coverage.")
-        out += chart("prospects", "", 3.0)
+    def p10(cap):
+        out = header("Uninsured deposits and notes", 10)
+        out += chart("uninsured", "Uninsured share of deposits, by segment", 2.5)
+        out += [P._p(f"<b>HIGH UNINSURED, ROOM UNDER THE CAP ({len(pro)})</b>: uninsured {HIGH_UNINSURED:.0f}%+ of deposits, "
+                     "under half the cap used, not on the special cap.", "small"), Spacer(1, 3)]
         unin = ("UNINSURED $", 1.0, lambda nb: num(_fmt_money(nb.uninsured)))
-        return out + ([tbl(pro[:cap], [BANK, unin, UNI, USED, REC])] + more(min(cap, len(pro)), len(pro)) if pro else none())
-
-    # 9. Movers and notes
-    mv = net.movers()
-
-    def p9(cap):
-        out = header("Movers and notes", 9)
-        if "movers" in net.images:
-            out += chart("movers", "Largest changes in reciprocal deposits from last quarter", 3.6)
-            out += note("Among the banks featured in this report (last quarter's Call Report is pulled for those only).")
-        else:
-            out += none("No prior-quarter figures on hand this week.")
-        out += [Spacer(1, 6), P._p("<b>NOTES</b>", "label"), Spacer(1, 3)]
+        out += ([tbl(pro[:cap], [BANK, unin, UNI, USED, REC])] + more(min(cap, len(pro)), len(pro)) if pro else none())
+        out += [Spacer(1, 8), P._p("<b>NOTES</b>", "label"), Spacer(1, 3)]
         for t in (CAP_NOTE, EXCLUDE_NOTE,
-                  "Estimated special cap: average of the last four quarter-end reciprocal balances (the rule uses the four-quarter "
-                  "average; daily averages aren't public). Shown when at least two quarters are on hand.",
+                  "Estimated special cap: average of the four quarter-end reciprocal balances before the current quarter "
+                  "(fewer when a bank hasn't filed that long; 'nQ avg' shows how many). Shown when at least two quarters are on hand.",
                   "Exam ratings aren't public, so 'likely on the special cap' means below well capitalized or under an active "
                   "FDIC, Fed, OCC or FinCEN order (civil money penalties and orders over 10 years old excluded).",
                   f"Coverage: {s['banks']:,} banks from their latest Call Report ({net.quarter_label} where filed, else the prior "
@@ -307,8 +334,47 @@ def render_pdf(net: Network) -> bytes:
                                    "are in the spreadsheet.", "small")]
         return out
 
+    qs = _quarters(net)
+
+    def qcols(fn):
+        return [(_qlab(q), 0.68, (lambda q: lambda nb: num(fn(nb, q)))(q)) for q in qs]
+
+    def pct_at(nb, q):
+        h = _at(nb, q)
+        return _pct(h[1] / h[2] * 100) if h and h[1] is not None and h[2] else "—"
+
+    def rec_at(nb, q):
+        h = _at(nb, q)
+        return _fmt_money(h[1]) if h and h[1] is not None else "—"
+
+    tr = net.trend()
+
+    def p6(cap):
+        wid = sum(1 for x in tr if x.gap_change() > 0)
+        out = header("Is the gap getting worse? Five quarters against the cap", 6)
+        out += note(f"Banks at {NEAR_CAP:.0f}%+ of the cap, largest widening first. Line = reciprocal deposits; dashed = the cap "
+                    f"(it moves with total liabilities); red shading = over the cap. Over the past year the gap widened at {wid} "
+                    f"of {len(tr)} banks.")
+        out += chart("trend_cap", "", 4.2)
+        chg = ("GAP CHANGE", 0.95, lambda nb: num(f"<b>{'+' if nb.gap_change() >= 0 else '-'}{_fmt_money(abs(nb.gap_change()))}</b>"
+                                                 f"<br/><font size='7' color='#5b626c'>{'wider' if nb.gap_change() > 0 else 'narrower'}</font>"))
+        return out + ([tbl(tr[:cap], [BANK] + qcols(pct_at) + [chg])] + more(min(cap, len(tr)), len(tr)) if tr else
+                      none("Not enough history on hand yet."))
+
+    sp = [x for x in net.special_users() if len(x.series()) >= 2]
+
+    def p8(cap):
+        out = header("Special-cap banks: five quarters", 8)
+        out += note("Reciprocal deposits each quarter against the estimated special cap (dashed). Rising balances while held "
+                    "to the special cap mean more would count as brokered.")
+        out += chart("trend_special", "", 4.2)
+        dirn = ("1-YR CHANGE", 0.95, lambda nb: num(f"<b>{'+' if nb.special_gap_change() >= 0 else '-'}"
+                                                   f"{_fmt_money(abs(nb.special_gap_change()))}</b>"))
+        return out + ([tbl(sp[:cap], [BANK] + qcols(rec_at) + [EST, dirn])] + more(min(cap, len(sp)), len(sp)) if sp else
+                      none("Not enough history on hand yet."))
+
     pages = [P._fit(lambda _c: p1, 0), P._fit(lambda _c: p2, 0), P._fit(p3, TOP_N), P._fit(p4, TOP_N), P._fit(p5, 12),
-             P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 10), P._fit(p9, 0)]
+             P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 12), P._fit(p9, 12), P._fit(p10, 10)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
@@ -443,6 +509,46 @@ def build_workbook(net: Network) -> bytes:
     ss.cell(row=ex, column=1, value=EXCLUDE_NOTE + (f" Left out this week: {len(net.excluded)}." if net.excluded else "")
             ).font = _font(color="5B626C", italic=True)
     _widths(ss, {"A": 46, "B": 16, "C": 14, "D": 10, "E": 15, "F": 10, "G": 17, "H": 17, "I": 18})
+
+    qs = _quarters(net)
+    ts = wb.create_sheet("5-quarter trend")
+    _title(ts, "Five-quarter trend", "Reciprocal deposits and the cap each quarter ($000) for the banks this report features. "
+           "Gap = reciprocal - cap; positive = over the cap.")
+    heads = ["Institution", "Location", "Likely special cap", "Est. special cap ($000)"]
+    for q in qs:
+        heads += [f"{_qlab(q)} reciprocal", f"{_qlab(q)} cap", f"{_qlab(q)} gap"]
+    heads += ["Gap change, first to last"]
+    _header_row(ts, 4, heads)
+    feat = [b for b in net.banks if len(b.history) >= 2]
+    feat.sort(key=lambda b: -(b.gap_change() or -1e18))
+    for i, nb in enumerate(feat, 5):
+        vals = [nb.bank.name, nb.bank.location, "; ".join(nb.special_cap), nb.special_cap_est]
+        for c, v in enumerate(vals, 1):
+            ts.cell(row=i, column=c, value=v).font = _font(bold=(c == 1))
+        ts.cell(row=i, column=4).number_format = "#,##0"
+        first = last_ = None
+        for j, q in enumerate(qs):
+            c0 = 5 + 3 * j
+            hh = _at(nb, q)
+            ts.cell(row=i, column=c0, value=hh[1] if hh else None)
+            ts.cell(row=i, column=c0 + 1, value=hh[2] if hh else None)
+            L, M = get_column_letter(c0), get_column_letter(c0 + 1)
+            ts.cell(row=i, column=c0 + 2, value=f'=IF(AND(ISNUMBER({L}{i}),ISNUMBER({M}{i})),{L}{i}-{M}{i},"")')
+            for k in range(3):
+                ts.cell(row=i, column=c0 + k).number_format = "#,##0;(#,##0);-"
+                ts.cell(row=i, column=c0 + k).font = _font()
+            if hh and hh[1] is not None and hh[2]:
+                g = get_column_letter(c0 + 2)
+                first = first or f"{g}{i}"
+                last_ = f"{g}{i}"
+        cc = ts.cell(row=i, column=5 + 3 * len(qs), value=f"={last_}-{first}" if first and last_ != first else None)
+        cc.number_format = "#,##0;(#,##0);-"
+        cc.font = _font(bold=True)
+    if feat:
+        col = get_column_letter(5 + 3 * len(qs))
+        ts.conditional_formatting.add(f"{col}5:{col}{4 + len(feat)}", CellIsRule(operator="greaterThan", formula=["0"], fill=RED_FILL))
+    _widths(ts, {"A": 34, "B": 22, "C": 24, "D": 14, **{get_column_letter(c): 13 for c in range(5, 6 + 3 * len(qs))}})
+    ts.freeze_panes = "B5"
 
     for title, lst in (("Top 20 holders", net.top_exposure()), ("Near cap", net.near_cap()), ("Special cap", net.special()), ("Closest to special cap", net.closest_to_special()[:50]),
                        ("High uninsured", net.prospects())):
