@@ -248,6 +248,12 @@ def risk_score(b: "NetBank") -> tuple[int, dict]:
     return sum(v[0] for v in lv.values()), lv
 
 
+def _size(meta, r: dict) -> float:
+    """Best figure for a bank's size ($000): stored assets, the filing's total assets, or total liabilities (a floor).
+    institution_meta can lack assets for some filers, so the largest of the three is used."""
+    return max(meta.total_assets or 0, _num(r, "total_assets") or 0, _num(r, LIABILITIES_RAW_KEY) or 0)
+
+
 def _num(r: dict, k: str) -> Optional[float]:
     v = r.get(k)
     return float(v) if isinstance(v, (int, float)) else None
@@ -275,10 +281,10 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         meta = db.get_institution_meta(conn, rssd)
         if meta is None:
             continue
-        if excluded_bank(meta.name, meta.total_assets):
+        r = json.loads(raw) if raw else {}
+        if excluded_bank(meta.name, _size(meta, r)):            # known large: skip before any pull
             net.excluded.append(meta.name)
             continue
-        r = json.loads(raw) if raw else {}
         if not any(isinstance(r.get(k), (int, float)) for k in NETWORK_KEYS[1:]):
             if client is None or net.pulled >= max_pulls:
                 net.missing += 1
@@ -299,12 +305,19 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
             conn.execute("UPDATE call_report_snapshots SET ratios = ? WHERE id_rssd = ? AND period_end = ?",
                          [json.dumps(merged), rssd, period_end])
             r = merged
+        size = _size(meta, r)
+        if excluded_bank(meta.name, size):
+            net.excluded.append(meta.name)
+            continue
         b = _bank(meta, period_end)
+        if not meta.total_assets and size:
+            from .report import fmt_assets
+            b.assets, b.assets_raw = fmt_assets(size), size
         rec, liab = _num(r, RECIPROCAL_RAW_KEY), _num(r, LIABILITIES_RAW_KEY)
         cap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * liab) if liab else None
         unins, deps = _num(r, UNINSURED_RAW_KEY), _num(r, DEPOSITS_RAW_KEY)
         nb = NetBank(b, period_end, rec, cap, (rec / cap * 100) if (rec is not None and cap) else None, unins,
-                     (unins / deps * 100) if (unins is not None and deps) else None, deps, meta.total_assets or 0)
+                     (unins / deps * 100) if (unins is not None and deps) else None, deps, size)
         if capital_status(r):
             nb.special_cap.append("below well capitalized")
         nb.state = b.location.rsplit(",", 1)[-1].strip()

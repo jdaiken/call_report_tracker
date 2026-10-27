@@ -48,6 +48,13 @@ def main(max_pulls: int) -> None:
     pdf = network_render.render_pdf(net)
     pages = len(re.findall(rb"/Type /Page[^s]", pdf))
     print(f"PDF {pages} pages; charts: {', '.join(sorted(net.images))}")
+    big = sorted(net.banks, key=lambda b: -(b.assets or 0))[:3]
+    info = (f"left out {len(net.excluded)} banks of ${network.EXCLUDE_ASSETS // 1_000_000}B+; largest kept: "
+            + "; ".join(f"{b.bank.name} {b.bank.assets}" for b in big)
+            + "; highest risk: " + "; ".join(b.bank.name for b in net.risk(5)))
+    print(info)
+    if gha:
+        print(f"::notice title=Network scope::{info}")
     if gha:
         print(f"::notice title=Network PDF::{pages} pages; charts: {', '.join(sorted(net.images))}")
     stamp = run_date.isoformat()

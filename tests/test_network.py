@@ -111,3 +111,13 @@ def test_history_cache_and_trend(monkeypatch):
     assert [x.bank.name for x in net.trend()] == ["Bank 1"]
     network.collect(conn, None, date(2026, 10, 26), prior_lookup=look)
     assert Client.calls == 4                                                         # cached
+
+
+def test_size_falls_back_when_meta_assets_missing(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    db.upsert_snapshot(conn, db.Snapshot("1", Q3, datetime.now(), _r(1_000, liab=40_000_000), datetime.now()))
+    db.upsert_institution_meta(conn, db.InstitutionMeta("1", "RAYMOND JAMES BANK", "St Petersburg", "FL", "1", None, Q3))
+    _add(conn, 2, _r(1_000))
+    net = network.collect(conn, None, date(2026, 10, 26))
+    assert net.excluded == ["RAYMOND JAMES BANK"] and [b.bank.name for b in net.banks] == ["Bank 2"]
