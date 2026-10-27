@@ -158,3 +158,18 @@ def test_only_this_quarters_filers(monkeypatch):
     net = network.collect(conn, None, date(2026, 10, 26), enforcement_sources=src, prior_lookup=lambda r, p: None)
     assert [b.bank.name for b in net.banks] == ["Bank 1"] and net.waiting == 1
     assert [b.bank.name for b in net.waiting_orders] == ["Bank 2"] and net.under_order() == []
+
+
+def test_pdf_stays_seven_pages_with_many_banks_waiting(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    _add(conn, 1, _r(1_000))
+    acts = []
+    for i in range(2, 82):
+        _add(conn, i, _r(1_000), period=date(2026, 6, 30))
+        acts.append(enforcement.Action("FDIC", f"Bank {i}", "IL", "Consent Order", date(2026, 1, 1), "u", "", str(9000 + i)))
+    src = enforcement.Sources(actions=acts, loaded={"FDIC": len(acts)})
+    net = network.build(network.collect(conn, None, date(2026, 10, 26), enforcement_sources=src, prior_lookup=lambda r, p: None))
+    assert len(net.waiting_orders) == 80
+    pdf = network_render.render_pdf(net)
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 7

@@ -382,7 +382,11 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(withrec[:cap], [BANK, WHY, REC, USED, EST, ABOVE])] + more(min(cap, len(withrec)), len(withrec))
                       if withrec else none("None of these banks holds reciprocal deposits."))
 
-    def p7(_cap):
+    def names(lst, cap):
+        shown = ", ".join(f"{short(b.bank.name)} ({b.state})" for b in lst[:cap])
+        return shown + (f" and {len(lst) - cap} more (all in the spreadsheet)" if len(lst) > cap else "")
+
+    def p7(cap):
         out = section(7)
         for t in ("**Reciprocal cap.** Reciprocal deposits count as non-brokered only up to the lesser of $5 billion or 20% "
                   "of total liabilities (12 CFR 337.6(e)). Above that, further placements count as brokered.",
@@ -399,9 +403,9 @@ def render_pdf(net: Network) -> bytes:
                   "is worth a question, not a finding. A bank downgraded privately (no public order) can't be seen.",
                   f"**{net.quarter_label} filers only.** {net.waiting:,} banks haven't filed their {net.quarter_label} Call "
                   "Report yet and are left out until they do"
-                  + (". Under order and waiting: " + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_orders)
+                  + (f". Under order and waiting ({len(net.waiting_orders)}): " + names(net.waiting_orders, cap)
                      if net.waiting_orders else "")
-                  + (". Treasury desk banks waiting: " + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_treasury)
+                  + (f". Treasury desk banks waiting ({len(net.waiting_treasury)}): " + names(net.waiting_treasury, 40)
                      if net.waiting_treasury else "") + ".",
                   "**Who is in this report.** Every bank under an active FDIC, Fed, OCC or FinCEN order; the 25 Q3 2026 "
                   "filers with the lowest Tier 1 leverage ratio; the 25 with the highest noncurrent loans plus foreclosed "
@@ -438,7 +442,7 @@ def render_pdf(net: Network) -> bytes:
                 f.drawWidth *= k
         return pg
 
-    pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 0)]
+    pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 60)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
