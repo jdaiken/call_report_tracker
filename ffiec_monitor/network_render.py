@@ -215,21 +215,27 @@ def render_pdf(net: Network) -> bytes:
         cells += [t, ""]
     row = Table([cells[:-1]], colWidths=[tw, 6] * 5 + [tw])
     row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    p1 = header("Summary", 1) + [row, Spacer(1, 12)]
-    if net.summary:
-        box = Table([[[P._p("ANALYSIS", "label"), Spacer(1, 3), P._p(escape(net.summary), "body")]]], colWidths=[P.WIDTH])
-        box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), P.SOFT), ("LINEBEFORE", (0, 0), (0, -1), 2.5, P.INK),
-                                 ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                                 ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
-        p1 += [box, Spacer(1, 12)]
-    p1 += [P._p("KEY TAKEAWAYS", "label"), Spacer(1, 4)]
-    for t in takeaways(net):
-        p1 += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
-    p1 += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
-           P._p("2 Highest-risk banks · 3 Three groups to watch · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
-                "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 All banks by size, and notes",
-                "note"),
-           Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
+    tk = takeaways(net)
+
+    def p1(cap):
+        """cap counts down: footnotes go first, then the lowest takeaways, until the page fits."""
+        out = header("Summary", 1) + [row, Spacer(1, 12)]
+        if net.summary:
+            box = Table([[[P._p("ANALYSIS", "label"), Spacer(1, 3), P._p(escape(net.summary), "body")]]], colWidths=[P.WIDTH])
+            box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), P.SOFT), ("LINEBEFORE", (0, 0), (0, -1), 2.5, P.INK),
+                                     ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                                     ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+            out += [box, Spacer(1, 12)]
+        out += [P._p("KEY TAKEAWAYS", "label"), Spacer(1, 4)]
+        for t in tk[:max(1, min(cap, len(tk)))]:
+            out += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
+        out += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
+                P._p("2 Highest-risk banks · 3 Three groups to watch · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
+                     "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 All banks by size, and notes",
+                     "note")]
+        if cap > len(tk):
+            out += [Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
+        return out
 
     # 2. Highest-risk banks
     rk = net.risk()
@@ -353,7 +359,7 @@ def render_pdf(net: Network) -> bytes:
         return out + ([tbl(sp[:cap], [BANK] + qcols(rec_at) + [EST, dirn])] + more(min(cap, len(sp)), len(sp)) if sp else
                       none("Not enough history on hand yet."))
 
-    pages = [P._fit(lambda _c: p1, 0), P._fit(p2, 8), P._fit(p3, 0), P._fit(p4, TOP_N), P._fit(p5, 12),
+    pages = [P._fit(p1, len(tk) + 1), P._fit(p2, 8), P._fit(p3, 0), P._fit(p4, TOP_N), P._fit(p5, 12),
              P._fit(p6, 12), P._fit(p7, 12), P._fit(p8, 12), P._fit(p9, 12), P._fit(p10, 0)]
     def squeeze(page):
         """Shrink the page's charts until it fits one page, so the PDF is always exactly PAGES long."""
