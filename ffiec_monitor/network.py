@@ -36,7 +36,7 @@ NEAR_CAP = 80.0          # % of the cap
 HIGH_UNINSURED = 40.0    # % of deposits
 RANK_N = 25              # banks in each ranking (lowest capital, weakest asset quality)
 RANK_MIN_ASSETS = 50_000  # $000: rankings skip banks under $50M, where one loan swings the ratios
-TREASURY_FILE = "data/treasury_banks.csv"
+TREASURY_FILE = "data/treasury-desk.csv"    # the treasury desk's list (name, aliases, optional state)
 TOP_N = 20               # banks on the exposure map and the top-exposure page
 QUARTERS = 5             # quarters of history for the trend pages (current + four before it)
 # Left out: banks with $25B+ in assets -- every U.S. GSIB, PNC, U.S. Bank, Truist, Capital One, and large regionals and
@@ -80,7 +80,7 @@ class NetBank:
     special_hist: list = field(default_factory=list)       # [(quarter end, reciprocal)]: the 4 quarters the special cap averages
     special_basis: str = ""                                # plain-English note on which quarters, and why
     orders: list = field(default_factory=list)             # active enforcement actions matched to this bank
-    treasury: bool = False                                 # on the treasury desk's list (data/treasury_banks.csv)
+    treasury: str = ""                                     # the treasury desk list entry this bank matched, if any
 
     @property
     def leverage(self) -> Optional[float]:
@@ -155,7 +155,22 @@ class Network:
     excluded: list = field(default_factory=list)            # names of the large banks left out
     current: Optional[date] = None                          # this quarter's end (rankings use this quarter's filers)
     treasury_loaded: int = 0                                # rows in the treasury desk list
-    treasury_unmatched: list = field(default_factory=list)
+    treasury_entries: list = field(default_factory=list)
+
+    @property
+    def treasury_unmatched(self) -> list:
+        """List entries with no Call Report filer this quarter (e.g. U.S. branches of foreign banks, which file the FFIEC
+        002 instead)."""
+        hit = {b.treasury for b in self.banks if b.treasury}
+        return [n for n in self.treasury_entries if n not in hit]
+
+    def treasury_multi(self) -> dict:
+        """List entries that matched more than one bank (generic names); worth pinning with a state."""
+        c = {}
+        for b in self.banks:
+            if b.treasury:
+                c.setdefault(b.treasury, []).append(b)
+        return {k: v for k, v in c.items() if len(v) > 1}
 
     # -------- the banks this report covers
     def _ranked(self, key, reverse: bool) -> list[NetBank]:
@@ -355,12 +370,14 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         [floor]).fetchall()
     net = Network(run_date, [], _quarter(current))
     net.current = current
+    tmatch = _treasury_matcher(net)
     for rssd, period_end, raw in rows:
         meta = db.get_institution_meta(conn, rssd)
         if meta is None:
             continue
         r = json.loads(raw) if raw else {}
-        if excluded_bank(meta.name, _size(meta, r)):            # known large: skip before any pull
+        tname = tmatch.match(" ".join((meta.name or "").split()), meta.state or "") if tmatch else None
+        if not tname and excluded_bank(meta.name, _size(meta, r)):   # known large: skip before any pull (treasury list kept)
             net.excluded.append(meta.name)
             continue
         if not any(isinstance(r.get(k), (int, float)) for k in NETWORK_KEYS[1:]):
@@ -384,7 +401,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                          [json.dumps(merged), rssd, period_end])
             r = merged
         size = _size(meta, r)
-        if excluded_bank(meta.name, size):
+        if not tname and excluded_bank(meta.name, size):
             net.excluded.append(meta.name)
             continue
         b = _bank(meta, period_end)
@@ -399,6 +416,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         if capital_status(r):
             nb.special_cap.append("below well capitalized")
         nb.state = b.location.rsplit(",", 1)[-1].strip()
+        nb.treasury = tname or ""
         nb.capital = {k: _num(r, k) for k in ("tier1_leverage_ratio", "tier1_rbc_ratio", "total_rbc_ratio", "cet1_ratio")}
         nb.cushion, nb.binding = capital_cushion(nb.capital)
         nb.ratios = {k: _num(r, k) for k in ("noncurrent_loans_oreo_ratio", "roaa", "net_noncore_funding_dependence_ratio",
@@ -420,7 +438,6 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
     # Five quarters of history for every bank the report features: reciprocal deposits and the cap each quarter,
     # for the estimated special cap and the trend pages. Pulled once and cached (network_history).
     if prior_lookup is not None:
-        load_treasury(net)
         focus = {}
         for b in net.special() + net.focus():
             focus[id(b)] = b
@@ -444,31 +461,20 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
     return net
 
 
-def load_treasury(net: "Network", path: Optional[str] = None) -> None:
-    """Mark the treasury desk's banks. CSV columns: name, state (2-letter), and optionally rssd or cert. Matched by
-    RSSD, then FDIC cert, then exact name + state (names are normalized the same way as enforcement matching)."""
-    import csv
+def _treasury_matcher(net: "Network", path: Optional[str] = None):
+    """The treasury desk's list (treasury_desk.py does the name matching). Records how many entries it has; banks on
+    it are kept even above the size cutoff, since the desk asked for them by name."""
     from pathlib import Path
+    from .treasury_desk import load
     f = Path(__file__).resolve().parent.parent / (path or TREASURY_FILE)
     if not f.exists():
-        return
-    from .enforcement import normalize_bank_name
-    by_rssd = {b.bank.rssd: b for b in net.banks}
-    by_cert = {str(b.bank.cert).lstrip("0"): b for b in net.banks if b.bank.cert}
-    by_name = {}
-    for b in net.banks:
-        by_name.setdefault((normalize_bank_name(b.bank.name), b.state.upper()), []).append(b)
-    rows = [r for r in csv.DictReader(f.open()) if any((v or "").strip() for v in r.values())]
-    net.treasury_loaded = len(rows)
-    for r in rows:
-        hit = by_rssd.get((r.get("rssd") or "").strip()) or by_cert.get((r.get("cert") or "").strip().lstrip("0"))
-        if hit is None:
-            cands = by_name.get((normalize_bank_name(r.get("name") or ""), (r.get("state") or "").strip().upper()), [])
-            hit = cands[0] if len(cands) == 1 else None
-        if hit is None:
-            net.treasury_unmatched.append(r.get("name") or "?")
-        else:
-            hit.treasury = True
+        return None
+    m = load(f)
+    import csv
+    net.treasury_entries = [(r.get("name") or "").strip() for r in csv.DictReader(open(f, encoding="utf-8-sig"))
+                            if (r.get("name") or "").strip()]
+    net.treasury_loaded = len(net.treasury_entries)
+    return m
 
 
 def _qend(d: date) -> date:

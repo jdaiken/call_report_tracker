@@ -154,7 +154,8 @@ def headlines(net: Network) -> list[str]:
         f"{len(uo)} banks are under an active enforcement order",
         (f"Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}% leverage" if lc else "No Q3 filers ranked yet"),
         (f"Weakest asset quality: {short(wa[0].bank.name)} at {wa[0].noncurrent:.1f}% noncurrent" if wa else "No Q3 filers ranked yet"),
-        (f"{len(tl)} of the treasury desk's {net.treasury_loaded} banks matched" if net.treasury_loaded
+        (f"{net.treasury_loaded - len(net.treasury_unmatched)} of the treasury desk's {net.treasury_loaded} banks found in "
+         f"the Call Reports" if net.treasury_loaded
          else "The treasury desk's list hasn't been loaded yet"),
         f"{len(over)} of these banks {'holds' if len(over) == 1 else 'hold'} more than their estimated special cap",
         "How the measures are built",
@@ -321,12 +322,18 @@ def render_pdf(net: Network) -> bytes:
     def p5(cap):
         out = section(5)
         if not net.treasury_loaded:
-            return out + lead("**The treasury desk's list hasn't been loaded yet.** Add the banks to data/treasury_banks.csv "
-                              "(name, state, and RSSD or FDIC cert if known) and they'll appear here every week.")
-        out += lead("Banks the treasury desk asked to follow, with the same measures as the rest of the report.")
+            return out + lead("**The treasury desk's list hasn't been loaded yet** (data/treasury-desk.csv).")
+        out += lead("The banks on the Treasury Desk alert list, with the same measures as the rest of the report. **These are "
+                    "kept even above the $25 billion cutoff**, since the desk asked for them by name.")
         if net.treasury_unmatched:
-            out += [p(escape("Not matched to a Call Report filer: " + ", ".join(net.treasury_unmatched)), "note"), Spacer(1, 6)]
-        return out + ([tbl(tl[:cap], [BANK, LEV, NCL, REC, USED, EST])] + more(min(cap, len(tl)), len(tl)) if tl else none())
+            out += [p(escape("No Call Report this quarter: " + ", ".join(net.treasury_unmatched)
+                             + ". U.S. branches of foreign banks file the FFIEC 002 instead; others may not have filed Q3 yet."),
+                      "note"), Spacer(1, 4)]
+        multi = net.treasury_multi()
+        if multi:
+            out += [p(escape("Generic names that matched more than one bank (all shown; pin a state in the list to narrow): "
+                             + "; ".join(f"{k} ({len(v)})" for k, v in multi.items())), "note"), Spacer(1, 6)]
+        return out + ([tbl(tl[:cap], [BANK, LEV, NCL, ROA, REC, USED, EST])] + more(min(cap, len(tl)), len(tl)) if tl else none())
 
     def p6(cap):
         out = section(6) + lead("Every bank in this report that holds reciprocal deposits. Navy tick = estimated special cap "

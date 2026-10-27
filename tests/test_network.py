@@ -117,10 +117,10 @@ def test_size_falls_back_when_meta_assets_missing(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     conn = db.connect(":memory:")
     db.upsert_snapshot(conn, db.Snapshot("1", Q3, datetime.now(), _r(1_000, liab=40_000_000), datetime.now()))
-    db.upsert_institution_meta(conn, db.InstitutionMeta("1", "RAYMOND JAMES BANK", "St Petersburg", "FL", "1", None, Q3))
+    db.upsert_institution_meta(conn, db.InstitutionMeta("1", "BIG REGIONAL BANK", "St Petersburg", "FL", "1", None, Q3))
     _add(conn, 2, _r(1_000))
     net = network.collect(conn, None, date(2026, 10, 26))
-    assert net.excluded == ["RAYMOND JAMES BANK"] and [b.bank.name for b in net.banks] == ["Bank 2"]
+    assert net.excluded == ["BIG REGIONAL BANK"] and [b.bank.name for b in net.banks] == ["Bank 2"]
 
 
 def test_report_banks_rankings_and_treasury(monkeypatch, tmp_path):
@@ -131,10 +131,12 @@ def test_report_banks_rankings_and_treasury(monkeypatch, tmp_path):
     _add(conn, 5, {**_r(1_000, liab=30_000, lev=3.0), "noncurrent_loans_oreo_ratio": 9.0}, assets=40_000)   # under $50M: not ranked
     _add(conn, 6, {**_r(1_000, lev=2.0)}, period=date(2026, 6, 30))                            # last quarter: not ranked
     f = tmp_path / "t.csv"
-    f.write_text("name,state,rssd,cert\nBank 3,IL,,\nNo Such Bank,TX,,\n")
+    f.write_text("name,aliases,state\nBank 3,,IL\nNo Such Bank,,TX\nBig Bank,,\n")
+    _add(conn, 7, _r(1_000), assets=60_000_000)                                          # $60B, on the list: kept
+    db.upsert_institution_meta(conn, db.InstitutionMeta("7", "BIG BANK", "Springfield", "IL", "9007", 60_000_000, Q3))
     monkeypatch.setattr(network, "TREASURY_FILE", str(f))
     net = network.collect(conn, None, date(2026, 10, 26), prior_lookup=lambda rssd, p: None)
     assert [b.bank.name for b in net.lowest_capital(2)] == ["Bank 1", "Bank 2"]
     assert net.weakest_assets(1)[0].bank.name == "Bank 2"
-    assert [b.bank.name for b in net.treasury_list()] == ["Bank 3"] and net.treasury_unmatched == ["No Such Bank"]
-    assert {b.bank.name for b in net.focus()} == {"Bank 1", "Bank 2", "Bank 3", "Bank 4"}
+    assert {b.bank.name for b in net.treasury_list()} == {"Bank 3", "BIG BANK"} and net.treasury_unmatched == ["No Such Bank"]
+    assert {b.bank.name for b in net.focus()} == {"Bank 1", "Bank 2", "Bank 3", "Bank 4", "BIG BANK"}
