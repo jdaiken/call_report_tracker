@@ -301,12 +301,47 @@ def render_pdf(net: Network) -> bytes:
         extra = f" (+{len(nb.orders) - 1} more)" if len(nb.orders) > 1 else ""
         return p(escape(f"{o.agency} {o.action}" + (f", {o.start:%b %Y}" if o.start else "") + extra), "note")
 
-    def p2(cap):
+    def order_grid(banks):
+        """Every order bank in a compact three-column grid: name, then state, agency, order and reciprocal."""
+        def cell(b):
+            o = sorted(b.orders, key=lambda a: a.start or date.min, reverse=True)[0]
+            act = o.action.replace("Agreement", "Agmt").replace("Cease and Desist", "C&D")
+            line2 = f"{b.state} · {o.agency} {act}" + (f" {o.start:%b %y}" if o.start else "")
+            rec = (f" · {_fmt_money(b.reciprocal)}" if (b.reciprocal or 0) > 0 else "")
+            col = S.RED if (b.over_special or 0) > 0 else S.MUTED
+            return p(f"<font name='Inter-SemiBold'>{escape(short(b.bank.name, 34))}</font><br/>"
+                     f"<font size='6.6' color='{S.MUTED}'>{escape(line2)}</font>"
+                     f"<font size='6.6' color='{col}'>{escape(rec)}</font>", "cell")
+        cells = [cell(b) for b in banks]
+        rows = [cells[i:i + 3] + [""] * (3 - len(cells[i:i + 3])) for i in range(0, len(cells), 3)]
+        t = Table(rows, colWidths=[WIDTH / 3] * 3)
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                               ("RIGHTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 2),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]
+                              + [("LINEBELOW", (0, i), (-1, i), 0.4, C(S.RULE)) for i in range(len(rows))]))
+        return t
+
+    def p2_build(with_chart, n):
         out = section(2) + lead("Every bank matched to an active FDIC, Fed, OCC or FinCEN order (civil money penalties and "
-                                "orders over 10 years old left out). **A bank under order is held to its special cap**: bar = "
-                                "reciprocal deposits; navy tick = estimated special cap; red = over it.") + chart("orders", 3.2)
-        ordc = ("ORDER", 1.9, order_text)
-        return out + ([tbl(uo[:cap], [BANK, ordc, LEV, NCL, REC, EST])] + more(min(cap, len(uo)), len(uo)) if uo else none())
+                                "orders over 10 years old left out), largest reciprocal balance first. **A bank under order is "
+                                "held to its special cap**. Amount = reciprocal deposits (red = above our special-cap estimate; "
+                                "estimates are on page 6).")
+        if with_chart:
+            out += chart("orders", 3.0)
+        if not uo:
+            return out + none()
+        out += [order_grid(uo[:n])]
+        if n < len(uo):
+            out += more(n, len(uo))
+        return out
+
+    def p2_fit():
+        n = len(uo)
+        for with_chart, k in [(True, n), (False, n)] + [(False, k) for k in range(n - 1, 0, -3)]:
+            pg = p2_build(with_chart, k)
+            if height(pg) <= FRAME_H:
+                return pg
+        return p2_build(False, min(n, 9))
 
     def p3(cap):
         out = section(3) + lead(f"The {len(lc)} Q3 filers with the **lowest Tier 1 leverage ratio** (banks under $50 million "
@@ -394,7 +429,7 @@ def render_pdf(net: Network) -> bytes:
                 f.drawWidth *= k
         return pg
 
-    pages = [fit(p1, len(tk) + 1), fit(p2, 12), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 0)]
+    pages = [fit(p1, len(tk) + 1), p2_fit(), fit(p3, 12), fit(p4, 12), fit(p5, 25), fit(p6, 12), fit(p7, 0)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
