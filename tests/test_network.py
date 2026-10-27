@@ -146,3 +146,15 @@ def test_report_banks_rankings_and_treasury(monkeypatch, tmp_path):
     assert net.weakest_assets(1)[0].bank.name == "Bank 2"
     assert {b.bank.name for b in net.treasury_list()} == {"Bank 3", "BIG BANK"} and net.treasury_unmatched == ["No Such Bank"]
     assert {b.bank.name for b in net.focus()} == {"Bank 1", "Bank 2", "Bank 3", "Bank 4", "BIG BANK"}
+
+
+def test_only_this_quarters_filers(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    _add(conn, 1, _r(1_000))                                         # filed Q3
+    _add(conn, 2, _r(2_000), period=date(2026, 6, 30))               # only Q2 so far, under order
+    src = enforcement.Sources(actions=[enforcement.Action("FDIC", "Bank 2", "IL", "Consent Order", date(2026, 8, 6),
+                                                          "u", "", "9002")], loaded={"FDIC": 1})
+    net = network.collect(conn, None, date(2026, 10, 26), enforcement_sources=src, prior_lookup=lambda r, p: None)
+    assert [b.bank.name for b in net.banks] == ["Bank 1"] and net.waiting == 1
+    assert [b.bank.name for b in net.waiting_orders] == ["Bank 2"] and net.under_order() == []

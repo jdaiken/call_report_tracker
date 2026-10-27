@@ -107,7 +107,7 @@ def render_html(net: Network) -> str:
                   f'</td></tr>' for i in range(2, len(SECTIONS)))
     b += (f'<tr><td style="padding:30px 0 0">{kicker("In the attached report")}<table role="presentation" width="100%" '
           f'cellpadding="0" cellspacing="0" style="margin-top:6px">{toc}</table></td></tr>')
-    cov = (f"{s['banks']:,} banks, latest Call Report ({net.quarter_label} where filed, else the prior quarter)"
+    cov = (f"{s['banks']:,} banks with a {net.quarter_label} Call Report ({net.waiting:,} not yet filed are left out)"
            + (f"; {len(net.excluded)} banks of ${EXCLUDE_ASSETS // 1_000_000}B+ in assets left out" if net.excluded else "") + ".")
     b += (f'<tr><td style="padding:24px 0 0;font-size:12px;line-height:1.5;color:{S.MUTED}">Attached: seven-page PDF and a '
           f'spreadsheet with every bank. {_e(cov)} Sources: FFIEC Call Reports; FDIC, Federal Reserve, OCC and FinCEN '
@@ -155,8 +155,8 @@ def headlines(net: Network) -> list[str]:
         f"{len(uo)} banks are under an active enforcement order",
         (f"Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}% leverage" if lc else "No Q3 filers ranked yet"),
         (f"Weakest asset quality: {short(wa[0].bank.name)} at {wa[0].noncurrent:.1f}% noncurrent" if wa else "No Q3 filers ranked yet"),
-        (f"{net.treasury_loaded - len(net.treasury_unmatched)} of the treasury desk's {net.treasury_loaded} banks found in "
-         f"the Call Reports" if net.treasury_loaded
+        (f"{len({b.treasury for b in tl})} of the treasury desk's {net.treasury_loaded} banks have filed {net.quarter_label}"
+         if net.treasury_loaded
          else "The treasury desk's list hasn't been loaded yet"),
         f"{len(over)} order {'bank holds' if len(over) == 1 else 'banks hold'} more than our special-cap estimate",
         "How the measures are built",
@@ -265,7 +265,7 @@ def render_pdf(net: Network) -> bytes:
 
     def p1(cap):
         out = [p("WEEKLY", "kicker"), Spacer(1, 4), p(NAME, "title"), Spacer(1, 4),
-               p(f"{net.run_date:%B %-d, %Y} · Call Reports for {net.quarter_label} where filed, else the prior quarter", "lead"),
+               p(f"{net.run_date:%B %-d, %Y} · {net.quarter_label} Call Reports only ({net.waiting:,} banks not yet filed are left out)", "lead"),
                Spacer(1, 16), kt, Spacer(1, 18)]
         if net.summary:
             out += [p("SUMMARY", "kicker"), Spacer(1, 5), p(md(net.summary, *BOLD_NAVY), "body"), Spacer(1, 16)]
@@ -359,11 +359,14 @@ def render_pdf(net: Network) -> bytes:
         out = section(5)
         if not net.treasury_loaded:
             return out + lead("**The treasury desk's list hasn't been loaded yet** (data/treasury-desk.csv).")
+        if net.waiting_treasury:
+            out += [p(escape("Not filed for " + net.quarter_label + " yet (left out until they do): "
+                             + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_treasury)), "note"), Spacer(1, 4)]
         out += lead("The banks on the Treasury Desk alert list, with the same measures as the rest of the report. **These are "
                     "kept even above the $25 billion cutoff**, since the desk asked for them by name.")
         if net.treasury_unmatched:
-            out += [p(escape("No Call Report this quarter: " + ", ".join(net.treasury_unmatched)
-                             + ". U.S. branches of foreign banks file the FFIEC 002 instead; others may not have filed Q3 yet."),
+            out += [p(escape("No Call Report at all: " + ", ".join(net.treasury_unmatched)
+                             + " (U.S. branches of foreign banks file the FFIEC 002 instead)."),
                       "note"), Spacer(1, 4)]
         multi = net.treasury_multi()
         if multi:
@@ -394,6 +397,12 @@ def render_pdf(net: Network) -> bytes:
                   "quarter it slipped and **average its reported reciprocal deposits (RC-E) for the four quarter-ends before "
                   "it**. The real downgrade usually comes months before the order, so this is an estimate: a balance above it "
                   "is worth a question, not a finding. A bank downgraded privately (no public order) can't be seen.",
+                  f"**{net.quarter_label} filers only.** {net.waiting:,} banks haven't filed their {net.quarter_label} Call "
+                  "Report yet and are left out until they do"
+                  + (". Under order and waiting: " + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_orders)
+                     if net.waiting_orders else "")
+                  + (". Treasury desk banks waiting: " + ", ".join(f"{short(b.bank.name)} ({b.state})" for b in net.waiting_treasury)
+                     if net.waiting_treasury else "") + ".",
                   "**Who is in this report.** Every bank under an active FDIC, Fed, OCC or FinCEN order; the 25 Q3 2026 "
                   "filers with the lowest Tier 1 leverage ratio; the 25 with the highest noncurrent loans plus foreclosed "
                   "real estate (both rankings skip banks under $50 million); and the treasury desk's list.",

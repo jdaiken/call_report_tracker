@@ -36,6 +36,7 @@ NEAR_CAP = 80.0          # % of the cap
 HIGH_UNINSURED = 40.0    # % of deposits
 RANK_N = 25              # banks in each ranking (lowest capital, weakest asset quality)
 RANK_MIN_ASSETS = 50_000  # $000: rankings skip banks under $50M, where one loan swings the ratios
+CURRENT_QUARTER_ONLY = True  # report only banks that have filed this quarter's Call Report
 TREASURY_FILE = "data/treasury-desk.csv"    # the treasury desk's list (name, aliases, optional state)
 TOP_N = 20               # banks on the exposure map and the top-exposure page
 QUARTERS = 5             # quarters of history for the trend pages (current + four before it)
@@ -160,12 +161,15 @@ class Network:
     current: Optional[date] = None                          # this quarter's end (rankings use this quarter's filers)
     treasury_loaded: int = 0                                # rows in the treasury desk list
     treasury_entries: list = field(default_factory=list)
+    waiting: int = 0                                        # banks left out because they haven't filed this quarter yet
+    waiting_orders: list = field(default_factory=list)
+    waiting_treasury: list = field(default_factory=list)
 
     @property
     def treasury_unmatched(self) -> list:
         """List entries with no Call Report filer this quarter (e.g. U.S. branches of foreign banks, which file the FFIEC
         002 instead)."""
-        hit = {b.treasury for b in self.banks if b.treasury}
+        hit = {b.treasury for b in self.banks + self.waiting_treasury if b.treasury}
         return [n for n in self.treasury_entries if n not in hit]
 
     def treasury_multi(self) -> dict:
@@ -439,6 +443,14 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                             nb.special_cap.append("under an enforcement order")
                         if m.action.start and (nb.order_date is None or m.action.start < nb.order_date):
                             nb.order_date = m.action.start
+    # This quarter's filers only: a bank that hasn't filed its Call Report for this quarter yet is left out (and
+    # named on the notes page if it's under order or on the treasury desk list, so nobody is silently missing).
+    if CURRENT_QUARTER_ONLY:
+        waiting = [b for b in net.banks if b.period != current]
+        net.waiting_orders = sorted([b for b in waiting if b.orders], key=lambda b: b.bank.name)
+        net.waiting_treasury = sorted([b for b in waiting if b.treasury], key=lambda b: b.bank.name)
+        net.waiting = len(waiting)
+        net.banks = [b for b in net.banks if b.period == current]
     # Five quarters of history for every bank the report features: reciprocal deposits and the cap each quarter,
     # for the estimated special cap and the trend pages. Pulled once and cached (network_history).
     if prior_lookup is not None:
@@ -663,6 +675,8 @@ def facts(net: Network) -> str:
     out.append(f"ORDER BANKS ABOVE OUR SPECIAL-CAP ESTIMATE (an estimate, not a finding): {len(over)} banks: " + "; ".join(
         f"{b.bank.name} {_fmt_money(b.over_special)} above" for b in sorted(over, key=lambda b: -(b.over_special or 0))[:5]))
     multi = net.treasury_multi()
+    if net.waiting_orders:
+        out.append(f"UNDER ORDER BUT NOT YET FILED {net.quarter_label} (left out): {len(net.waiting_orders)}.")
     out.append(f"TREASURY DESK LIST: {net.treasury_loaded} names; {net.treasury_loaded - len(net.treasury_unmatched)} found in "
                f"the Call Reports; {len(net.treasury_unmatched)} not found (U.S. branches of foreign banks file a different "
                "report)" + (f"; {len(multi)} generic names matched more than one bank" if multi else "") + ".")
@@ -671,7 +685,7 @@ def facts(net: Network) -> str:
 
 def _old_facts(net: Network) -> str:
     s = net.stats()
-    lines = [f"{NAME}, {net.run_date:%B %-d, %Y}; latest Call Reports ({net.quarter_label} where filed, else the prior quarter).",
+    lines = [f"{NAME}, {net.run_date:%B %-d, %Y}; {net.quarter_label} Call Reports only; {net.waiting:,} banks not yet filed are left out.",
              f"Banks analyzed: {s['banks']:,}. Banks holding reciprocal deposits: {s['users']:,} ({s['user_pct']:.0f}%). "
              f"Total reciprocal deposits: {_fmt_money(s['reciprocal_total'])}.",
              f"Median share of the reciprocal cap used, among users: {_pct(s['median_used'])}. "
