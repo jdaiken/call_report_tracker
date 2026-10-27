@@ -570,15 +570,9 @@ def short(name: str, n: int = 28) -> str:
 
 
 GROUP_NOTES = [
-    ("Likely on the special cap",
-     "What it is: banks below well capitalized or under an active enforcement order. They can hold reciprocal deposits only "
-     "up to their four-quarter average; anything above counts as brokered. Watch: red bars are already over the estimate."),
-    ("Largest reciprocal users",
-     "What it is: the biggest reciprocal balances and how much of the cap (lesser of $5B or 20% of liabilities) each uses. "
-     "Watch: over 100% means new placements count as brokered; rising = the gap grew over the past year."),
-    ("Thinnest capital cushion",
-     "What it is: reciprocal users not yet on the special cap with the least capital above a well-capitalized line. Watch: "
-     "the next banks that could become subject to the special cap."),
+    ("Likely on the special cap", "enforcement order or below well capitalized; held to the four-quarter average."),
+    ("Largest reciprocal users", "biggest balances; past 100% of the cap, new placements count as brokered."),
+    ("Thinnest capital cushion", "not yet on the special cap, but closest to it."),
 ]
 GROUP_N = 7
 
@@ -595,417 +589,249 @@ def watch_groups(net: "Network") -> list[tuple[str, str, list]]:
 
 
 # ------------------------------------------------------------------ charts
+# One visual language for every chart: horizontal bars, bank names on the left, one short value at the end of each
+# bar. Blue = normal, red = past a line (over the cap, over the special cap, below well capitalized). No legends:
+# the report text under each heading says what the bars and ticks mean.
+DRIVER_WORDS = {"Cap used": {3: "over cap", 2: "near cap"}, "Special cap": {3: "special cap"},
+                "Capital cushion": {3: "below well capitalized", 2: "thin capital"},
+                "Uninsured": {3: "60%+ uninsured", 2: "50%+ uninsured"}, "1-yr trend": {2: "gap rising fast"}}
+
+
+def drivers(b: "NetBank") -> str:
+    lv = risk_levels(b)
+    words = [DRIVER_WORDS.get(m, {}).get(v[0]) for m, v in lv.items()]
+    if lv["Special cap"][1] == "over est.":
+        words[1] = "over special cap"
+    return ", ".join(w for w in words if w) or "several moderate flags"
+
+
 def charts(net: Network) -> dict[str, bytes]:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from .analytics import AMBER, BLUE, GRID, INK, MUTED, RED, SURFACE
-    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 12, "axes.edgecolor": GRID,
-                         "axes.labelcolor": MUTED, "xtick.color": MUTED, "ytick.color": MUTED})
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+    from .analytics import BLUE, GRID, INK, MUTED, RED, SURFACE
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10, "axes.edgecolor": GRID,
+                         "axes.labelcolor": MUTED, "xtick.color": MUTED, "ytick.color": INK})
     out = {}
-    D = chr(92) + "$"            # a literal $ in matplotlib text
+    D = chr(92) + "$"
+    M = lambda t: t.replace("$", D)                       # noqa: E731  ($ starts math mode in matplotlib)
+    LIGHT = "#d5dbe1"
 
-    def save(fig, key, tight=True):
+    def save(fig, key):
         buf = io.BytesIO()
-        if tight:
-            fig.tight_layout(pad=0.6)
-        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE)
+        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE, bbox_inches="tight", pad_inches=0.08)
         plt.close(fig)
         out[key] = buf.getvalue()
 
-    def axes(w, h):
-        fig, ax = plt.subplots(figsize=(w, h))
-        fig.patch.set_facecolor(SURFACE)
+    def clean(ax, xgrid=True):
         ax.set_facecolor(SURFACE)
-        for side in ("top", "right", "left"):
+        for side in ("top", "right", "left", "bottom"):
             ax.spines[side].set_visible(False)
-        ax.tick_params(length=0, labelsize=11)
+        ax.tick_params(length=0, labelsize=9, pad=6)
+        if xgrid:
+            ax.xaxis.grid(True, color="#eef0f3", zorder=0)
+        ax.set_axisbelow(True)
+
+    def hbar(ax, banks, vals, colors, labels, xmax, ticks=None, ref=None, fmt=None):
+        n = len(banks)
+        ax.barh(range(n), vals, color=colors, height=0.62, zorder=3)
+        if ref is not None:
+            ax.axvline(ref, color=INK, linewidth=0.9, linestyle=(0, (3, 3)), zorder=2)
+        for i, (v, lab) in enumerate(zip(vals, labels)):
+            ax.text(max(v, 0) + xmax * 0.012, i, M(lab), va="center", fontsize=9, color=MUTED, zorder=4)
+        if ticks:
+            for i, t in enumerate(ticks):
+                if t:
+                    ax.plot([t, t], [i - 0.42, i + 0.42], color=INK, linewidth=2.0, solid_capstyle="butt", zorder=4)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels([short(b.bank.name, 28) for b in banks], fontsize=10)
+        ax.set_ylim(n - 0.4, -0.6)
+        ax.set_xlim(min(0, min(vals) * 1.15), xmax)
+        ax.xaxis.set_major_locator(MaxNLocator(5))
+        if fmt:
+            ax.xaxis.set_major_formatter(FuncFormatter(fmt))
+
+    def fig_for(n, extra=0.35):
+        fig, ax = plt.subplots(figsize=(7.4, 0.3 * n + extra))
+        fig.patch.set_facecolor(SURFACE)
+        clean(ax)
         return fig, ax
 
-    def bank_axis(ax, banks):
-        ax.set_yticks(range(len(banks)))
-        ax.set_yticklabels([short(b.bank.name, 26) for b in banks], fontsize=10, color=INK)
-        ax.set_ylim(-0.7, len(banks) - 0.3)
-        ax.invert_yaxis()
-        ax.xaxis.grid(True, color=GRID, zorder=0)
+    musd = lambda v, _: M(f"${v:,.0f}M")                    # noqa: E731
+    busd = lambda v, _: M(f"${v:,.1f}B" if v else "0")      # noqa: E731
+    pct = lambda v, _: f"{v:.0f}%"                           # noqa: E731
 
-    # 1. How much of the cap banks use
-    b = net.buckets()
-    fig, ax = axes(7.2, 3.0)
-    colors = [GRID, BLUE, BLUE, BLUE, AMBER, RED]
-    xs = range(len(b))
-    ax.bar(xs, [n for _, n in b], color=colors, width=0.66, edgecolor=SURFACE, linewidth=1.0, zorder=3)
-    ax.set_xticks(list(xs))
-    ax.set_xticklabels([lab for lab, _ in b])
-    ax.yaxis.grid(True, color=GRID, zorder=0)
-    for x, (_, n) in zip(xs, b):
-        ax.text(x, n, f"{n:,}", ha="center", va="bottom", fontsize=11.5, color=INK, fontweight="bold")
-    ax.set_xlabel("Share of the reciprocal cap used (no reciprocal deposits = None)", fontsize=11)
-    ax.set_ylim(0, max(n for _, n in b) * 1.18 + 1)
-    save(fig, "usage")
+    # Highest-risk banks: score, with what drives it
+    rk = net.risk()
+    if rk:
+        fig, ax = fig_for(len(rk))
+        sc = [risk_score(b)[0] for b in rk]
+        hbar(ax, rk, sc, [BLUE] * len(rk), [""] * len(rk), 15 * 2.3)
+        for i, (v, b) in enumerate(zip(sc, rk)):
+            ax.text(v + 0.35, i, str(v), va="center", fontsize=10, color=INK, fontweight="bold", zorder=4)
+            ax.text(v + 1.9, i, drivers(b), va="center", fontsize=9, color=MUTED, zorder=4)
+        ax.set_xticks([])
+        ax.xaxis.grid(False)
+        save(fig, "risk")
 
-    # 2. Segments: small multiples of cap use (share of banks in each segment)
-    segs = [(lab, [x for x in net.banks if lo <= (x.assets or 0) < hi]) for lab, lo, hi in SEGMENTS]
-    segs = [(lab, grp) for lab, grp in segs if grp]
-    if segs:
-        fig, axs = plt.subplots(1, len(segs), figsize=(7.4, 3.6), sharey=True)
-        fig.patch.set_facecolor(SURFACE)
-        axs = axs if len(segs) > 1 else [axs]
-        shortlab = ["None", "<25", "25-50", "50-80", "80-100", ">100"]
-        for ax, (lab, grp) in zip(axs, segs):
-            ax.set_facecolor(SURFACE)
-            for side in ("top", "right", "left"):
-                ax.spines[side].set_visible(False)
-            sub = Network(net.run_date, grp, net.quarter_label)
-            pct = [n / len(grp) * 100 for _, n in sub.buckets()]
-            ax.bar(range(len(pct)), pct, color=colors, width=0.7, edgecolor=SURFACE, linewidth=1.0, zorder=3)
-            ax.set_xticks(range(len(pct)))
-            ax.set_xticklabels(shortlab, fontsize=8.5, rotation=45, ha="right")
-            ax.yaxis.grid(True, color=GRID, zorder=0)
-            ax.tick_params(length=0, labelsize=9)
-            un = [x.uninsured_share for x in grp if x.uninsured_share is not None]
-            ax.set_title(lab.replace("$", D), fontsize=10.5, color=INK, loc="left", fontweight="bold", pad=36)
-            ax.text(0, 1.02, f"{len(grp):,} banks · {len(sub.users) / len(grp) * 100:.0f}% use it\nmedian uninsured "
-                    f"{statistics.median(un) if un else 0:.0f}%", transform=ax.transAxes, fontsize=8.5, color=MUTED, va="bottom")
-        axs[0].set_ylabel("% of banks in segment", fontsize=10)
-        fig.text(0.5, 0.01, "Share of the reciprocal cap used, %", ha="center", fontsize=10, color=MUTED)
-        fig.tight_layout(rect=(0, 0.04, 1, 1))
-        save(fig, "size", tight=False)
-
-    # 3. Exposure map: the top 20 holders, numbered (key in the table beside it)
-    top = [x for x in net.top_exposure() if x.used is not None and x.uninsured_share is not None]
-    if top:
-        close_ids = {id(x) for x in net.closest_to_special()[:10]}
-        fig, ax = axes(7.4, 4.9)
-        ax.spines["left"].set_visible(True)
-        big = max(x.reciprocal for x in top)
-        ymax = 150
-        ax.axhspan(100, ymax + 10, color=RED, alpha=0.05, zorder=0)
-        ax.axhspan(NEAR_CAP, 100, color=AMBER, alpha=0.07, zorder=0)
-        ax.axhline(100, color=RED, linewidth=1.1, linestyle=(0, (4, 3)), zorder=1)
-        ax.axhline(NEAR_CAP, color=AMBER, linewidth=1.0, linestyle=(0, (4, 3)), zorder=1)
-        ax.axvline(HIGH_UNINSURED, color=MUTED, linewidth=0.8, linestyle=(0, (2, 3)), zorder=1)
-        ax.text(0.005, 101, " over cap: more counts as brokered", transform=ax.get_yaxis_transform(), ha="left", va="bottom",
-                fontsize=9.5, color=RED)
-        ax.text(0.005, NEAR_CAP + 1, f" {NEAR_CAP:.0f}%+ of cap", transform=ax.get_yaxis_transform(), ha="left", va="bottom",
-                fontsize=9.5, color=AMBER)
-        ax.text(HIGH_UNINSURED + 0.6, 3, f"{HIGH_UNINSURED:.0f}% uninsured", fontsize=9, color=MUTED, va="bottom")
-        for i, x in enumerate(top, 1):
-            col = RED if x.special_cap else (AMBER if id(x) in close_ids else BLUE)
-            y = min(x.used, ymax)
-            ax.scatter([x.uninsured_share], [y], s=260 if x.used > ymax else 140 + 900 * (x.reciprocal / big), color=col, alpha=0.82,
-                       edgecolors=SURFACE, linewidths=1.2, zorder=3, marker="^" if x.used > ymax else "o")
-            ax.text(x.uninsured_share, y - (2.5 if x.used > ymax else 0), str(i), ha="center", va="center", fontsize=8.5, color="white", fontweight="bold", zorder=4)
-        for lab, col in (("Reciprocal user", BLUE), ("Likely on special cap", RED), ("Thin capital cushion", AMBER)):
-            ax.scatter([], [], s=70, color=col, label=lab)
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=3, frameon=False, fontsize=9.5, handletextpad=0.3)
-        ax.set_xlabel("Uninsured deposits, % of deposits", fontsize=11)
-        ax.set_ylabel("Reciprocal cap used, %", fontsize=11)
-        ax.yaxis.grid(True, color=GRID, zorder=0)
-        ax.set_xlim(0, max(60, max(x.uninsured_share for x in top) * 1.12))
-        ax.set_ylim(0, ymax + 10)
-        ax.set_yticks([0, 25, 50, 80, 100, 125, 150])
-        ax.set_yticklabels(["0", "25", "50", "80", "100", "125", "150+"])
-        save(fig, "map")
-
-    # 3b. Three groups to watch, one panel each (replaces the map in the email and on page 3)
+    # Three groups to watch: stacked panels, same style
     groups = watch_groups(net)
     if any(g for _, _, g in groups):
-        heights = [max(1, len(g)) * 0.29 + 0.9 for _, _, g in groups]
-        M = lambda t: t.replace("$", D)                       # noqa: E731  ($ starts math mode in matplotlib)
-        fig, axs = plt.subplots(3, 1, figsize=(7.4, sum(heights) + 0.2), gridspec_kw={"height_ratios": heights})
+        sizes = [max(1, len(g)) for _, _, g in groups]
+        fig, axs = plt.subplots(3, 1, figsize=(7.4, 0.3 * sum(sizes) + 2.1), gridspec_kw={"height_ratios": [s + 1.6 for s in sizes]})
         fig.patch.set_facecolor(SURFACE)
-        RISE = "  \u25B2 rising"
-        for ax, (title, sub, lst) in zip(axs, groups):
-            ax.set_facecolor(SURFACE)
-            for side in ("top", "right", "left"):
-                ax.spines[side].set_visible(False)
-            ax.tick_params(length=0, labelsize=9)
-            ax.set_title(title, fontsize=11.5, color=INK, loc="left", fontweight="bold", pad=17)
-            ax.text(0, 1.02, M(sub), transform=ax.transAxes, fontsize=8.8, color=MUTED, va="bottom")
+        for ax, (title, _sub, lst) in zip(axs, groups):
+            clean(ax)
+            ax.set_title(title, fontsize=11, color=INK, loc="left", fontweight="bold", pad=8)
             if not lst:
                 ax.axis("off")
                 ax.text(0, 0.5, "None this week.", transform=ax.transAxes, fontsize=10, color=MUTED)
                 continue
-            ys = range(len(lst))
             if title.startswith("Likely"):
-                vals = [(x.reciprocal or 0) / 1e3 for x in lst]
-                cols = [RED if (x.over_special or 0) > 0 else BLUE for x in lst]
-                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
-                for i, x in enumerate(lst):
-                    if x.special_cap_est:
-                        ax.plot([x.special_cap_est / 1e3] * 2, [i - 0.38, i + 0.38], color=INK, linewidth=2.2, zorder=4)
-                    lab = f"  {_fmt_money(x.reciprocal)} vs. est. cap {_fmt_money(x.special_cap_est)}"
-                    lab += " (over)" if (x.over_special or 0) > 0 else ""
-                    up = (x.special_gap_change() or 0) > 0
-                    ax.text(max(vals[i], (x.special_cap_est or 0) / 1e3), i, M(lab + (RISE if up else "")), va="center",
-                            fontsize=8.8, color=RED if up else INK, fontweight="bold" if up else "normal")
-                ax.set_xlim(0, max(max(vals), max(((x.special_cap_est or 0) / 1e3 for x in lst), default=0)) * 2.4)
-                ax.set_xlabel(f"Reciprocal deposits, {D}M (black tick = estimated special cap)", fontsize=9)
+                v = [(x.reciprocal or 0) / 1e3 for x in lst]
+                hbar(ax, lst, v, [RED if (x.over_special or 0) > 0 else BLUE for x in lst],
+                     [f"{_fmt_money(x.reciprocal)}" + (f"  (est. cap {_fmt_money(x.special_cap_est)})" if x.special_cap_est else "")
+                      for x in lst],
+                     max(max(v), max(((x.special_cap_est or 0) / 1e3 for x in lst), default=0)) * 1.75,
+                     ticks=[(x.special_cap_est or 0) / 1e3 for x in lst], fmt=musd)
             elif title.startswith("Largest"):
-                vals = [min(x.used or 0, 200) for x in lst]
-                cols = [RED if (x.used or 0) > 100 else AMBER if (x.used or 0) >= NEAR_CAP else BLUE for x in lst]
-                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
-                ax.axvline(100, color=RED, linewidth=1.0, linestyle=(0, (4, 3)), zorder=2)
-                for i, x in enumerate(lst):
-                    up = (x.gap_change() or 0) > 0 and (x.used or 0) >= NEAR_CAP
-                    ax.text(vals[i], i, M(f"  {_pct(x.used)} of cap · {_fmt_money(x.reciprocal)}" + (RISE if up else "")), va="center",
-                            fontsize=8.8, color=RED if up else INK, fontweight="bold" if up else "normal")
-                ax.set_xlim(0, 360)
+                v = [min(x.used or 0, 200) for x in lst]
+                hbar(ax, lst, v, [RED if (x.used or 0) > 100 else BLUE for x in lst],
+                     [f"{_pct(x.used)} of cap  ·  {_fmt_money(x.reciprocal)}" for x in lst], 330, ref=100, fmt=pct)
                 ax.set_xticks([0, 50, 100, 150, 200])
-                ax.set_xlabel("Share of the reciprocal cap used, % (dashed = the cap)", fontsize=9)
             else:
-                vals = [x.cushion for x in lst]
-                cols = [RED if v < 0 else AMBER if v < 0.5 else BLUE for v in vals]
-                ax.barh(ys, vals, color=cols, height=0.58, zorder=3)
-                ax.axvline(0, color=INK, linewidth=1.0, zorder=2)
-                for i, x in enumerate(lst):
-                    ax.text(max(vals[i], 0), i, M(f"  {x.cushion:+.2f} pts ({x.binding.split(' (')[0]}) · {_fmt_money(x.reciprocal)} reciprocal"),
-                            va="center", fontsize=8.8, color=INK)
-                lo = min(0.0, min(vals))
-                hi = max(0.0, max(vals))
-                span = max(hi - lo, 0.5)
-                ax.set_xlim(lo - span * 0.05, hi + span * 2.6)
-                ax.set_xlabel("Points above the nearest well-capitalized line (left of 0 = below it)", fontsize=9)
-            ax.set_yticks(list(ys))
-            ax.set_yticklabels([short(x.bank.name, 26) for x in lst], fontsize=9.8, color=INK)
-            ax.set_ylim(-0.6, len(lst) - 0.4)
-            ax.invert_yaxis()
-            ax.xaxis.grid(True, color=GRID, zorder=0)
-        fig.tight_layout(pad=0.6, h_pad=1.4)
-        save(fig, "groups", tight=False)
+                v = [x.cushion for x in lst]
+                hbar(ax, lst, v, [RED if c < 0 else BLUE for c in v], [f"{c:+.2f} pts" for c in v],
+                     max(0.5, max(v)) * 2.2 + 0.3, ref=0, fmt=lambda t, _: f"{t:+.0f}")
+        fig.tight_layout(h_pad=1.6)
+        save(fig, "groups")
 
-    # 4. Top 20: reciprocal deposits against the cap and the estimated special cap
+    # Top 20 holders: reciprocal deposits, tick = the cap
     top = net.top_exposure()
     if top:
-        fig, ax = axes(7.4, 4.4)
-        ys = range(len(top))
-        ax.barh(ys, [(x.cap or 0) / 1e6 for x in top], color=GRID, height=0.72, zorder=2, label="Reciprocal cap")
-        ax.barh(ys, [(x.reciprocal or 0) / 1e6 for x in top], height=0.36, zorder=3, label="Reciprocal deposits",
-                color=[RED if (x.used or 0) > 100 else AMBER if (x.used or 0) >= NEAR_CAP else BLUE for x in top])
-        est = [(i, x.special_cap_est / 1e6) for i, x in enumerate(top) if x.special_cap_est]
-        if est:
-            ax.scatter([v for _, v in est], [i for i, _ in est], marker="|", s=260, color=INK, linewidths=2.2, zorder=4,
-                       label="Est. special cap (4Q avg)")
-        for i, x in enumerate(top):
-            ax.text(max((x.cap or 0), (x.reciprocal or 0)) / 1e6, i, f"  {_pct(x.used)}", va="center", fontsize=9, color=INK)
-        bank_axis(ax, top)
-        ax.set_yticklabels([f"{i}. {short(x.bank.name, 24)}" for i, x in enumerate(top, 1)], fontsize=9.5, color=INK)
-        ax.set_xlabel(f"{D}B (label = % of cap used)", fontsize=10.5)
-        ax.set_xlim(0, max(max((x.cap or 0), (x.reciprocal or 0)) for x in top) / 1e6 * 1.16)
-        ax.legend(loc="lower right", frameon=False, fontsize=9)
+        fig, ax = fig_for(len(top))
+        v = [(x.reciprocal or 0) / 1e6 for x in top]
+        hbar(ax, top, v, [RED if (x.used or 0) > 100 else BLUE for x in top], [f"{_pct(x.used)} of cap" for x in top],
+             max(max(v), max((x.cap or 0) / 1e6 for x in top)) * 1.3, ticks=[(x.cap or 0) / 1e6 for x in top], fmt=busd)
         save(fig, "top")
 
-    # 5. Nearest or over the cap: lollipop of % of cap used
+    # Nearest or over the cap: % of cap used
     near = net.near_cap()[:15]
     if near:
-        fig, ax = axes(7.4, 3.8)
-        lim = 200
-        for i, x in enumerate(near):
-            v = min(x.used, lim)
-            col = RED if x.used > 100 else AMBER
-            ax.plot([0, v], [i, i], color=col, linewidth=1.6, zorder=2)
-            ax.scatter([v], [i], s=55, color=col, zorder=3)
-            ax.text(v + 3, i, f"{x.used:.0f}%" + (" ▶" if x.used > lim else ""), va="center", fontsize=9, color=INK)
-        ax.axvline(100, color=RED, linewidth=1.0, linestyle=(0, (4, 3)))
-        ax.axvline(NEAR_CAP, color=AMBER, linewidth=1.0, linestyle=(0, (4, 3)))
-        bank_axis(ax, near)
-        ax.set_xlim(0, lim * 1.12)
-        ax.set_xlabel("Reciprocal cap used, % (dashed lines at 80% and 100%)", fontsize=10.5)
+        fig, ax = fig_for(len(near))
+        v = [min(x.used, 200) for x in near]
+        hbar(ax, near, v, [RED if x.used > 100 else BLUE for x in near],
+             [f"{x.used:.0f}%  ·  {_fmt_money(x.reciprocal)}" for x in near], 290, ref=100, fmt=pct)
+        ax.set_xticks([0, 50, 100, 150, 200])
         save(fig, "nearcap")
 
-    # 6. Special cap: current reciprocal vs. estimated special cap
-    spec = net.special_users()[:15]
+    # Special cap: reciprocal deposits, tick = estimated special cap
+    spec = net.special_users()[:12]
     if spec:
-        fig, ax = axes(7.4, 3.6)
-        for i, x in enumerate(spec):
-            cur, est = x.reciprocal / 1e3, (x.special_cap_est or 0) / 1e3
-            if x.special_cap_est:
-                ax.plot([est, cur], [i, i], color=RED if cur > est else GRID, linewidth=2.4, zorder=2)
-                ax.scatter([est], [i], s=60, color=INK, marker="|", linewidths=2.4, zorder=3)
-            ax.scatter([cur], [i], s=60, color=RED if x.special_cap_est and cur > est else BLUE, zorder=4)
-        ax.scatter([], [], s=50, color=BLUE, label="Reciprocal deposits now")
-        ax.scatter([], [], s=50, color=INK, marker="|", linewidths=2.4, label="Est. special cap (4Q avg)")
-        ax.plot([], [], color=RED, linewidth=2.4, label="Above it: would count as brokered")
-        bank_axis(ax, spec)
-        from matplotlib.ticker import FuncFormatter
-        ax.set_xscale("log")
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{D}{v / 1e3:,.0f}B" if v >= 1e3 else f"{D}{v:,.0f}M"))
-        ax.set_xlabel("Log scale", fontsize=10.5)
-        ax.legend(loc="lower right", frameon=False, fontsize=9)
+        fig, ax = fig_for(len(spec))
+        v = [(x.reciprocal or 0) / 1e3 for x in spec]
+        hbar(ax, spec, v, [RED if (x.over_special or 0) > 0 else BLUE for x in spec],
+             [f"{_fmt_money(x.reciprocal)}" + (f"  (est. cap {_fmt_money(x.special_cap_est)})" if x.special_cap_est else "")
+              for x in spec],
+             max(max(v), max(((x.special_cap_est or 0) / 1e3 for x in spec), default=0)) * 1.75,
+             ticks=[(x.special_cap_est or 0) / 1e3 for x in spec], fmt=musd)
         save(fig, "special")
 
-    # 7. Closest to the special cap: capital cushion
-    close = net.closest_to_special()[:15]
+    # Closest to the special cap: capital cushion
+    close = net.closest_to_special()[:12]
     if close:
-        fig, ax = axes(7.4, 3.7)
-        for i, x in enumerate(close):
-            col = RED if x.cushion < 0 else AMBER if x.cushion < 0.5 else BLUE
-            ax.plot([0, x.cushion], [i, i], color=col, linewidth=1.6, zorder=2)
-            ax.scatter([x.cushion], [i], s=55, color=col, zorder=3)
-            ax.text(max(x.cushion, 0) + 0.05, i, f"{x.cushion:+.2f}  {x.binding}", va="center", fontsize=8.5, color=MUTED)
-        ax.axvline(0, color=INK, linewidth=1.0)
-        bank_axis(ax, close)
-        lo = min(0.0, min(x.cushion for x in close))
-        hi = max(0.0, max(x.cushion for x in close))
-        span = max(hi - lo, 0.5)
-        ax.set_xlim(lo - span * 0.08, hi + span * 0.9)
-        ax.set_xlabel("Points above the nearest well-capitalized line (0 = the line)", fontsize=10.5)
+        fig, ax = fig_for(len(close))
+        v = [x.cushion for x in close]
+        hbar(ax, close, v, [RED if c < 0 else BLUE for c in v], [f"{c:+.2f} pts" for c in v],
+             max(0.5, max(v)) * 2.0 + 0.3, ref=0, fmt=lambda t, _: f"{t:+.1f}")
         save(fig, "cushion")
 
-    # 8. Uninsured: distribution by segment, and the largest uninsured balances with room under the cap
+    # Five-quarter trends: small multiples, one bank per panel, one line + the line it is measured against
+    def qlab(d):
+        return f"Q{(d.month - 1) // 3 + 1} '{str(d.year)[2:]}"
+
+    def multiples(key, banks, series, ref_of, note_of):
+        banks = banks[:6]
+        if not banks:
+            return
+        rows = (len(banks) + 2) // 3
+        fig, axs = plt.subplots(rows, 3, figsize=(7.4, 1.95 * rows), squeeze=False)
+        fig.patch.set_facecolor(SURFACE)
+        for k, ax in enumerate(axs.flat):
+            clean(ax, xgrid=False)
+            if k >= len(banks):
+                ax.axis("off")
+                continue
+            x = banks[k]
+            ser = series(x)
+            xs = list(range(len(ser)))
+            rec = [h[1] for h in ser]
+            ref = ref_of(x, ser)
+            worse, txt = note_of(x)
+            col = RED if worse else BLUE
+            ax.plot(xs, ref, color=MUTED, linewidth=1.1, linestyle=(0, (3, 3)), zorder=2)
+            ax.plot(xs, rec, color=col, linewidth=2.2, zorder=3)
+            ax.scatter([xs[-1]], [rec[-1]], s=18, color=col, zorder=4)
+            ax.set_xticks([xs[0], xs[-1]])
+            ax.set_xticklabels([qlab(ser[0][0]), qlab(ser[-1][0])], fontsize=8)
+            hi = max(rec + ref) * 1.15 or 1
+            ax.set_ylim(0, hi)
+            ax.set_yticks([0, hi / 2.3, hi / 1.15])
+            div, unit = (1e6, "B") if hi >= 1e6 else (1e3, "M")
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _, d=div, u=unit: M(f"${v / d:,.1f}{u}" if d == 1e6 else f"${v / d:,.0f}{u}")))
+            ax.tick_params(axis="y", labelsize=7.5, colors=MUTED)
+            ax.yaxis.grid(True, color="#eef0f3", zorder=0)
+            ax.set_title(short(x.bank.name, 24), fontsize=9.5, color=INK, loc="left", fontweight="bold", pad=15)
+            ax.text(0, 1.03, M(txt), transform=ax.transAxes, fontsize=8.3, color=col, va="bottom")
+        fig.tight_layout(h_pad=1.8, w_pad=1.2)
+        save(fig, key)
+
+    capser = lambda x: [h for h in x.series() if h[2]]                         # noqa: E731
+    multiples("trend_cap", [x for x in net.trend() if len(capser(x)) >= 3], capser, lambda x, ser: [h[2] for h in ser],
+              lambda x: (x.gap_change() > 0, f"gap {'+' if x.gap_change() >= 0 else '-'}{_fmt_money(abs(x.gap_change()))} in a year"))
+    multiples("trend_special", [x for x in net.special_users() if len(x.series()) >= 3 and x.special_cap_est],
+              lambda x: x.series(), lambda x, ser: [x.special_cap_est] * len(ser),
+              lambda x: (x.special_gap_change() > 0,
+                         f"{'+' if x.special_gap_change() >= 0 else '-'}{_fmt_money(abs(x.special_gap_change()))} in a year"))
+
+    # All banks by size: share of the cap used (small multiples), and uninsured share
+    segs = [(lab, [x for x in net.banks if lo <= (x.assets or 0) < hi]) for lab, lo, hi in SEGMENTS]
+    segs = [(lab, grp) for lab, grp in segs if grp]
+    if segs:
+        fig, axs = plt.subplots(1, len(segs), figsize=(7.4, 2.5), sharey=True, squeeze=False)
+        fig.patch.set_facecolor(SURFACE)
+        labs = ["None", "<25%", "25-50", "50-80", "80-100", ">100%"]
+        for ax, (lab, grp) in zip(axs[0], segs):
+            clean(ax, xgrid=False)
+            sub = Network(net.run_date, grp, net.quarter_label)
+            pc = [n / len(grp) * 100 for _, n in sub.buckets()]
+            ax.bar(range(6), pc, color=[LIGHT, BLUE, BLUE, BLUE, BLUE, RED], width=0.72, zorder=3)
+            ax.set_xticks(range(6))
+            ax.set_xticklabels(labs, fontsize=7.5, color=MUTED, rotation=40, ha="right")
+            ax.yaxis.grid(True, color="#eef0f3", zorder=0)
+            ax.yaxis.set_major_formatter(FuncFormatter(pct))
+            ax.tick_params(axis="y", labelsize=8, colors=MUTED)
+            ax.set_title(M(lab), fontsize=9.5, color=INK, loc="left", fontweight="bold")
+        fig.tight_layout(w_pad=1.0)
+        save(fig, "size")
     segs = [(lab, [x.uninsured_share for x in net.banks if lo <= (x.assets or 0) < hi and x.uninsured_share is not None])
             for lab, lo, hi in SEGMENTS]
     segs = [(lab, v) for lab, v in segs if v]
     if segs:
-        fig, axs = plt.subplots(1, len(segs), figsize=(7.4, 2.8), sharey=False)
+        fig, axs = plt.subplots(1, len(segs), figsize=(7.4, 2.2), squeeze=False)
         fig.patch.set_facecolor(SURFACE)
-        axs = axs if len(segs) > 1 else [axs]
-        bins = list(range(0, 105, 10))
-        for ax, (lab, vals) in zip(axs, segs):
-            ax.set_facecolor(SURFACE)
-            for side in ("top", "right", "left"):
-                ax.spines[side].set_visible(False)
-            n, _, patches = ax.hist([min(v, 99.9) for v in vals], bins=bins, color=BLUE, edgecolor=SURFACE, zorder=3)
-            for p_, lo_ in zip(patches, bins):
-                if lo_ >= HIGH_UNINSURED:
-                    p_.set_facecolor("#eb6834")
-            ax.yaxis.grid(True, color=GRID, zorder=0)
-            ax.tick_params(length=0, labelsize=8.5)
-            hi_n = sum(1 for v in vals if v >= HIGH_UNINSURED)
-            ax.set_title(lab.replace("$", D), fontsize=10, color=INK, loc="left", fontweight="bold", pad=20)
-            ax.text(0, 1.02, f"median {statistics.median(vals):.0f}% · {hi_n:,} at {HIGH_UNINSURED:.0f}%+",
-                    transform=ax.transAxes, fontsize=8.5, color=MUTED, va="bottom")
-        axs[0].set_ylabel("Banks", fontsize=10)
-        fig.text(0.5, 0.01, "Uninsured deposits, % of deposits (orange = 40%+)", ha="center", fontsize=10, color=MUTED)
-        fig.tight_layout(rect=(0, 0.05, 1, 1))
-        save(fig, "uninsured", tight=False)
-    pro = net.prospects()[:12]
-    if pro:
-        fig, ax = axes(7.4, 3.0)
-        ax.barh(range(len(pro)), [(x.uninsured or 0) / 1e6 for x in pro], color="#eb6834", height=0.6, zorder=3)
-        for i, x in enumerate(pro):
-            ax.text((x.uninsured or 0) / 1e6, i, f"  {_pct(x.uninsured_share)} uninsured · {_pct(x.used or 0)} of cap",
-                    va="center", fontsize=8.5, color=MUTED)
-        bank_axis(ax, pro)
-        ax.set_xlim(0, max((x.uninsured or 0) for x in pro) / 1e6 * 1.6)
-        ax.set_xlabel(f"Uninsured deposits, {D}B", fontsize=10.5)
-        save(fig, "prospects")
-
-    # 0. Highest-risk banks: one row per bank, one colored cell per measure (green = fine ... red = worst)
-    rk = net.risk()
-    if rk:
-        from matplotlib.patches import FancyBboxPatch
-        level_color = {0: "#e8f3ec", 1: "#fdf1cf", 2: "#fbd9b8", 3: "#f6c4bd"}
-        level_ink = {0: "#2f7d4f", 1: "#8a6a00", 2: "#b4541a", 3: "#a3261b"}
-        cols = ["Reciprocal", "Cap\nused", "Special\ncap", "Capital\ncushion", "Uninsured\nshare", "1-yr\ntrend"]
-        fig = plt.figure(figsize=(7.4, 0.36 * len(rk) + 0.75))
-        fig.patch.set_facecolor(SURFACE)
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_xlim(0, 100)
-        n = len(rk)
-        ax.set_ylim(n + 1.3, -0.45)
-        ax.axis("off")
-        x_name, x0, w = 0.5, 40.0, 10.0
-        ax.text(x_name, 0.3, "BANK", fontsize=8.5, color=MUTED, fontweight="bold", va="center")
-        ax.text(x0 - 1.2, 0.3, "SCORE", fontsize=8.5, color=MUTED, fontweight="bold", va="center", ha="right")
-        for j, c in enumerate(cols):
-            ax.text(x0 + j * w + w / 2, 0.3, c.upper(), fontsize=7.6, color=MUTED, fontweight="bold", ha="center", va="center",
-                    linespacing=1.1)
-        for i, b in enumerate(rk, 1):
-            sc, lv = risk_score(b)
-            y = i + 0.15
-            ax.text(x_name, y, f"{i}. {short(b.bank.name, 24)}", fontsize=9.5, color=INK, fontweight="bold", va="center")
-            ax.text(x0 - 1.2, y, str(sc), fontsize=9.5, color=INK, ha="right", va="center", fontweight="bold")
-            cells = [(None, _fmt_money(b.reciprocal))] + [(lv[m][0], lv[m][1]) for m in RISK_MEASURES]
-            for j, (lev, txt) in enumerate(cells):
-                cx = x0 + j * w
-                if lev is not None:
-                    ax.add_patch(FancyBboxPatch((cx + 0.5, y - 0.38), w - 1.0, 0.76, boxstyle="round,pad=0,rounding_size=0.25",
-                                                facecolor=level_color[lev], edgecolor="none", mutation_aspect=0.1))
-                ax.text(cx + w / 2, y, txt, fontsize=8.6, ha="center", va="center",
-                        color=INK if lev is None else level_ink[lev], fontweight="bold" if lev and lev >= 2 else "normal")
-        for k, (lab, lev) in enumerate((("fine", 0), ("watch", 1), ("elevated", 2), ("high", 3))):
-            cx = x0 + 10.4 + k * 12.5
-            ax.add_patch(FancyBboxPatch((cx, n + 0.85), 2.2, 0.36, boxstyle="round,pad=0,rounding_size=0.2",
-                                        facecolor=level_color[lev], edgecolor="none", mutation_aspect=0.1))
-            ax.text(cx + 3.0, n + 1.03, lab, fontsize=8, color=MUTED, va="center")
-        ax.text(x_name, n + 1.03, "Score = points across the five measures", fontsize=8, color=MUTED, va="center")
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=200, facecolor=SURFACE)
-        plt.close(fig)
-        out["risk"] = buf.getvalue()
-
-    # 9. Five-quarter trend: is the gap getting worse? Small multiples, one bank per panel.
-    def multiples(key, banks, draw, nrows=2, ncols=3):
-        banks = banks[: nrows * ncols]
-        if not banks:
-            return
-        fig, axs = plt.subplots(nrows, ncols, figsize=(7.4, 2.25 * nrows + 0.3), squeeze=False)
-        fig.patch.set_facecolor(SURFACE)
-        for k, ax in enumerate(axs.flat):
-            ax.set_facecolor(SURFACE)
-            for side in ("top", "right"):
-                ax.spines[side].set_visible(False)
-            ax.tick_params(length=0, labelsize=8)
-            if k >= len(banks):
-                ax.axis("off")
-                continue
-            draw(ax, banks[k])
-            ax.yaxis.grid(True, color=GRID, zorder=0)
-        fig.tight_layout(pad=0.5, h_pad=1.2, w_pad=0.8)
-        save(fig, key, tight=False)
-
-    def qlab(d):
-        return f"Q{(d.month - 1) // 3 + 1}\n{str(d.year)[2:]}"
-
-    def money_axis(ax, vals):
-        top = max(v for v in vals if v is not None) or 1
-        div, unit = (1e6, "B") if top >= 1e6 else (1e3, "M")
-        from matplotlib.ticker import FuncFormatter
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{D}{v / div:,.1f}{unit}" if div == 1e6 else f"{D}{v / div:,.0f}{unit}"))
-
-    def draw_cap(ax, x):
-        ser = [h for h in x.series() if h[2]]
-        qs = [qlab(h[0]) for h in ser]
-        rec, cap = [h[1] for h in ser], [h[2] for h in ser]
-        xs = range(len(ser))
-        ax.fill_between(xs, cap, rec, where=[r > c for r, c in zip(rec, cap)], color=RED, alpha=0.15, interpolate=True, zorder=1)
-        ax.plot(xs, cap, color=MUTED, linewidth=1.4, linestyle=(0, (3, 2)), zorder=2)
-        ax.plot(xs, rec, color=RED if rec[-1] > cap[-1] else AMBER, linewidth=2.2, marker="o", markersize=3.5, zorder=3)
-        ax.set_xticks(list(xs))
-        ax.set_xticklabels(qs)
-        money_axis(ax, rec + cap)
-        ax.set_ylim(0, max(rec + cap) * 1.12)
-        g = x.gap_change()
-        ax.set_title(short(x.bank.name, 26), fontsize=9.5, color=INK, loc="left", fontweight="bold", pad=15)
-        ax.text(0, 1.02, f"{x.used:.0f}% of cap · gap {'+' if g >= 0 else '-'}{_fmt_money(abs(g))} "
-                + ("wider" if g > 0 else "narrower"), transform=ax.transAxes, fontsize=8,
-                color=RED if g > 0 else BLUE, va="bottom")
-
-    multiples("trend_cap", [x for x in net.trend() if len([h for h in x.series() if h[2]]) >= 3], draw_cap)
-
-    def draw_special(ax, x):
-        ser = x.series()
-        xs = range(len(ser))
-        rec = [h[1] for h in ser]
-        est = x.special_cap_est
-        if est:
-            ax.axhline(est, color=INK, linewidth=1.3, linestyle=(0, (3, 2)), zorder=2)
-            ax.fill_between(xs, [est] * len(rec), rec, where=[r > est for r in rec], color=RED, alpha=0.15,
-                            interpolate=True, zorder=1)
-        col = RED if est and rec[-1] > est else BLUE
-        ax.plot(xs, rec, color=col, linewidth=2.2, marker="o", markersize=3.5, zorder=3)
-        ax.set_xticks(list(xs))
-        ax.set_xticklabels([qlab(h[0]) for h in ser])
-        money_axis(ax, rec + [est or 0])
-        ax.set_ylim(0, max(rec + [est or 0]) * 1.15)
-        g = x.special_gap_change()
-        ax.set_title(short(x.bank.name, 26), fontsize=9.5, color=INK, loc="left", fontweight="bold", pad=15)
-        ax.text(0, 1.02, (f"est. cap {_fmt_money(est)} · " if est else "") + f"{'+' if g >= 0 else '-'}{_fmt_money(abs(g))} in a year",
-                transform=ax.transAxes, fontsize=8, color=RED if g > 0 else BLUE, va="bottom")
-
-    multiples("trend_special", [x for x in net.special_users() if len(x.series()) >= 3], draw_special)
+        for ax, (lab, vals) in zip(axs[0], segs):
+            clean(ax, xgrid=False)
+            ax.hist([min(v, 99.9) for v in vals], bins=list(range(0, 105, 10)), color=BLUE, edgecolor=SURFACE, zorder=3)
+            ax.axvline(HIGH_UNINSURED, color=INK, linewidth=0.9, linestyle=(0, (3, 3)), zorder=4)
+            ax.set_xticks([0, 40, 100])
+            ax.xaxis.set_major_formatter(FuncFormatter(pct))
+            ax.tick_params(labelsize=8, colors=MUTED)
+            ax.yaxis.grid(True, color="#eef0f3", zorder=0)
+            ax.set_title(M(lab), fontsize=9.5, color=INK, loc="left", fontweight="bold")
+        fig.tight_layout(w_pad=1.0)
+        save(fig, "uninsured")
     return out
 
 
