@@ -51,10 +51,10 @@ def test_network_report(monkeypatch):
     assert {b.bank.name for b in net.special()} == {"Bank 3", "Bank 5"}
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
-    assert net.summary_by == "rules" and "over their reciprocal cap" in net.summary
-    assert {"segments", "map", "top", "nearcap", "special", "cushion", "uninsured", "movers", "risk"} <= set(net.images)
+    assert net.summary_by == "rules" and "in this report" in net.summary
+    assert {"capital", "exposure", "orders", "special", "cushion"} <= set(net.images)
     html = network_render.render_html(net)
-    assert "Watch list" in html and "cid:net_risk" in html and "oncentration" not in html
+    assert "Reciprocal exposure" in html and "cid:net_exposure" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
     assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 7
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))
@@ -121,3 +121,20 @@ def test_size_falls_back_when_meta_assets_missing(monkeypatch):
     _add(conn, 2, _r(1_000))
     net = network.collect(conn, None, date(2026, 10, 26))
     assert net.excluded == ["RAYMOND JAMES BANK"] and [b.bank.name for b in net.banks] == ["Bank 2"]
+
+
+def test_report_banks_rankings_and_treasury(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    for i, (lev, nc) in enumerate([(4.0, 1.0), (7.0, 6.0), (12.0, 0.5), (9.0, 2.0)], 1):
+        _add(conn, i, {**_r(1_000, lev=lev), "noncurrent_loans_oreo_ratio": nc})
+    _add(conn, 5, {**_r(1_000, liab=30_000, lev=3.0), "noncurrent_loans_oreo_ratio": 9.0}, assets=40_000)   # under $50M: not ranked
+    _add(conn, 6, {**_r(1_000, lev=2.0)}, period=date(2026, 6, 30))                            # last quarter: not ranked
+    f = tmp_path / "t.csv"
+    f.write_text("name,state,rssd,cert\nBank 3,IL,,\nNo Such Bank,TX,,\n")
+    monkeypatch.setattr(network, "TREASURY_FILE", str(f))
+    net = network.collect(conn, None, date(2026, 10, 26), prior_lookup=lambda rssd, p: None)
+    assert [b.bank.name for b in net.lowest_capital(2)] == ["Bank 1", "Bank 2"]
+    assert net.weakest_assets(1)[0].bank.name == "Bank 2"
+    assert [b.bank.name for b in net.treasury_list()] == ["Bank 3"] and net.treasury_unmatched == ["No Such Bank"]
+    assert {b.bank.name for b in net.focus()} == {"Bank 1", "Bank 2", "Bank 3", "Bank 4"}

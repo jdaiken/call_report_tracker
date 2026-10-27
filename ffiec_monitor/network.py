@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 NAME = "Network Exposure Report"
 NEAR_CAP = 80.0          # % of the cap
 HIGH_UNINSURED = 40.0    # % of deposits
+RANK_N = 25              # banks in each ranking (lowest capital, weakest asset quality)
+RANK_MIN_ASSETS = 50_000  # $000: rankings skip banks under $50M, where one loan swings the ratios
+TREASURY_FILE = "data/treasury_banks.csv"
 TOP_N = 20               # banks on the exposure map and the top-exposure page
 QUARTERS = 5             # quarters of history for the trend pages (current + four before it)
 # Left out: banks with $25B+ in assets -- every U.S. GSIB, PNC, U.S. Bank, Truist, Capital One, and large regionals and
@@ -76,6 +79,16 @@ class NetBank:
     order_date: Optional[date] = None                      # earliest active enforcement order, if any
     special_hist: list = field(default_factory=list)       # [(quarter end, reciprocal)]: the 4 quarters the special cap averages
     special_basis: str = ""                                # plain-English note on which quarters, and why
+    orders: list = field(default_factory=list)             # active enforcement actions matched to this bank
+    treasury: bool = False                                 # on the treasury desk's list (data/treasury_banks.csv)
+
+    @property
+    def leverage(self) -> Optional[float]:
+        return (self.capital or {}).get("tier1_leverage_ratio")
+
+    @property
+    def noncurrent(self) -> Optional[float]:
+        return (self.ratios or {}).get("noncurrent_loans_oreo_ratio")
 
     @property
     def special_cap_est(self) -> Optional[float]:
@@ -140,6 +153,47 @@ class Network:
     summary_by: str = ""
     images: dict = field(default_factory=dict)
     excluded: list = field(default_factory=list)            # names of the large banks left out
+    current: Optional[date] = None                          # this quarter's end (rankings use this quarter's filers)
+    treasury_loaded: int = 0                                # rows in the treasury desk list
+    treasury_unmatched: list = field(default_factory=list)
+
+    # -------- the banks this report covers
+    def _ranked(self, key, reverse: bool) -> list[NetBank]:
+        pool = [b for b in self.banks if b.period == self.current and (b.assets or 0) >= RANK_MIN_ASSETS and key(b) is not None]
+        return sorted(pool, key=lambda b: key(b), reverse=reverse)
+
+    def lowest_capital(self, n: int = RANK_N) -> list[NetBank]:
+        """Lowest Tier 1 leverage ratio among this quarter's filers."""
+        return self._ranked(lambda b: b.leverage, False)[:n]
+
+    def weakest_assets(self, n: int = RANK_N) -> list[NetBank]:
+        """Highest noncurrent loans + foreclosed real estate, % of loans + OREO, among this quarter's filers."""
+        return self._ranked(lambda b: b.noncurrent, True)[:n]
+
+    def under_order(self) -> list[NetBank]:
+        return sorted([b for b in self.banks if b.orders], key=lambda b: -(b.reciprocal or 0))
+
+    def treasury_list(self) -> list[NetBank]:
+        return sorted([b for b in self.banks if b.treasury], key=lambda b: -(b.reciprocal or 0))
+
+    def focus(self) -> list[NetBank]:
+        """Every bank in the report, once each, largest reciprocal balance first."""
+        seen = {}
+        for b in self.under_order() + self.lowest_capital() + self.weakest_assets() + self.treasury_list():
+            seen[id(b)] = b
+        return sorted(seen.values(), key=lambda b: (-(b.reciprocal or 0), b.bank.name))
+
+    def reasons(self, b: NetBank) -> list[str]:
+        out = []
+        if b.orders:
+            out.append("under order")
+        if any(x is b for x in self.lowest_capital()):
+            out.append("low capital")
+        if any(x is b for x in self.weakest_assets()):
+            out.append("weak asset quality")
+        if b.treasury:
+            out.append("treasury desk")
+        return out
 
     # -------- analytics
     @property
@@ -300,6 +354,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         "(PARTITION BY id_rssd ORDER BY period_end DESC) rn FROM call_report_snapshots) WHERE rn = 1 AND period_end >= ?",
         [floor]).fetchall()
     net = Network(run_date, [], _quarter(current))
+    net.current = current
     for rssd, period_end, raw in rows:
         meta = db.get_institution_meta(conn, rssd)
         if meta is None:
@@ -356,6 +411,8 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
             if not m.action.stale:
                 for nb in net.banks:
                     if nb.bank.rssd == m.bank.rssd:
+                        if all(o is not m.action for o in nb.orders):
+                            nb.orders.append(m.action)
                         if "under an enforcement order" not in nb.special_cap:
                             nb.special_cap.append("under an enforcement order")
                         if m.action.start and (nb.order_date is None or m.action.start < nb.order_date):
@@ -363,9 +420,9 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
     # Five quarters of history for every bank the report features: reciprocal deposits and the cap each quarter,
     # for the estimated special cap and the trend pages. Pulled once and cached (network_history).
     if prior_lookup is not None:
+        load_treasury(net)
         focus = {}
-        for b in (net.special() + net.top_exposure() + net.near_cap()[:20] + net.closest_to_special()[:15]
-                  + net.prospects()[:10] + net.risk(25)):
+        for b in net.special() + net.focus():
             focus[id(b)] = b
         for nb in focus.values():
             nb.history = [(nb.period, nb.reciprocal, nb.cap, "below well capitalized" in nb.special_cap)]
@@ -385,6 +442,33 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         for nb in net.special():
             special_quarters(nb, prior_lookup)
     return net
+
+
+def load_treasury(net: "Network", path: Optional[str] = None) -> None:
+    """Mark the treasury desk's banks. CSV columns: name, state (2-letter), and optionally rssd or cert. Matched by
+    RSSD, then FDIC cert, then exact name + state (names are normalized the same way as enforcement matching)."""
+    import csv
+    from pathlib import Path
+    f = Path(__file__).resolve().parent.parent / (path or TREASURY_FILE)
+    if not f.exists():
+        return
+    from .enforcement import normalize_bank_name
+    by_rssd = {b.bank.rssd: b for b in net.banks}
+    by_cert = {str(b.bank.cert).lstrip("0"): b for b in net.banks if b.bank.cert}
+    by_name = {}
+    for b in net.banks:
+        by_name.setdefault((normalize_bank_name(b.bank.name), b.state.upper()), []).append(b)
+    rows = [r for r in csv.DictReader(f.open()) if any((v or "").strip() for v in r.values())]
+    net.treasury_loaded = len(rows)
+    for r in rows:
+        hit = by_rssd.get((r.get("rssd") or "").strip()) or by_cert.get((r.get("cert") or "").strip().lstrip("0"))
+        if hit is None:
+            cands = by_name.get((normalize_bank_name(r.get("name") or ""), (r.get("state") or "").strip().upper()), [])
+            hit = cands[0] if len(cands) == 1 else None
+        if hit is None:
+            net.treasury_unmatched.append(r.get("name") or "?")
+        else:
+            hit.treasury = True
 
 
 def _qend(d: date) -> date:
@@ -535,14 +619,12 @@ def make_history_lookup(conn, client):
 
 # ------------------------------------------------------------------ narrative
 PROMPT = """You write the opening summary of a weekly risk report for a firm that runs a reciprocal deposit network.
-The reader is its risk team. Plain English, ONE paragraph of 4 to 6 sentences, up to 130 words, risk only. Cover, in order:
-the watch list (banks with two or more network issues) and the largest names on it; banks showing signs of financial
-distress; banks over or near the reciprocal cap (lesser of $5 billion or 20% of liabilities; over it,
-more placements count as brokered) and whether those gaps widened over the past year; banks likely on the special cap
-(enforcement order or below well capitalized, held to their four-quarter average), especially any above their estimate;
-and the users closest to slipping onto the special cap. Name at most four banks.
-
-Wrap the 2 to 4 most important points in **double asterisks** (a short phrase each, e.g. **197 banks are over their cap**).
+The report covers a fixed set of banks: those under an active enforcement order, the 25 with the lowest Tier 1 leverage
+ratio this quarter, the 25 with the weakest asset quality (noncurrent loans + foreclosed real estate), and banks on the
+treasury desk's list. Plain English, ONE paragraph of 4 to 6 sentences, up to 130 words: how many banks and how much
+reciprocal deposits they hold; the order banks and any above their estimated special cap; the lowest-capital and
+weakest-asset banks that matter most (largest reciprocal balances, or below a minimum); overlaps (banks on more than one
+list). Name at most four banks. Wrap the 2 to 4 most important points in **double asterisks**.
 
 Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice, no other markdown.
 
@@ -562,6 +644,31 @@ def _pct(v: Optional[float]) -> str:
 
 
 def facts(net: Network) -> str:
+    fo = net.focus()
+    out = [f"BANKS IN THIS REPORT: {len(fo)}, holding {_fmt_money(sum(b.reciprocal or 0 for b in fo))} of reciprocal deposits "
+           f"(quarter {net.quarter_label})."]
+    uo = net.under_order()
+    out.append(f"UNDER ACTIVE ORDER: {len(uo)} banks. Largest reciprocal balances:")
+    for b in uo[:8]:
+        o = b.orders[0]
+        out.append(f"  {b.bank.name}: {o.agency} {o.action}; reciprocal {_fmt_money(b.reciprocal)}; estimated special cap "
+                   f"{_fmt_money(b.special_cap_est)}; leverage {_pct(b.leverage)}")
+    out.append("LOWEST TIER 1 LEVERAGE RATIO THIS QUARTER:")
+    for b in net.lowest_capital()[:8]:
+        out.append(f"  {b.bank.name}: leverage {_pct(b.leverage)}; noncurrent {_pct(b.noncurrent)}; reciprocal {_fmt_money(b.reciprocal)}"
+                   + (f"; also {', '.join(r for r in net.reasons(b) if r != 'low capital')}" if len(net.reasons(b)) > 1 else ""))
+    out.append("WEAKEST ASSET QUALITY THIS QUARTER (noncurrent loans + OREO, % of loans + OREO):")
+    for b in net.weakest_assets()[:8]:
+        out.append(f"  {b.bank.name}: noncurrent {_pct(b.noncurrent)}; leverage {_pct(b.leverage)}; reciprocal {_fmt_money(b.reciprocal)}"
+                   + (f"; also {', '.join(r for r in net.reasons(b) if r != 'weak asset quality')}" if len(net.reasons(b)) > 1 else ""))
+    over = [b for b in fo if b.special_cap and (b.over_special or 0) > 0]
+    out.append(f"ABOVE ESTIMATED SPECIAL CAP: {len(over)} banks: " + "; ".join(
+        f"{b.bank.name} {_fmt_money(b.over_special)} above" for b in sorted(over, key=lambda b: -(b.over_special or 0))[:5]))
+    out.append(f"TREASURY DESK LIST: {len(net.treasury_list())} matched of {net.treasury_loaded}.")
+    return "\n".join(out)
+
+
+def _old_facts(net: Network) -> str:
     s = net.stats()
     lines = [f"{NAME}, {net.run_date:%B %-d, %Y}; latest Call Reports ({net.quarter_label} where filed, else the prior quarter).",
              f"Banks analyzed: {s['banks']:,}. Banks holding reciprocal deposits: {s['users']:,} ({s['user_pct']:.0f}%). "
@@ -618,25 +725,14 @@ def facts(net: Network) -> str:
 
 
 def rule_summary(net: Network) -> str:
-    s = net.stats()
-    parts = []
-    rk = net.risk(2)
-    if rk:
-        parts.append(f"**{net.watch_count()} reciprocal users are on the watch list** with two or more issues; the largest is "
-                     f"{short(rk[0].bank.name)} ({', '.join(issues(rk[0]))}).")
-    ds = net.distressed()
-    if ds:
-        parts.append(f"**{len(ds)} show signs of financial distress** (weak capital plus bad loans or losses).")
-    parts.append(f"**{s['over_cap']} banks are over their reciprocal cap** and {s['near_cap']} more are at {NEAR_CAP:.0f}-100%; "
-                 "above the cap, more placements count as brokered.")
-    if s["special_all"]:
-        over = sum(1 for b in net.special() if (b.over_special or 0) > 0)
-        parts.append(f"**{s['special_all']} banks are likely on the special cap**, {s['special']} of them holding reciprocal deposits"
-                     + (f"; {over} hold more than their estimated four-quarter average." if over else "."))
-    close = net.closest_to_special()[:1]
-    if close:
-        b = close[0]
-        parts.append(f"Closest to the special cap: {short(b.bank.name)}, {b.cushion:+.2f} pts on {b.binding}.")
+    fo, uo, lc, wa = net.focus(), net.under_order(), net.lowest_capital(), net.weakest_assets()
+    over = [b for b in fo if b.special_cap and (b.over_special or 0) > 0]
+    parts = [f"**{len(fo)} banks** are in this report, holding {_fmt_money(sum(b.reciprocal or 0 for b in fo))} of reciprocal deposits."]
+    parts.append(f"**{len(uo)} {'is' if len(uo) == 1 else 'are'} under an active enforcement order**" + (f"; {len(over)} hold more than their estimated special cap." if over else "."))
+    if lc:
+        parts.append(f"Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}% Tier 1 leverage.")
+    if wa:
+        parts.append(f"Weakest asset quality: {short(wa[0].bank.name)} at {wa[0].noncurrent:.1f}% noncurrent.")
     return " ".join(parts)
 
 
@@ -662,36 +758,30 @@ def write_summary(net: Network) -> tuple[str, str]:
 
 # ------------------------------------------------------------------ key takeaways (page 1)
 def takeaways(net: Network) -> list[str]:
-    """Risk points for page 1. **...** marks the phrase to bold."""
-    s = net.stats()
+    """Key points for page 1. **...** marks the phrase to bold."""
+    fo, uo, lc, wa = net.focus(), net.under_order(), net.lowest_capital(), net.weakest_assets()
     out = []
-    rk = net.risk(3)
-    if rk:
-        out.append(f"**{net.watch_count()} banks are on the watch list** (two or more issues). Largest: "
-                   + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in rk) + ".")
-    ds = net.distressed()
-    if ds:
-        out.append(f"**{len(ds)} reciprocal users show signs of financial distress**, holding "
-                   f"{_fmt_money(sum(b.reciprocal or 0 for b in ds))} of reciprocal deposits. Largest: {short(ds[0].bank.name)}.")
-    if s["over_cap"] or s["near_cap"]:
-        top = net.near_cap()[0]
-        out.append(f"**{s['over_cap']} banks are over their cap**, where more placements count as brokered; {s['near_cap']} more "
-                   f"are at {NEAR_CAP:.0f}-100%. Highest: {short(top.bank.name)} at {top.used:.0f}%.")
-    tr = net.trend()
-    if tr:
-        wid = [b for b in tr if b.gap_change() > 0]
-        out.append(f"**The gap to the cap widened at {len(wid)} of {len(tr)}** banks near or over it over the past year"
-                   + (f"; most at {short(wid[0].bank.name)} (+{_fmt_money(wid[0].gap_change())})." if wid else "."))
-    if s["special_all"]:
-        over = [b for b in net.special() if (b.over_special or 0) > 0]
-        out.append(f"**{s['special_all']} banks are likely on the special cap** (enforcement order or below well capitalized)"
-                   + (f"; {len(over)} hold more than their estimated four-quarter average." if over else "."))
-    close = net.closest_to_special()
-    neg = sum(1 for b in close if b.cushion < 0)
-    thin = sum(1 for b in close if 0 <= b.cushion < 0.5)
-    if close:
-        out.append(f"**{neg + thin} reciprocal users are within 0.5 pts of losing well-capitalized status** or already under the "
-                   f"9% CBLR line; the next candidates for the special cap.")
+    if uo:
+        rec = sum(b.reciprocal or 0 for b in uo)
+        out.append(f"**{len(uo)} banks are under an active order**, holding {_fmt_money(rec)} of reciprocal deposits. Largest: "
+                   + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in uo[:3] if b.reciprocal) + ".")
+    over = sorted([b for b in fo if b.special_cap and (b.over_special or 0) > 0], key=lambda b: -(b.over_special or 0))
+    if over:
+        out.append(f"**{len(over)} {'holds' if len(over) == 1 else 'hold'} more than their estimated special cap**; most above: {short(over[0].bank.name)} "
+                   f"(+{_fmt_money(over[0].over_special)}).")
+    if lc:
+        below = sum(1 for b in lc if (b.leverage or 99) < 5)
+        out.append(f"**Lowest capital: {short(lc[0].bank.name)} at {lc[0].leverage:.2f}%** Tier 1 leverage; {below} of the "
+                   f"{len(lc)} are under the 5% well-capitalized line.")
+    if wa:
+        out.append(f"**Weakest asset quality: {short(wa[0].bank.name)} at {wa[0].noncurrent:.1f}%** noncurrent; the 25th is at "
+                   f"{wa[-1].noncurrent:.1f}%.")
+    both = [b for b in fo if len(net.reasons(b)) > 1]
+    if both:
+        out.append(f"**{len(both)} banks appear on more than one list**: "
+                   + "; ".join(f"{short(b.bank.name)} ({', '.join(net.reasons(b))})" for b in both[:3]) + ".")
+    if not net.treasury_loaded:
+        out.append("The treasury desk's list isn't loaded yet; page 5 says how to add it.")
     return out
 
 
@@ -918,6 +1008,48 @@ def charts(net: Network) -> dict[str, bytes]:
         S.clean(ax, "y")
         ax.tick_params(axis="y", colors=S.MUTED)
         out["uninsured"] = S.png(fig)
+
+    # Lowest capital: Tier 1 leverage ratio, dashed line = 5% well-capitalized minimum
+    lc = net.lowest_capital()
+    if lc:
+        fig, ax = figure(len(lc))
+        v = [b.leverage for b in lc]
+        hbar(ax, lc, v, [S.RED if x < 5 else S.AMBER if x < 6 else S.BLUE for x in v],
+             [" · ".join(net.reasons(b)[1:] if net.reasons(b)[:1] == ["low capital"] else net.reasons(b)) for b in lc],
+             max(12, max(v) * 1.9), ref=5, fmt=pctf, bold=[f"{x:.2f}%" for x in v])
+        out["capital"] = S.png(fig)
+
+    # Weakest asset quality: noncurrent loans + OREO, % of loans + OREO
+    wa = net.weakest_assets()
+    if wa:
+        fig, ax = figure(len(wa))
+        v = [b.noncurrent for b in wa]
+        hbar(ax, wa, v, [S.RED if x >= 5 else S.AMBER if x >= 3 else S.BLUE for x in v],
+             [f"leverage {_pct(b.leverage)}" for b in wa], max(v) * 1.75, fmt=pctf, bold=[f"{x:.1f}%" for x in v])
+        out["assets"] = S.png(fig)
+
+    # Banks under order: reciprocal deposits, tick = estimated special cap
+    uo = [b for b in net.under_order() if (b.reciprocal or 0) > 0][:15]
+    if uo:
+        fig, ax = figure(len(uo))
+        v = [(b.reciprocal or 0) / 1e3 for b in uo]
+        hbar(ax, uo, v, [S.RED if (b.over_special or 0) > 0 else S.BLUE for b in uo],
+             [f"est. special cap {_fmt_money(b.special_cap_est)}" if b.special_cap_est else "est. special cap n/a" for b in uo],
+             max(max(v), max(((b.special_cap_est or 0) / 1e3 for b in uo), default=0)) * 2.0,
+             ticks=[(b.special_cap_est or 0) / 1e3 for b in uo], fmt=musd, bold=[_fmt_money(b.reciprocal) for b in uo])
+        out["orders"] = S.png(fig)
+
+    # Reciprocal exposure across the report's banks, tick = estimated special cap where one applies
+    fo = [b for b in net.focus() if (b.reciprocal or 0) > 0][:20]
+    if fo:
+        fig, ax = figure(len(fo))
+        v = [(b.reciprocal or 0) / 1e3 for b in fo]
+        hbar(ax, fo, v, [S.RED if (b.over_special or 0) > 0 else S.BLUE for b in fo],
+             [", ".join(net.reasons(b)) for b in fo],
+             max(max(v), max(((b.special_cap_est or 0) / 1e3 for b in fo), default=0)) * 2.4,
+             ticks=[(b.special_cap_est or 0) / 1e3 if b.special_cap else 0 for b in fo], fmt=musd,
+             bold=[_fmt_money(b.reciprocal) for b in fo])
+        out["exposure"] = S.png(fig)
 
     # Quarter-over-quarter movers
     mv = net.movers()
