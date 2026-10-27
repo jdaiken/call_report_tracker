@@ -49,6 +49,8 @@ def main(max_pulls: int) -> None:
     pages = len(re.findall(rb"/Type /Page[^s]", pdf))
     print(f"PDF {pages} pages; charts: {', '.join(sorted(net.images))}"
           + (f"; trimmed to fit: {network_render.OVERFLOW}" if network_render.OVERFLOW else ""))
+    if gha:
+        print(f"::notice title=Network PDF::{pages} pages" + (f"; trimmed to fit {network_render.OVERFLOW}" if network_render.OVERFLOW else ""))
     big = sorted(net.banks, key=lambda b: -(b.assets or 0))[:3]
     info = (f"left out {len(net.excluded)} banks of ${network.EXCLUDE_ASSETS // 1_000_000}B+; largest kept: "
             + "; ".join(f"{b.bank.name} {b.bank.assets}" for b in big)
@@ -82,8 +84,6 @@ def main(max_pulls: int) -> None:
         return
     if gha:
         print(f"::notice title=Network scope::{info}")
-    if gha:
-        print(f"::notice title=Network PDF::{pages} pages" + (f"; trimmed to fit {network_render.OVERFLOW}" if network_render.OVERFLOW else ""))
     stamp = run_date.isoformat()
     email_report.send_email(
         EmailConfig.from_env(), os.environ.get("SUBJECT_PREFIX", "") + network_render.subject(net), net.summary, html_body=network_render.render_html(net),
