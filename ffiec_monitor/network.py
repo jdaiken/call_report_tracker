@@ -70,14 +70,21 @@ class NetBank:
     capital: dict = field(default_factory=dict)            # leverage / tier1 / total / cet1 (%)
     cushion: Optional[float] = None                        # pts above the nearest well-capitalized line
     binding: str = ""                                      # which ratio that is
-    history: list = field(default_factory=list)            # [(quarter end, reciprocal $000, cap $000)] newest first
+    history: list = field(default_factory=list)            # [(quarter end, reciprocal $000, cap $000, below WC?)] newest first
     state: str = ""
+    ratios: dict = field(default_factory=dict)             # the filing's ratios (capital, asset quality, earnings, funding)
+    order_date: Optional[date] = None                      # earliest active enforcement order, if any
+    special_hist: list = field(default_factory=list)       # [(quarter end, reciprocal)]: the 4 quarters the special cap averages
+    special_basis: str = ""                                # plain-English note on which quarters, and why
 
     @property
     def special_cap_est(self) -> Optional[float]:
         '''Estimated special cap: average quarter-end reciprocal deposits over the four quarters before this one
         (what the bank would be held to if it lost well-capitalized/well-rated status now). With fewer than two of
         those on hand, the quarters available including this one; None if under two in all.'''
+        if self.special_hist:
+            vals = [v for _, v in self.special_hist if v is not None]
+            return sum(vals) / len(vals) if vals else None
         prior = [h[1] for h in self.history[1:5] if h[1] is not None]
         vals = prior if len(prior) >= 2 else [h[1] for h in self.history[:5] if h[1] is not None]
         return sum(vals) / len(vals) if len(vals) >= 2 else None
@@ -177,9 +184,20 @@ class Network:
         return sorted([b for b in self.near_cap() if b.gap_change() is not None], key=lambda b: -b.gap_change())
 
     def risk(self, n: int = 15) -> list[NetBank]:
-        """Highest-risk reciprocal users: most points across the five measures, then largest reciprocal balance."""
-        scored = [b for b in self.users if risk_score(b)[0] > 0]
-        return sorted(scored, key=lambda b: (-risk_score(b)[0], -(b.reciprocal or 0)))[:n]
+        """Watch list: reciprocal users with two or more network issues, largest reciprocal balance first."""
+        return sorted([b for b in self.users if len(issues(b)) >= 2], key=lambda b: -(b.reciprocal or 0))[:n]
+
+    def watch_count(self) -> int:
+        return sum(1 for b in self.users if len(issues(b)) >= 2)
+
+    def distressed(self) -> list[NetBank]:
+        """Reciprocal users with weak capital plus bad loans or losses, or any three distress signs; largest first."""
+        out = []
+        for b in self.users:
+            f = distress_flags(b)
+            if ("Capital" in f and ("Asset quality" in f or "Earnings" in f)) or len(f) >= 3:
+                out.append(b)
+        return sorted(out, key=lambda b: -(b.reciprocal or 0))
 
     def closest_to_special(self) -> list[NetBank]:
         '''Reciprocal users not yet on the special cap, thinnest capital cushion first.'''
@@ -328,6 +346,8 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         nb.state = b.location.rsplit(",", 1)[-1].strip()
         nb.capital = {k: _num(r, k) for k in ("tier1_leverage_ratio", "tier1_rbc_ratio", "total_rbc_ratio", "cet1_ratio")}
         nb.cushion, nb.binding = capital_cushion(nb.capital)
+        nb.ratios = {k: _num(r, k) for k in ("noncurrent_loans_oreo_ratio", "roaa", "net_noncore_funding_dependence_ratio",
+                                             "net_interest_margin", "net_loans_leases_to_deposits")}
         net.banks.append(nb)
     # enforcement -> likely special cap
     if enforcement_sources is not None:
@@ -335,8 +355,11 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
         for m in match([nb.bank for nb in net.banks], enforcement_sources.actions):
             if not m.action.stale:
                 for nb in net.banks:
-                    if nb.bank.rssd == m.bank.rssd and "under an enforcement order" not in nb.special_cap:
-                        nb.special_cap.append("under an enforcement order")
+                    if nb.bank.rssd == m.bank.rssd:
+                        if "under an enforcement order" not in nb.special_cap:
+                            nb.special_cap.append("under an enforcement order")
+                        if m.action.start and (nb.order_date is None or m.action.start < nb.order_date):
+                            nb.order_date = m.action.start
     # Five quarters of history for every bank the report features: reciprocal deposits and the cap each quarter,
     # for the estimated special cap and the trend pages. Pulled once and cached (network_history).
     if prior_lookup is not None:
@@ -345,7 +368,7 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                   + net.prospects()[:10] + net.risk(25)):
             focus[id(b)] = b
         for nb in focus.values():
-            nb.history = [(nb.period, nb.reciprocal, nb.cap)]
+            nb.history = [(nb.period, nb.reciprocal, nb.cap, "below well capitalized" in nb.special_cap)]
             q = nb.period
             for i in range(QUARTERS - 1):
                 q = prior_quarter_end(q)
@@ -355,11 +378,103 @@ def collect(conn, client, run_date: date, max_pulls: int = 5000, enforcement_sou
                     pr = {}
                 prec, pliab = _num(pr, RECIPROCAL_RAW_KEY), _num(pr, LIABILITIES_RAW_KEY)
                 pcap = min(RECIPROCAL_CAP_DOLLARS_000, 0.2 * pliab) if pliab else None
-                nb.history.append((q, prec, pcap))
+                nb.history.append((q, prec, pcap, pr.get("_below_wc")))
                 if i == 0 and prec is not None:
                     nb.prior_reciprocal = prec
                     nb.prior_used = prec / pcap * 100 if pcap else None
+        for nb in net.special():
+            special_quarters(nb, prior_lookup)
     return net
+
+
+def _qend(d: date) -> date:
+    """Quarter end of the quarter containing d."""
+    m = ((d.month - 1) // 3 + 1) * 3
+    return date(d.year, m, 30 if m in (6, 9) else 31)
+
+
+def special_quarters(nb: "NetBank", lookup) -> None:
+    """Which four quarters the special cap averages, per 12 CFR 337.6(e): the four quarter-ends BEFORE the quarter the
+    bank stopped being well capitalized and well rated. That date isn't public, so it is estimated as the earlier of
+    (a) the quarter of its earliest active enforcement order and (b) the first quarter of its current run below well
+    capitalized in the Call Reports on hand."""
+    from .performance import prior_quarter_end
+    trig, why = None, ""
+    if "below well capitalized" in nb.special_cap:
+        run = nb.history[0][0]
+        for h in nb.history:
+            if len(h) > 3 and h[3]:
+                run = h[0]
+            elif len(h) > 3 and h[3] is False:
+                break
+        trig, why = run, f"first below well capitalized in {_quarter(run)}"
+        if run == nb.history[-1][0] and len(nb.history) >= 5:
+            why = f"below well capitalized since at least {_quarter(run)}"
+    if nb.order_date:
+        oq = _qend(nb.order_date)
+        if trig is None or oq < trig:
+            trig, why = oq, f"enforcement order dated {nb.order_date:%b %Y}"
+    if trig is None:
+        return
+    have = {h[0]: h[1] for h in nb.history}
+    q, quarters = trig, []
+    for _ in range(4):
+        q = prior_quarter_end(q)
+        if q not in have:
+            try:
+                have[q] = _num(lookup(nb.bank.rssd, q) or {}, RECIPROCAL_RAW_KEY)
+            except Exception:
+                have[q] = None
+        quarters.append((q, have[q]))
+    nb.special_hist = quarters
+    got = [v for _, v in quarters if v is not None]
+    span = f"{_quarter(quarters[-1][0])} to {_quarter(quarters[0][0])}"
+    nb.special_basis = (f"average of {span} ({why})" if len(got) == 4 else
+                        f"average of {len(got)} of the 4 quarters {span} on file ({why})" if got else
+                        f"no reciprocal figures on file for {span} ({why})")
+
+
+# ------------------------------------------------------------------ watch list and distress (plain flags, no scores)
+def issues(b: "NetBank") -> list[str]:
+    """Network issues, in plain words."""
+    out = []
+    if (b.used or 0) > 100:
+        out.append("over the cap")
+    elif (b.used or 0) >= NEAR_CAP:
+        out.append("near the cap")
+    if b.special_cap:
+        out.append("over its special cap" if (b.over_special or 0) > 0 else "likely on the special cap")
+    elif b.cushion is not None and b.cushion < 0.5:
+        out.append("under the 9% CBLR line" if b.cushion < 0 else "within 0.5 pts of a capital minimum")
+    if (b.used or 0) >= NEAR_CAP and (b.gap_change() or 0) > 0:
+        out.append("gap to the cap widening")
+    if (b.uninsured_share or 0) >= 50:
+        out.append("50%+ uninsured")
+    return out
+
+
+DISTRESS_RULES = [
+    ("Capital", "below well capitalized, under the 9% CBLR line, or within 0.5 pts of a minimum"),
+    ("Asset quality", "noncurrent loans + foreclosed real estate at 3% or more of loans"),
+    ("Earnings", "losing money (annualized return on assets below 0)"),
+    ("Funding", "net non-core funding dependence of 30% or more"),
+]
+
+
+def distress_flags(b: "NetBank") -> dict[str, str]:
+    f = {}
+    if "below well capitalized" in b.special_cap:
+        f["Capital"] = "below well capitalized"
+    elif b.cushion is not None and b.cushion < 0.5:
+        f["Capital"] = f"{b.cushion:+.2f} pts"
+    r = b.ratios or {}
+    if (r.get("noncurrent_loans_oreo_ratio") or 0) >= 3:
+        f["Asset quality"] = f"{r['noncurrent_loans_oreo_ratio']:.1f}% noncurrent"
+    if r.get("roaa") is not None and r["roaa"] < 0:
+        f["Earnings"] = f"ROA {r['roaa']:.2f}%"
+    if (r.get("net_noncore_funding_dependence_ratio") or 0) >= 30:
+        f["Funding"] = f"{r['net_noncore_funding_dependence_ratio']:.0f}% non-core"
+    return f
 
 
 WELL_CAP_MIN = [("tier1_leverage_ratio", 5.0, "leverage"), ("tier1_rbc_ratio", 8.0, "Tier 1 risk-based"),
@@ -384,17 +499,20 @@ HISTORY_SQL = """CREATE TABLE IF NOT EXISTS network_history (
 
 
 def make_history_lookup(conn, client):
-    '''A past quarter's reciprocal deposits and total liabilities for a bank: cached in network_history, else the
-    stored snapshot, else a Call Report pull (cached, including "nothing filed" so it isn't asked again).'''
+    '''A past quarter's reciprocal deposits, total liabilities and whether the bank was below well capitalized: cached
+    in network_history, else the stored snapshot, else a Call Report pull (cached, including "nothing filed").'''
     from datetime import datetime
     from . import db, ratios as ratios_mod
+    from .report import capital_status
     conn.execute(HISTORY_SQL)
+    conn.execute("ALTER TABLE network_history ADD COLUMN IF NOT EXISTS below_wc BOOLEAN")
+    conn.execute("ALTER TABLE network_history ADD COLUMN IF NOT EXISTS checked_capital BOOLEAN")
 
     def lookup(rssd: str, period_end: date) -> Optional[dict]:
-        row = conn.execute("SELECT reciprocal, liabilities FROM network_history WHERE id_rssd = ? AND period_end = ?",
-                           [rssd, period_end]).fetchone()
-        if row is not None:
-            return {RECIPROCAL_RAW_KEY: row[0], LIABILITIES_RAW_KEY: row[1]}
+        row = conn.execute("SELECT reciprocal, liabilities, below_wc, checked_capital FROM network_history "
+                           "WHERE id_rssd = ? AND period_end = ?", [rssd, period_end]).fetchone()
+        if row is not None and (row[3] or client is None):
+            return {RECIPROCAL_RAW_KEY: row[0], LIABILITIES_RAW_KEY: row[1], "_below_wc": row[2]}
         snap = db.get_snapshot(conn, rssd, period_end)
         if snap is not None and isinstance(snap.ratios.get(RECIPROCAL_RAW_KEY), (int, float)):
             r = snap.ratios
@@ -406,23 +524,27 @@ def make_history_lookup(conn, client):
             except Exception:
                 r = {}
         rec, liab = _num(r, RECIPROCAL_RAW_KEY), _num(r, LIABILITIES_RAW_KEY)
-        conn.execute("INSERT OR REPLACE INTO network_history VALUES (?, ?, ?, ?, ?)",
-                     [rssd, period_end, rec, liab, datetime.now()])
-        return {RECIPROCAL_RAW_KEY: rec, LIABILITIES_RAW_KEY: liab}
+        has_cap = any(isinstance(r.get(k), (int, float)) for k in ("tier1_leverage_ratio", "total_rbc_ratio"))
+        below = bool(capital_status(r)) if has_cap else None
+        conn.execute("INSERT OR REPLACE INTO network_history (id_rssd, period_end, reciprocal, liabilities, fetched_at, "
+                     "below_wc, checked_capital) VALUES (?, ?, ?, ?, ?, ?, TRUE)",
+                     [rssd, period_end, rec, liab, datetime.now(), below])
+        return {RECIPROCAL_RAW_KEY: rec, LIABILITIES_RAW_KEY: liab, "_below_wc": below}
     return lookup
 
 
 # ------------------------------------------------------------------ narrative
-PROMPT = """You write the opening analysis of a weekly report for a risk manager at a firm that runs a reciprocal deposit
-network. Plain English, ONE paragraph of 5 to 8 sentences. Lead with the highest-risk banks and why. Then cover: how widely banks use reciprocal
-deposits and how close they are to the reciprocal cap (lesser of $5 billion or 20% of liabilities); the banks nearest or
-over the cap and what that means (more placements would count as brokered); banks likely held to the special cap
-(not well capitalized/rated, so limited to their four-quarter average); and uninsured-deposit exposure, including banks
-with high uninsured deposits and room under the cap; and the banks closest to
-the special cap (thinnest capital cushion) with their estimated special cap; and whether gaps over the cap widened or
-narrowed over the past year. Name at most four banks. Up to 180 words.
+PROMPT = """You write the opening summary of a weekly risk report for a firm that runs a reciprocal deposit network.
+The reader is its risk team. Plain English, ONE paragraph of 4 to 6 sentences, up to 130 words, risk only. Cover, in order:
+the watch list (banks with two or more network issues) and the largest names on it; banks showing signs of financial
+distress; banks over or near the reciprocal cap (lesser of $5 billion or 20% of liabilities; over it,
+more placements count as brokered) and whether those gaps widened over the past year; banks likely on the special cap
+(enforcement order or below well capitalized, held to their four-quarter average), especially any above their estimate;
+and the users closest to slipping onto the special cap. Name at most four banks.
 
-Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice, no markdown.
+Wrap the 2 to 4 most important points in **double asterisks** (a short phrase each, e.g. **197 banks are over their cap**).
+
+Rules: use ONLY facts and numbers in the data; copy numbers exactly; no predictions, no advice, no other markdown.
 
 Data:
 """
@@ -467,14 +589,17 @@ def facts(net: Network) -> str:
     for b in net.special()[:8]:
         est, over = b.special_cap_est, b.over_special
         lines.append(f"  {b.bank.name} ({b.bank.location}): reciprocal {_fmt_money(b.reciprocal)}; "
+                     + (f"special cap basis: {b.special_basis}; " if b.special_basis else "")
                      + (f"estimated special cap {_fmt_money(est)}; "
                         + (f"{_fmt_money(over)} above it (would count as brokered)" if over and over > 0 else "within it")
                         if est else "special cap not estimated (history unavailable)"))
-    lines.append("HIGHEST-RISK RECIPROCAL USERS (points across cap used, special cap, capital cushion, uninsured share, 1-yr trend):")
+    lines.append(f"WATCH LIST (reciprocal users with two or more network issues): {net.watch_count()} banks. Largest:")
     for b in net.risk(6):
-        sc, lv = risk_score(b)
-        lines.append(f"  {b.bank.name} ({b.bank.location}): score {sc}; reciprocal {_fmt_money(b.reciprocal)}; "
-                     + "; ".join(f"{k} {v[1]}" for k, v in lv.items()))
+        lines.append(f"  {b.bank.name} ({b.bank.location}): reciprocal {_fmt_money(b.reciprocal)}; issues: {', '.join(issues(b))}")
+    ds = net.distressed()
+    lines.append(f"SIGNS OF FINANCIAL DISTRESS (weak capital plus bad loans or losses, or three distress signs): {len(ds)} reciprocal users.")
+    for b in ds[:5]:
+        lines.append(f"  {b.bank.name}: reciprocal {_fmt_money(b.reciprocal)}; " + "; ".join(f"{k}: {v}" for k, v in distress_flags(b).items()))
     tr = net.trend()
     if tr:
         wid = [b for b in tr if b.gap_change() > 0]
@@ -494,22 +619,24 @@ def facts(net: Network) -> str:
 
 def rule_summary(net: Network) -> str:
     s = net.stats()
-    parts = [f"{s['users']:,} of {s['banks']:,} banks ({s['user_pct']:.0f}%) hold reciprocal deposits, "
-             f"{_fmt_money(s['reciprocal_total'])} in total."]
-    if s["median_used"] is not None:
-        parts.append(f"The typical user is at {s['median_used']:.1f}% of its reciprocal cap; {s['near_cap']} "
-                     f"{'is' if s['near_cap'] == 1 else 'are'} at {NEAR_CAP:.0f}-100% and {s['over_cap']} over it, where more "
-                     "placements would count as brokered.")
-    if s["special"]:
-        parts.append(f"{s['special']} reciprocal users are likely on the special cap (below well capitalized or under an "
-                     "order), which limits them to their four-quarter average.")
-    parts.append(f"{s['high_uninsured']} banks have {HIGH_UNINSURED:.0f}% or more of deposits uninsured; "
-                 f"{s['high_unins_low_use']} of them use under half their cap.")
+    parts = []
+    rk = net.risk(2)
+    if rk:
+        parts.append(f"**{net.watch_count()} reciprocal users are on the watch list** with two or more issues; the largest is "
+                     f"{short(rk[0].bank.name)} ({', '.join(issues(rk[0]))}).")
+    ds = net.distressed()
+    if ds:
+        parts.append(f"**{len(ds)} show signs of financial distress** (weak capital plus bad loans or losses).")
+    parts.append(f"**{s['over_cap']} banks are over their reciprocal cap** and {s['near_cap']} more are at {NEAR_CAP:.0f}-100%; "
+                 "above the cap, more placements count as brokered.")
+    if s["special_all"]:
+        over = sum(1 for b in net.special() if (b.over_special or 0) > 0)
+        parts.append(f"**{s['special_all']} banks are likely on the special cap**, {s['special']} of them holding reciprocal deposits"
+                     + (f"; {over} hold more than their estimated four-quarter average." if over else "."))
     close = net.closest_to_special()[:1]
     if close:
         b = close[0]
-        parts.append(f"Closest to the special cap: {b.bank.name}, {b.cushion:.2f} pts above the {b.binding} line"
-                     + (f"; its special cap would be about {_fmt_money(b.special_cap_est)}." if b.special_cap_est else "."))
+        parts.append(f"Closest to the special cap: {short(b.bank.name)}, {b.cushion:+.2f} pts on {b.binding}.")
     return " ".join(parts)
 
 
@@ -522,8 +649,11 @@ def write_summary(net: Network) -> tuple[str, str]:
             r = _post(key, os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL, PROMPT + data)
             if r.status_code < 400:
                 t = " ".join(x.get("text", "") for x in r.json().get("content", []) if x.get("type") == "text")
-                t = re.sub(r"\s+", " ", t.replace("**", "")).strip()
-                if t and len(t) < 1500 and _numbers(t) <= (_numbers(data) | {str(i) for i in range(0, 13)}):
+                t = re.sub(r"\s+", " ", t).strip()
+                plain = t.replace("**", "")
+                if t.count("**") % 2:
+                    t = plain
+                if plain and len(plain) < 1200 and _numbers(plain) <= (_numbers(data) | {str(i) for i in range(0, 13)}):
                     return t, "Claude"
         except Exception as e:
             log.warning("network summary unavailable: %s", e)
@@ -532,39 +662,36 @@ def write_summary(net: Network) -> tuple[str, str]:
 
 # ------------------------------------------------------------------ key takeaways (page 1)
 def takeaways(net: Network) -> list[str]:
+    """Risk points for page 1. **...** marks the phrase to bold."""
     s = net.stats()
-    rk = net.risk(3)
     out = []
+    rk = net.risk(3)
     if rk:
-        out.append("Highest risk this week: " + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in rk)
-                   + ". See page 2.")
-    out += [f"{s['users']:,} of {s['banks']:,} banks ({s['user_pct']:.0f}%) hold {_fmt_money(s['reciprocal_total'])} of reciprocal "
-           "deposits" + (f"; the typical user is at {s['median_used']:.1f}% of its cap." if s["median_used"] is not None else ".")]
-    if s["near_cap"] + s["over_cap"]:
+        out.append(f"**{net.watch_count()} banks are on the watch list** (two or more issues). Largest: "
+                   + "; ".join(f"{short(b.bank.name)} ({_fmt_money(b.reciprocal)})" for b in rk) + ".")
+    ds = net.distressed()
+    if ds:
+        out.append(f"**{len(ds)} reciprocal users show signs of financial distress**, holding "
+                   f"{_fmt_money(sum(b.reciprocal or 0 for b in ds))} of reciprocal deposits. Largest: {short(ds[0].bank.name)}.")
+    if s["over_cap"] or s["near_cap"]:
         top = net.near_cap()[0]
-        out.append(f"{s['near_cap'] + s['over_cap']} banks are at {NEAR_CAP:.0f}%+ of the cap ({s['over_cap']} over it, where more "
-                   f"placements count as brokered). Highest: {short(top.bank.name)} at {top.used:.0f}%.")
-    big = net.top_exposure(1)
-    if big:
-        b = big[0]
-        out.append(f"Largest holder: {short(b.bank.name)}, {_fmt_money(b.reciprocal)} ({_pct(b.used)} of its cap).")
-    if s["special_all"]:
-        over = [b for b in net.special() if (b.over_special or 0) > 0]
-        out.append(f"{s['special_all']} banks are likely on the special cap (enforcement order or below well capitalized), "
-                   f"{s['special']} of them holding reciprocal deposits"
-                   + (f"; {len(over)} hold more than their estimated four-quarter average." if over else "."))
+        out.append(f"**{s['over_cap']} banks are over their cap**, where more placements count as brokered; {s['near_cap']} more "
+                   f"are at {NEAR_CAP:.0f}-100%. Highest: {short(top.bank.name)} at {top.used:.0f}%.")
     tr = net.trend()
     if tr:
         wid = [b for b in tr if b.gap_change() > 0]
-        out.append(f"Over the past year the gap to the cap widened at {len(wid)} of {len(tr)} banks at {NEAR_CAP:.0f}%+ of cap"
+        out.append(f"**The gap to the cap widened at {len(wid)} of {len(tr)}** banks near or over it over the past year"
                    + (f"; most at {short(wid[0].bank.name)} (+{_fmt_money(wid[0].gap_change())})." if wid else "."))
-    close = net.closest_to_special()[:1]
+    if s["special_all"]:
+        over = [b for b in net.special() if (b.over_special or 0) > 0]
+        out.append(f"**{s['special_all']} banks are likely on the special cap** (enforcement order or below well capitalized)"
+                   + (f"; {len(over)} hold more than their estimated four-quarter average." if over else "."))
+    close = net.closest_to_special()
+    neg = sum(1 for b in close if b.cushion < 0)
+    thin = sum(1 for b in close if 0 <= b.cushion < 0.5)
     if close:
-        b = close[0]
-        out.append(f"Thinnest capital cushion among users not on the special cap: {short(b.bank.name)}, "
-                   f"{b.cushion:+.2f} pts on {b.binding}.")
-    out.append(f"{s['high_uninsured']:,} banks have {HIGH_UNINSURED:.0f}%+ of deposits uninsured; {s['high_unins_low_use']} of them "
-               "use under half their cap and aren't on the special cap.")
+        out.append(f"**{neg + thin} reciprocal users are within 0.5 pts of losing well-capitalized status** or already under the "
+                   f"9% CBLR line; the next candidates for the special cap.")
     return out
 
 
@@ -650,16 +777,18 @@ def charts(net: Network) -> dict[str, bytes]:
     busd = lambda v, _: M(f"${v:,.1f}B" if v else "$0")                    # noqa: E731
     pctf = lambda v, _: f"{v:.0f}%"                                         # noqa: E731
 
-    # Highest-risk banks: score and what drives it
-    rk = net.risk()
-    if rk:
-        fig, ax = figure(len(rk))
-        sc = [risk_score(b)[0] for b in rk]
-        hbar(ax, rk, sc, [S.NAVY if i < 3 else S.BLUE for i in range(len(rk))], [drivers(b) for b in rk], 15 * 2.35,
-             bold=[str(v) for v in sc])
-        ax.set_xticks([])
-        ax.xaxis.grid(False)
-        out["risk"] = S.png(fig)
+    # Watch list and distress: reciprocal dollars at stake, with the issues written out (no scores)
+    def issue_chart(key, banks, words):
+        if not banks:
+            return
+        fig, ax = figure(len(banks))
+        v = [(x.reciprocal or 0) / 1e3 for x in banks]
+        hbar(ax, banks, v, [S.NAVY] * len(banks), [words(x) for x in banks], max(v) * 2.6, fmt=musd,
+             bold=[_fmt_money(x.reciprocal) for x in banks])
+        out[key] = S.png(fig)
+
+    issue_chart("risk", net.risk(), lambda x: " · ".join(issues(x)))
+    issue_chart("distress", net.distressed()[:12], lambda x: " · ".join(distress_flags(x).values()))
 
     # Cap use by bank size: 100% stacked bar per segment
     rows = [(lab, [x for x in net.banks if lo <= (x.assets or 0) < hi]) for lab, lo, hi in SEGMENTS]

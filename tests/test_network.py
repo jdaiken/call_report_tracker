@@ -51,12 +51,12 @@ def test_network_report(monkeypatch):
     assert {b.bank.name for b in net.special()} == {"Bank 3", "Bank 5"}
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
-    assert net.summary_by == "rules" and "4 of 5 banks" in net.summary
+    assert net.summary_by == "rules" and "over their reciprocal cap" in net.summary
     assert {"segments", "map", "top", "nearcap", "special", "cushion", "uninsured", "movers", "risk"} <= set(net.images)
     html = network_render.render_html(net)
-    assert "Highest-risk banks" in html and "cid:net_risk" in html and "oncentration" not in html
+    assert "Watch list" in html and "cid:net_risk" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 10
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 7
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))
     assert wb.sheetnames == ["Summary", "Banks", "5-quarter trend", "Top 20 holders", "Near cap", "Special cap", "Closest to special cap",
                              "High uninsured"]
