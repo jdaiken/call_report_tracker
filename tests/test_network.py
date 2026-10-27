@@ -52,9 +52,9 @@ def test_network_report(monkeypatch):
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
     assert net.summary_by == "rules" and "4 of 5 banks" in net.summary
-    assert {"size", "top", "nearcap", "special", "cushion", "uninsured", "trend_cap", "trend_special", "risk", "groups"} <= set(net.images)
+    assert {"segments", "map", "top", "nearcap", "special", "cushion", "uninsured", "movers", "risk"} <= set(net.images)
     html = network_render.render_html(net)
-    assert "Highest-risk banks" in html and "cid:net_groups" in html and "oncentration" not in html
+    assert "Highest-risk banks" in html and "cid:net_risk" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
     assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 10
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))

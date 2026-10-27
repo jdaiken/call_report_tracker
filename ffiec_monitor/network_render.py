@@ -4,20 +4,10 @@ from __future__ import annotations
 import io
 from xml.sax.saxutils import escape
 
-from .network import (GROUP_NOTES, RISK_MEASURES, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
+from .network import (GROUP_NOTES, RISK_MEASURES, SEGMENTS, risk_score, EXCLUDE_ASSETS, HIGH_UNINSURED, NAME, NEAR_CAP, QUARTERS, TOP_N, Network, NetBank, _fmt_money, _pct,
                       short, takeaways)
 
 PAGES = 10
-EMAIL_IMAGES = ("risk", "groups", "trend_cap")
-
-
-def EMAIL_SECTIONS(net):          # noqa: N802  (cid, heading, one-line caption)
-    tr = net.trend()
-    wid = sum(1 for x in tr if x.gap_change() > 0)
-    return [("risk", "Highest-risk banks", "Score out of 15 across cap use, special cap, capital, uninsured share and the 1-year trend."),
-            ("groups", "Three groups to watch", "Red = past the line. Black tick = estimated special cap. Dashed = the cap, or 0 pts."),
-            ("trend_cap", "Is the gap getting worse?", f"Five quarters of reciprocal deposits (line) against the cap (dashed). "
-                                                       f"The gap widened at {wid} of {len(tr)} banks near or over the cap.")]
 RISK_NOTE = ("Each reciprocal user gets 0-3 points on five measures: cap used, special cap, capital cushion, uninsured share "
              "and the 1-year trend. Beside each bar: what drives the score.")
 CAP_NOTE = ("Reciprocal deposits are excepted from brokered only up to the lesser of $5 billion or 20% of total liabilities "
@@ -71,46 +61,57 @@ def _tiles(net: Network) -> list[tuple[str, str]]:
 
 
 # ------------------------------------------------------------------ email: highlights only
+EMAIL_IMAGES = ("risk",)
+
+
 def render_html(net: Network) -> str:
-    from .report import AMBER, GREEN, INK, MUTED, RED, RULE, SOFT, _e, _tile
+    from . import network_style as S
+    from .report import _e
     s = net.stats()
-    colors = ["#2a78d6"] * 6
-    tiles = [(lab, val, col) for (lab, val), col in zip(_tiles(net), colors)]
-    b = ('<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-         + '<td width="8"></td>'.join(_tile(lab, val, col) for lab, val, col in tiles) + "</tr></table></td></tr>")
+    FONT = "Inter,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif"
+    heads = headlines(net)
+
+    def kicker(t):
+        return (f'<div style="font-size:11px;font-weight:600;letter-spacing:.12em;color:{S.MUTED};'
+                f'text-transform:uppercase">{_e(t)}</div>')
+
+    kp = "".join(
+        f'<td valign="top" style="padding:12px 10px 12px 0;border-top:2px solid {S.NAVY}">'
+        f'<div style="font-size:24px;font-weight:600;color:{S.NAVY};line-height:1.1">{_e(v)}</div>'
+        f'<div style="font-size:10.5px;font-weight:500;letter-spacing:.04em;color:{S.MUTED};margin-top:4px">{_e(lab)}</div></td>'
+        + ('<td width="10" style="border-top:2px solid #fff"></td>' if i < 5 else "")
+        for i, (lab, v) in enumerate(_tiles(net)))
+    b = f'<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{kp}</tr></table></td></tr>'
     if net.summary:
-        b += (f'<tr><td style="padding:16px 0 0"><div style="background:{SOFT};border-left:3px solid {INK};padding:10px 12px">'
-              f'<div style="font-size:12.4px;font-weight:700;letter-spacing:.08em;color:{MUTED}">ANALYSIS</div>'
-              f'<div style="font-size:15.9px;line-height:1.5;color:{INK};margin-top:4px">{_e(net.summary)}</div></div></td></tr>')
-
-    def h(title, note=""):
-        n = f'<div style="font-size:14px;color:{MUTED};margin-top:3px">{_e(note)}</div>' if note else ""
-        return (f'<tr><td style="padding:28px 0 4px"><div style="font-size:18px;font-weight:700;color:{INK}">{_e(title)}</div>'
-                f'{n}</td></tr>')
-
-    def img(cid, alt):
-        return (f'<tr><td style="padding:8px 0 0"><img src="cid:net_{cid}" width="712" alt="{_e(alt)}" '
-                f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>' if cid in net.images else "")
-
-    for cid, title, note in EMAIL_SECTIONS(net):
-        if cid in net.images:
-            b += h(title, note) + img(cid, title)
-
+        b += (f'<tr><td style="padding:26px 0 0">{kicker("Summary")}<div style="font-size:15.5px;line-height:1.6;'
+              f'color:{S.INK};margin-top:8px">{_e(net.summary)}</div></td></tr>')
+    if "risk" in net.images:
+        b += (f'<tr><td style="padding:30px 0 0">{kicker("Highest-risk banks")}<div style="font-size:19px;font-weight:600;'
+              f'color:{S.NAVY};margin-top:6px">{_e(heads[1])}</div><div style="font-size:13.5px;color:{S.MUTED};margin-top:4px">'
+              f'{_e(RISK_NOTE)}</div></td></tr>'
+              f'<tr><td style="padding:12px 0 0"><img src="cid:net_risk" width="712" alt="Highest-risk banks" '
+              f'style="display:block;width:100%;max-width:712px;height:auto;border:0"></td></tr>')
+    toc = "".join(f'<tr><td style="padding:7px 0;border-bottom:1px solid {S.RULE};font-size:13.5px;color:{S.MUTED};width:34px">'
+                  f'{i:02d}</td><td style="padding:7px 0;border-bottom:1px solid {S.RULE};font-size:13.5px;color:{S.INK}">'
+                  f'<b style="font-weight:600">{_e(SECTIONS[i - 1])}</b> <span style="color:{S.MUTED}">· {_e(heads[i - 1])}</span>'
+                  f'</td></tr>' for i in range(3, len(SECTIONS) + 1))
+    b += (f'<tr><td style="padding:30px 0 0">{kicker("In the attached report")}<table role="presentation" width="100%" '
+          f'cellpadding="0" cellspacing="0" style="margin-top:6px">{toc}</table></td></tr>')
     cov = (f"{s['banks']:,} banks, latest Call Report ({net.quarter_label} where filed, else the prior quarter)"
-           + (f"; {len(net.excluded)} banks with ${EXCLUDE_ASSETS // 1_000_000}B+ in assets left out" if net.excluded else "")
-           + (f"; {net.missing:,} not yet loaded" if net.missing else "") + ".")
-    b += (f'<tr><td style="padding:22px 0 0;font-size:14px;color:{INK}"><b>Full report attached:</b> ten-page PDF with '
-          f'charts for every section, and a spreadsheet with every bank.</td></tr>'
-          f'<tr><td style="padding:8px 0 0;font-size:12.5px;color:{MUTED}">{_e(cov)} Sources: FFIEC Call Reports; FDIC, '
-          f'Fed, OCC and FinCEN enforcement records.</td></tr>')
-    return (f'<!doctype html><html><body style="margin:0;background:#eef0f3;font-family:-apple-system,Segoe UI,Arial,sans-serif">'
-            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f3"><tr><td align="center" style="padding:18px 10px">'
-            f'<table role="presentation" width="760" cellpadding="0" cellspacing="0" style="max-width:760px;width:100%;background:#fff">'
-            f'<tr><td style="background:{INK};padding:18px 24px"><div style="font-size:13px;font-weight:700;letter-spacing:.12em;color:#9aa3ad">WEEKLY</div>'
-            f'<div style="font-size:23.6px;font-weight:700;color:#fff">{NAME}</div>'
-            f'<div style="font-size:14.8px;color:#c8cdd3;margin-top:3px">{net.run_date:%A, %B %-d, %Y} · reciprocal cap use and uninsured deposits</div></td></tr>'
-            f'<tr><td style="padding:18px 24px 26px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{b}</table></td></tr>'
-            f'</table></td></tr></table></body></html>')
+           + (f"; {len(net.excluded)} banks of ${EXCLUDE_ASSETS // 1_000_000}B+ in assets left out" if net.excluded else "") + ".")
+    b += (f'<tr><td style="padding:24px 0 0;font-size:12px;line-height:1.5;color:{S.MUTED}">Attached: ten-page PDF and a '
+          f'spreadsheet with every bank. {_e(cov)} Sources: FFIEC Call Reports; FDIC, Federal Reserve, OCC and FinCEN '
+          f'enforcement records.</td></tr>')
+    return (f'<!doctype html><html><body style="margin:0;background:#f2f4f7;font-family:{FONT}">'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f4f7"><tr>'
+            f'<td align="center" style="padding:22px 10px">'
+            f'<table role="presentation" width="760" cellpadding="0" cellspacing="0" style="max-width:760px;width:100%;'
+            f'background:#fff;border:1px solid {S.RULE}">'
+            f'<tr><td style="padding:26px 24px 8px">{kicker("Weekly")}<div style="font-size:26px;font-weight:600;'
+            f'color:{S.NAVY};margin-top:4px">{NAME}</div><div style="font-size:14px;color:{S.MUTED};margin-top:4px">'
+            f'{net.run_date:%A, %B %-d, %Y}</div></td></tr>'
+            f'<tr><td style="padding:14px 24px 28px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+            f'{b}</table></td></tr></table></td></tr></table></body></html>')
 
 
 def subject(net: Network) -> str:
@@ -120,254 +121,297 @@ def subject(net: Network) -> str:
 
 
 # ------------------------------------------------------------------ PDF (always ten pages)
+SECTIONS = ["Summary", "Highest-risk banks", "Cap use by bank size", "Exposure map", "Top 20 holders against their caps",
+            "Nearest or over the cap", "Special cap", "Closest to the special cap", "Uninsured deposits",
+            "Quarter-over-quarter movers and notes"]
+
+
+def headlines(net: Network) -> list[str]:
+    """One plain sentence per page that says what the page shows (data-driven)."""
+    s = net.stats()
+    rk, top, near, close = net.risk(), net.top_exposure(), net.near_cap(), net.closest_to_special()
+    tr = net.trend()
+    wid = sum(1 for x in tr if x.gap_change() > 0)
+    over_est = sum(1 for x in net.special() if (x.over_special or 0) > 0)
+    neg = sum(1 for x in close if x.cushion < 0)
+    thin = sum(1 for x in close if 0 <= x.cushion < 0.5)
+    mv = net.movers()
+    upm = max(mv, key=lambda x: x.reciprocal - x.prior_reciprocal, default=None)
+    over_top = sum(1 for x in top if (x.used or 0) > 100)
+    return [
+        f"{s['users']:,} banks hold {_fmt_money(s['reciprocal_total'])} in reciprocal deposits",
+        (f"{short(rk[0].bank.name)} leads this week's risk ranking" if rk else "No bank scores on the risk measures this week"),
+        f"{s['user_pct']:.0f}% of banks use reciprocal deposits; {s['over_cap']} are over their cap",
+        f"Of the {len(top)} largest holders, {over_top} are over their cap",
+        (f"{short(top[0].bank.name)} holds the most, {_fmt_money(top[0].reciprocal)} at {_pct(top[0].used)} of its cap" if top else "No holders"),
+        f"{len(near)} banks are at {NEAR_CAP:.0f}%+ of their cap" + (f"; the gap widened at {wid} of {len(tr)} over the year" if tr else ""),
+        f"{s['special_all']} banks are likely on the special cap; {over_est} hold more than their estimate",
+        f"{neg} reciprocal users sit under the 9% CBLR line and {thin} more are within 0.5 pts of a minimum",
+        f"{s['high_uninsured']:,} banks have {HIGH_UNINSURED:.0f}%+ of deposits uninsured; {s['high_unins_low_use']} have room under the cap",
+        (f"Largest increase: {short(upm.bank.name)}, +{_fmt_money(upm.reciprocal - upm.prior_reciprocal)} on the quarter"
+         if upm and upm.reciprocal > upm.prior_reciprocal else "Quarter-over-quarter changes"),
+    ]
+
+
 def render_pdf(net: Network) -> bytes:
     from reportlab.lib import colors
+    from reportlab.lib.enums import TA_RIGHT
     from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import Image, PageBreak, SimpleDocTemplate, Spacer, Table, TableStyle
-    from . import pdf_report as P
+    from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from . import network_style as S
+    S.reportlab_fonts()
+    C = colors.HexColor
+    PW, PH = letter
+    ML, MT, MB = 0.6 * inch, 0.95 * inch, 0.75 * inch
+    WIDTH = PW - 2 * ML
+    FRAME_H = PH - MT - MB - 14
+
+    def st(name, size, color=S.INK, font="Inter", lead=None, **kw):
+        return ParagraphStyle(name, fontName=font, fontSize=size, leading=lead or size * 1.32, textColor=C(color), **kw)
+    T = {"kicker": st("k", 7.5, S.MUTED, "Inter-SemiBold"), "h": st("h", 17, S.NAVY, "Inter-SemiBold", 21),
+         "lead": st("l", 9.5, S.MUTED, lead=13.5), "body": st("b", 10, S.INK, lead=14.5),
+         "cell": st("c", 8.6), "cellb": st("cb", 8.6, S.INK, "Inter-SemiBold"), "sub": st("s", 7, S.MUTED),
+         "num": st("n", 8.6, alignment=TA_RIGHT), "numb": st("nb", 8.6, S.INK, "Inter-SemiBold", alignment=TA_RIGHT),
+         "th": st("th", 6.8, S.MUTED, "Inter-SemiBold"), "thr": st("thr", 6.8, S.MUTED, "Inter-SemiBold", alignment=TA_RIGHT),
+         "note": st("nt", 7.6, S.MUTED, lead=10.5), "kpi": st("kpi", 17, S.NAVY, "Inter-SemiBold", 21),
+         "kpil": st("kpil", 7, S.MUTED, "Inter-Medium", 9), "title": st("t", 26, S.NAVY, "Inter-SemiBold", 30)}
+    p = lambda t, k: Paragraph(t, T[k])                                       # noqa: E731
+    heads = headlines(net)
     s = net.stats()
 
-    def header(title, n):
-        t = Table([[P._p(escape(title), "h"), P._p(f"{n} / {PAGES}", "labr")]], colWidths=[P.WIDTH * 0.8, P.WIDTH * 0.2])
-        t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, 0), 1.5, P.INK), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                               ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                               ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-        return [t, Spacer(1, 8)]
+    def section(n):
+        return [p(f"{n:02d}&nbsp;&nbsp;&nbsp;{escape(SECTIONS[n - 1].upper())}", "kicker"), Spacer(1, 5),
+                p(escape(heads[n - 1]), "h"), Spacer(1, 6)]
 
-    def chart(cid, title, max_h):
+    def lead(text):
+        return [p(escape(text), "lead"), Spacer(1, 10)]
+
+    def chart(cid, max_h):
         if cid not in net.images:
             return []
         im = Image(io.BytesIO(net.images[cid]))
-        w = P.WIDTH
+        w = WIDTH
         h = w * im.imageHeight / im.imageWidth
         if h > max_h * inch:
             h = max_h * inch
             w = h * im.imageWidth / im.imageHeight
         im.drawWidth, im.drawHeight = w, h
-        return ([P._p(f"<b>{escape(title)}</b>", "cell"), Spacer(1, 3)] if title else []) + [im, Spacer(1, 8)]
+        im.hAlign = "LEFT"
+        return [im, Spacer(1, 12)]
 
-    def note(text):
-        return [P._p(escape(text), "note"), Spacer(1, 6)]
-
-    def none(text="None this week."):
-        return [P._p(text, "cell")]
-
-    def more(shown, total):
-        return [Spacer(1, 3), P._p(f"Showing {shown} of {total}. All are in the attached spreadsheet.", "note")] if total > shown else []
+    def bank_cell(nb):
+        return p(f"{escape(short(nb.bank.name, 40))}<br/><font name='Inter' size='6.8' color='{S.MUTED}'>"
+                 f"{escape(nb.bank.location)} · {escape(nb.bank.assets)}</font>", "cellb")
 
     def tbl(rows, cols):
-        """cols: [(label, width_in or None, fn(nb) -> Paragraph)]; the None width takes the rest."""
         fixed = sum(w for _, w, _ in cols if w)
-        widths = [(w or 0) * inch or (P.WIDTH - fixed * inch) for _, w, _ in cols]
-        head = [P._p(lab, "label" if i == 0 else "labr") for i, (lab, _, _) in enumerate(cols)]
-        return P._table([head] + [[fn(nb) for _, _, fn in cols] for nb in rows], widths)
+        widths = [(w * inch) if w else (WIDTH - fixed * inch) for _, w, _ in cols]
+        head = [p(lab, "th" if i == 0 else "thr") for i, (lab, _, _) in enumerate(cols)]
+        data = [head] + [[fn(nb) for _, _, fn in cols] for nb in rows]
+        t = Table(data, colWidths=widths, repeatRows=1)
+        style = [("LINEBELOW", (0, 0), (-1, 0), 0.8, C(S.NAVY)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                 ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                 ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+                 ("LEFTPADDING", (0, 0), (0, -1), 0)]
+        style += [("LINEBELOW", (0, i), (-1, i), 0.4, C(S.RULE)) for i in range(1, len(data))]
+        t.setStyle(TableStyle(style))
+        return t
 
-    num = lambda t: P._p(t, "num")                                  # noqa: E731
-    BANK = ("BANK", None, lambda nb: P._bank(nb.bank))
-    REC = ("RECIPROCAL", 1.0, lambda nb: num(_fmt_money(nb.reciprocal)))
-    CAP = ("CAP", 0.9, lambda nb: num(_fmt_money(nb.cap)))
-    USED = ("% OF CAP", 0.85, lambda nb: num(f"<b>{_pct(nb.used)}</b>"))
-    CHG = ("VS. LAST Q", 0.85, lambda nb: num(_change(nb)))
-    UNI = ("UNINSURED", 0.85, lambda nb: num(_pct(nb.uninsured_share)))
-    EST = ("EST. SPECIAL CAP", 1.15, lambda nb: num(_fmt_money(nb.special_cap_est)))
-    ABOVE = ("ABOVE IT", 0.85, lambda nb: num(_over(nb)))
+    def more(shown, total):
+        return [Spacer(1, 5), p(f"Top {shown} of {total} shown. All {total} are in the attached spreadsheet.", "note")] if total > shown else []
 
-    # 1. Summary
-    tw = (P.WIDTH - 5 * 6) / 6
-    cells = []
-    for lab, val in _tiles(net):
-        t = Table([[P._p(val if len(val) <= 6 else f"<font size='17'>{val}</font>", "tile")], [P._p(lab, "label")]],
-                  colWidths=[tw])
-        t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, P.RULE), ("LINEABOVE", (0, 0), (-1, 0), 3.5, colors.HexColor("#2a78d6")),
-                               ("LEFTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (0, 0), 6),
-                               ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
-        cells += [t, ""]
-    row = Table([cells[:-1]], colWidths=[tw, 6] * 5 + [tw])
-    row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    def none(text="None this week."):
+        return [p(text, "body")]
+
+    num = lambda t: p(t, "num")                                               # noqa: E731
+    numb = lambda t: p(t, "numb")                                             # noqa: E731
+    BANK = ("BANK", None, bank_cell)
+    REC = ("RECIPROCAL", 0.95, lambda nb: numb(_fmt_money(nb.reciprocal)))
+    CAP = ("CAP", 0.85, lambda nb: num(_fmt_money(nb.cap)))
+    USED = ("% OF CAP", 0.8, lambda nb: num(_pct(nb.used)))
+    YAGO = ("A YEAR AGO", 0.85, lambda nb: num(_pct(nb.year_ago_used()) if nb.year_ago_used() is not None else "—"))
+    UNI = ("UNINSURED", 0.8, lambda nb: num(_pct(nb.uninsured_share)))
+    EST = ("EST. SPECIAL CAP", 1.1, lambda nb: num(_fmt_money(nb.special_cap_est)))
+    ABOVE = ("ABOVE IT", 0.8, lambda nb: num(_over(nb) or "—"))
+
+    def money_delta(v):
+        return "—" if v is None else f"{'+' if v >= 0 else '-'}{_fmt_money(abs(v))}"
+
+    GAPCH = ("GAP, 1-YR CHANGE", 1.15, lambda nb: num(money_delta(nb.gap_change())))
+    SPCH = ("1-YR CHANGE", 0.95, lambda nb: num(money_delta(nb.special_gap_change())))
+
+    # 1. Summary (cover)
+    kpis = _tiles(net)
+    cells = [[p(v, "kpi") for _, v in kpis], [p(lab, "kpil") for lab, _ in kpis]]
+    kw = WIDTH / len(kpis)
+    kt = Table(cells, colWidths=[kw] * len(kpis))
+    kt.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, 0), 0.8, C(S.NAVY)), ("LINEBELOW", (0, -1), (-1, -1), 0.4, C(S.RULE)),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, 0), 10),
+                            ("BOTTOMPADDING", (0, -1), (-1, -1), 10), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
     tk = takeaways(net)
 
     def p1(cap):
-        """cap counts down: footnotes go first, then the lowest takeaways, until the page fits."""
-        out = header("Summary", 1) + [row, Spacer(1, 12)]
+        out = [p("WEEKLY", "kicker"), Spacer(1, 4), p(NAME, "title"), Spacer(1, 4),
+               p(f"{net.run_date:%B %-d, %Y} · Call Reports for {net.quarter_label} where filed, else the prior quarter", "lead"),
+               Spacer(1, 16), kt, Spacer(1, 18)]
         if net.summary:
-            box = Table([[[P._p("ANALYSIS", "label"), Spacer(1, 3), P._p(escape(net.summary), "body")]]], colWidths=[P.WIDTH])
-            box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), P.SOFT), ("LINEBEFORE", (0, 0), (0, -1), 2.5, P.INK),
-                                     ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                                     ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
-            out += [box, Spacer(1, 12)]
-        out += [P._p("KEY TAKEAWAYS", "label"), Spacer(1, 4)]
-        for t in tk[:max(1, min(cap, len(tk)))]:
-            out += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "body"), Spacer(1, 3)]
-        out += [Spacer(1, 10), P._p("IN THIS REPORT", "label"), Spacer(1, 3),
-                P._p("2 Highest-risk banks · 3 Three groups to watch · 4 Top 20 holders · 5 Nearest the cap · 6 Five-quarter trend vs. "
-                     "the cap · 7 Special cap · 8 Special-cap trend · 9 Closest to the special cap · 10 All banks by size, and notes",
-                     "note")]
+            out += [p("SUMMARY", "kicker"), Spacer(1, 5), p(escape(net.summary), "body"), Spacer(1, 16)]
+        out += [p("KEY POINTS", "kicker"), Spacer(1, 6)]
+        for i, t in enumerate(tk[:max(1, min(cap, len(tk)))], 1):
+            row = Table([[p(f"{i}", "cellb"), p(escape(t), "body")]], colWidths=[0.28 * inch, WIDTH - 0.28 * inch])
+            row.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
+                                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+            out.append(row)
         if cap > len(tk):
-            out += [Spacer(1, 10), P._p(escape(CAP_NOTE), "small"), Spacer(1, 4), P._p(escape(EXCLUDE_NOTE), "small")]
+            out += [Spacer(1, 12), p("CONTENTS", "kicker"), Spacer(1, 5)]
+            toc = [[p(f"{i:02d}", "note"), p(escape(t), "note")] for i, t in enumerate(SECTIONS[1:], 2)]
+            half = (len(toc) + 1) // 2
+            grid = [toc[i] + (toc[i + half] if i + half < len(toc) else ["", ""]) for i in range(half)]
+            g = Table(grid, colWidths=[0.3 * inch, WIDTH / 2 - 0.3 * inch] * 2)
+            g.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
+                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+            out.append(g)
         return out
 
-    # 2. Highest-risk banks
-    rk = net.risk()
+    rk, top, near = net.risk(), net.top_exposure(), net.near_cap()
+    spec, close, pro, mv = net.special(), net.closest_to_special(), net.prospects(), net.movers()
 
     def p2(cap):
-        out = header("Highest-risk banks this week", 2) + note(RISK_NOTE)
-        out += chart("risk", "", 6.2)
+        out = section(2) + lead(RISK_NOTE) + chart("risk", 4.6)
         cush = ("CUSHION", 0.85, lambda nb: num("below WC" if "below well capitalized" in nb.special_cap
-                                                else (f"{nb.cushion:+.2f} pts" if nb.cushion is not None else "n/a")))
-        return out + ([tbl(rk[:cap], [BANK, REC, USED, cush, UNI, EST])] if rk else none())
-
-    # 3. Three groups to watch
-    top = net.top_exposure()
+                                                else (f"{nb.cushion:+.2f} pts" if nb.cushion is not None else "—")))
+        sc = ("SCORE", 0.55, lambda nb: numb(str(risk_score(nb)[0])))
+        return out + ([tbl(rk[:cap], [BANK, sc, REC, USED, cush, UNI])] if rk else none())
 
     def p3(_cap):
-        out = header("Three groups to watch", 3)
-        out += note("Red = past the line. Black tick = estimated special cap. Dashed = the cap (middle) or 0 pts (bottom).")
-        out += chart("groups", "", 7.4)
-        for t, n in GROUP_NOTES:
-            out += [P._p(f"<b>{escape(t)}:</b> {escape(n)}", "small"), Spacer(1, 3)]
-        return out
+        out = section(3) + lead("Share of banks in each band of cap use. The cap is the lesser of $5 billion or 20% of total "
+                                "liabilities; over 100%, further reciprocal placements count as brokered.")
+        out += chart("segments", 3.4)
+        rows = [(lab, [x for x in net.banks if lo <= (x.assets or 0) < hi]) for lab, lo, hi in SEGMENTS]
+        rows = [(lab, g) for lab, g in rows if g] + [("All banks", net.banks)]
+        head = [p(h, "th" if i == 0 else "thr") for i, h in enumerate(
+            ["SEGMENT", "BANKS", "USE RECIPROCAL", "RECIPROCAL", "MEDIAN % OF CAP", "OVER CAP", "MEDIAN UNINSURED"])]
+        body = []
+        for lab, g in rows:
+            sub = Network(net.run_date, g, net.quarter_label).stats()
+            body.append([p(escape(lab), "cellb"), num(f"{sub['banks']:,}"), num(f"{sub['user_pct']:.0f}%"),
+                         numb(_fmt_money(sub["reciprocal_total"])), num(_pct(sub["median_used"])), num(f"{sub['over_cap']:,}"),
+                         num(_pct(sub["median_uninsured"]))])
+        t = Table([head] + body, colWidths=[WIDTH - 5.4 * inch] + [0.9 * inch] * 6)
+        t.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, 0), 0.8, C(S.NAVY)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                               ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 5),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 5), ("LINEABOVE", (0, -1), (-1, -1), 0.8, C(S.RULE))]
+                              + [("LINEBELOW", (0, i), (-1, i), 0.4, C(S.RULE)) for i in range(1, len(body))]))
+        return out + [t]
 
-    # 4. Top 20 holders
-    def p4(cap):
-        out = header(f"Top {len(top)} reciprocal holders against their caps", 4)
-        out += note("Bar = reciprocal deposits. Black tick = the bank's cap. Red = over it.")
-        out += chart("top", "", 5.0)
-        return out + ([tbl(top[:cap], [BANK, REC, CAP, USED, CHG, EST])] if top else none())
-
-    # 5. Nearest or over the cap
-    near = net.near_cap()
+    def p4(_cap):
+        out = section(4) + lead("The 20 largest reciprocal holders by how much of their cap they use (up) and how much of "
+                                "their deposits are uninsured (right). Dot size = reciprocal balance; red = likely on the "
+                                "special cap.")
+        return out + chart("map", 6.2)
 
     def p5(cap):
-        out = header(f"Nearest or over the reciprocal cap ({len(near)})", 5)
-        out += note("Share of the cap used. Dashed = 100%; past it, new placements count as brokered.")
-        out += chart("nearcap", "", 4.4)
-        return out + ([tbl(near[:cap], [BANK, REC, USED, CHG, UNI])] + more(min(cap, len(near)), len(near)) if near else none())
-
-    # 6. Special cap
-    spec = net.special()
-
-    def p7(cap):
-        out = header(f"Likely on the special cap ({len(spec)})", 7)
-        out += note("Below well capitalized or under an active order: held to the four-quarter average. Bar = reciprocal deposits; "
-                    "black tick = estimated special cap; red = over it.")
-        out += chart("special", "", 3.8)
-        why = ("WHY", 1.45, lambda nb: P._p(escape("; ".join(nb.special_cap)), "small"))
-        estb = ("EST. SPECIAL CAP", 1.15, lambda nb: num(_fmt_money(nb.special_cap_est)
-                                                         + (f"<br/><font size='7' color='#5b626c'>{nb.est_basis}</font>" if nb.est_basis else "")))
-        return out + ([tbl(spec[:cap], [BANK, REC, estb, ABOVE, why])] + more(min(cap, len(spec)), len(spec)) if spec else none())
-
-    # 7. Closest to the special cap
-    close = net.closest_to_special()
-
-    def p9(cap):
-        out = header("Closest to the special cap", 9)
-        out += note("Points above the nearest well-capitalized line (CBLR banks: 9%). Red = already below it.")
-        out += chart("cushion", "", 3.8)
-        cush = ("CUSHION", 1.4, lambda nb: P._p(f"<b>{nb.cushion:+.2f} pts</b><br/><font size='7' color='#5b626c'>"
-                                                f"{escape(nb.binding)}</font>", "num"))
-        return out + ([tbl(close[:cap], [BANK, cush, REC, EST, ABOVE])] if close else none())
-
-    # 8. Uninsured
-    pro = net.prospects()
-
-    def p10(cap):
-        out = header("Across all banks, and notes", 10)
-        out += chart("size", "Share of banks by how much of the cap they use", 2.7)
-        out += chart("uninsured", "Banks by uninsured share of deposits (dashed = 40%)", 2.3)
-        out += [P._p("<b>NOTES</b>", "label"), Spacer(1, 3)]
-        for t in (CAP_NOTE, EXCLUDE_NOTE,
-                  "Estimated special cap: average of the four quarter-end reciprocal balances before the current quarter "
-                  "(fewer when a bank hasn't filed that long; 'nQ avg' shows how many). Shown when at least two quarters are on hand.",
-                  "Exam ratings aren't public, so 'likely on the special cap' means below well capitalized or under an active "
-                  "FDIC, Fed, OCC or FinCEN order (civil money penalties and orders over 10 years old excluded).",
-                  f"Coverage: {s['banks']:,} banks from their latest Call Report ({net.quarter_label} where filed, else the prior "
-                  f"quarter)" + (f"; {len(net.excluded)} large banks left out" if net.excluded else "")
-                  + (f"; {net.missing:,} not yet loaded" if net.missing else "") + "."):
-            out += [P._p(f"•&nbsp;&nbsp;{escape(t)}", "small"), Spacer(1, 3)]
-        out += [Spacer(1, 6), P._p("<b>Sources:</b> FFIEC Call Reports (RC-E memorandum reciprocal deposits, RC-O memorandum "
-                                   "estimated uninsured deposits, RC total liabilities, RC-R capital ratios); FDIC ED&amp;O, "
-                                   "Federal Reserve, OCC and FinCEN enforcement records. UBPR and Call Report links for every bank "
-                                   "are in the spreadsheet.", "small")]
-        return out
-
-    qs = _quarters(net)
-
-    def qcols(fn):
-        return [(_qlab(q), 0.68, (lambda q: lambda nb: num(fn(nb, q)))(q)) for q in qs]
-
-    def pct_at(nb, q):
-        h = _at(nb, q)
-        return _pct(h[1] / h[2] * 100) if h and h[1] is not None and h[2] else "—"
-
-    def rec_at(nb, q):
-        h = _at(nb, q)
-        return _fmt_money(h[1]) if h and h[1] is not None else "—"
-
-    tr = net.trend()
+        out = section(5) + lead("Bar = reciprocal deposits; navy tick = the bank's cap. Red = over the cap.") + chart("top", 4.8)
+        return out + ([tbl(top[:cap], [BANK, REC, CAP, USED, YAGO, UNI])] if top else none())
 
     def p6(cap):
-        wid = sum(1 for x in tr if x.gap_change() > 0)
-        out = header("Is the gap getting worse? Five quarters against the cap", 6)
-        out += note(f"Line = reciprocal deposits; dashed = the cap. Red = the gap widened. It widened at {wid} of {len(tr)} banks "
-                    "near or over the cap.")
-        out += chart("trend_cap", "", 4.0)
-        chg = ("GAP CHANGE", 0.95, lambda nb: num(f"<b>{'+' if nb.gap_change() >= 0 else '-'}{_fmt_money(abs(nb.gap_change()))}</b>"
-                                                 f"<br/><font size='7' color='#5b626c'>{'wider' if nb.gap_change() > 0 else 'narrower'}</font>"))
-        return out + ([tbl(tr[:cap], [BANK] + qcols(pct_at) + [chg])] + more(min(cap, len(tr)), len(tr)) if tr else
-                      none("Not enough history on hand yet."))
+        out = section(6) + lead("Share of the cap used; dashed line = 100%. Amber = 80-100%, red = over. A year ago and gap "
+                                "change show whether each bank is moving toward or past its cap.") + chart("nearcap", 3.9)
+        return out + ([tbl(near[:cap], [BANK, REC, USED, YAGO, GAPCH])] + more(min(cap, len(near)), len(near)) if near else none())
 
-    sp = [x for x in net.special_users() if len(x.series()) >= 2]
+    def p7(cap):
+        out = section(7) + lead("Banks below well capitalized or under an active FDIC, Fed, OCC or FinCEN order are limited to "
+                                "their four-quarter average of reciprocal deposits. Bar = balance now; navy tick = estimated "
+                                "special cap; red = over it.") + chart("special", 3.5)
+        why = ("WHY", 1.35, lambda nb: p(escape("; ".join(nb.special_cap)), "note"))
+        return out + ([tbl(spec[:cap], [BANK, REC, EST, ABOVE, SPCH, why])] + more(min(cap, len(spec)), len(spec)) if spec else none())
 
     def p8(cap):
-        out = header("Special-cap banks: five quarters", 8)
-        out += note("Line = reciprocal deposits; dashed = estimated special cap. Red = rising over the year.")
-        out += chart("trend_special", "", 4.0)
-        dirn = ("1-YR CHANGE", 0.95, lambda nb: num(f"<b>{'+' if nb.special_gap_change() >= 0 else '-'}"
-                                                   f"{_fmt_money(abs(nb.special_gap_change()))}</b>"))
-        return out + ([tbl(sp[:cap], [BANK] + qcols(rec_at) + [EST, dirn])] + more(min(cap, len(sp)), len(sp)) if sp else
-                      none("Not enough history on hand yet."))
+        out = section(8) + lead("Reciprocal users not yet on the special cap, by points above the nearest well-capitalized "
+                                "line (community bank leverage ratio banks against 9%). Red = already under it.") + chart("cushion", 3.5)
+        cush = ("CUSHION", 0.8, lambda nb: numb(f"{nb.cushion:+.2f}"))
+        line = ("MEASURED ON", 1.4, lambda nb: num(escape(nb.binding)))
+        return out + ([tbl(close[:cap], [BANK, cush, line, REC, EST])] if close else none())
 
-    pages = [P._fit(p1, len(tk) + 1), P._fit(p2, 8), P._fit(p3, 0), P._fit(p4, 10), P._fit(p5, 8),
-             P._fit(p6, 8), P._fit(p7, 8), P._fit(p8, 8), P._fit(p9, 8), P._fit(p10, 0)]
-    def squeeze(page):
-        """Shrink the page's charts until it fits one page, so the PDF is always exactly PAGES long."""
-        for _ in range(12):
-            over = P._height(page) - P.FRAME_H
-            if over <= 0:
+    def p9(cap):
+        out = section(9) + lead(f"Uninsured deposits are the money most likely to leave in stress, and what full-insurance "
+                                f"products protect. Navy = {HIGH_UNINSURED:.0f}% or more.") + chart("uninsured", 2.6)
+        out += [p("HIGH UNINSURED, ROOM UNDER THE CAP", "kicker"), Spacer(1, 6)]
+        unin = ("UNINSURED $", 0.95, lambda nb: numb(_fmt_money(nb.uninsured)))
+        return out + ([tbl(pro[:cap], [BANK, unin, UNI, USED, REC])] + more(min(cap, len(pro)), len(pro)) if pro else none())
+
+    def p10(_cap):
+        out = section(10)
+        if "movers" in net.images:
+            out += lead("Change in reciprocal deposits from last quarter, among the banks featured in this report.")
+            out += chart("movers", 4.2)
+        else:
+            out += lead("No prior-quarter figures on hand this week.")
+        out += [Spacer(1, 4), p("NOTES", "kicker"), Spacer(1, 5)]
+        for t in (CAP_NOTE, EXCLUDE_NOTE,
+                  "Estimated special cap: average of the four quarter-end reciprocal balances before the current quarter "
+                  "(fewer if a bank hasn't filed that long).",
+                  "Exam ratings aren't public, so 'likely on the special cap' means below well capitalized or under an active "
+                  "FDIC, Fed, OCC or FinCEN order (civil money penalties and orders over 10 years old excluded).",
+                  "Risk score: 0-3 points each for cap used (60/80/100%), likely special cap, capital cushion (under 1/0.5/0 "
+                  "pts), uninsured share (40/50/60%) and the 1-year change in the gap.",
+                  f"Coverage: {s['banks']:,} banks" + (f"; {len(net.excluded)} banks of ${EXCLUDE_ASSETS // 1_000_000}B+ left out"
+                                                         if net.excluded else "") + (f"; {net.missing:,} not yet loaded" if net.missing else "") + "."):
+            out += [p(escape(t), "note"), Spacer(1, 4)]
+        out += [Spacer(1, 4), p("<font name='Inter-SemiBold'>Sources:</font> FFIEC Call Reports (RC-E reciprocal deposits, RC-O "
+                                "uninsured deposits, RC total liabilities, RC-R capital); FDIC, Federal Reserve, OCC and FinCEN "
+                                "enforcement records. UBPR and Call Report links for every bank are in the spreadsheet.", "note")]
+        return out
+
+    def height(fl):
+        return sum(f.wrap(WIDTH, PH)[1] + f.getSpaceBefore() + f.getSpaceAfter() for f in fl)
+
+    def fit(build, start):
+        for cap in range(start, -1, -1):
+            pg = build(cap)
+            if height(pg) <= FRAME_H:
+                return pg
+        pg = build(0)
+        for _ in range(12):                                   # still too tall: shrink its charts
+            over = height(pg) - FRAME_H
+            ims = [f for f in pg if isinstance(f, Image)]
+            if over <= 0 or not ims:
                 break
-            ims = [f for f in page if isinstance(f, Image)]
-            if not ims:
-                break
-            total = sum(f.drawHeight for f in ims)
-            k = max(0.5, (total - over - 4) / total)
+            tot = sum(f.drawHeight for f in ims)
+            k = max(0.5, (tot - over - 4) / tot)
             for f in ims:
                 f.drawHeight *= k
                 f.drawWidth *= k
-        return page
+        return pg
 
-    pages = [squeeze(pg) for pg in pages]
+    pages = [fit(p1, len(tk) + 1), fit(p2, 10), fit(p3, 0), fit(p4, 0), fit(p5, 10), fit(p6, 10), fit(p7, 10),
+             fit(p8, 10), fit(p9, 10), fit(p10, 0)]
     story = []
     for i, pg in enumerate(pages):
         story += pg + ([PageBreak()] if i < len(pages) - 1 else [])
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=P.MARGIN, rightMargin=P.MARGIN, topMargin=P.TOP,
-                            bottomMargin=P.BOTTOM, title=f"{NAME} {net.run_date:%Y-%m-%d}", author=NAME)
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=ML, rightMargin=ML, topMargin=MT, bottomMargin=MB,
+                            title=f"{NAME} {net.run_date:%Y-%m-%d}", author=NAME)
 
     def chrome(canvas, doc_):
         canvas.saveState()
-        canvas.setFillColor(P.INK)
-        canvas.rect(0, P.PAGE_H - 0.75 * inch, P.PAGE_W, 0.75 * inch, stroke=0, fill=1)
-        canvas.setFillColor(colors.white)
-        canvas.setFont("Helvetica-Bold", 15)
-        canvas.drawString(P.MARGIN, P.PAGE_H - 0.42 * inch, NAME)
-        canvas.setFont("Helvetica", 10)
-        canvas.setFillColor(colors.HexColor("#c8cdd3"))
-        canvas.drawString(P.MARGIN, P.PAGE_H - 0.6 * inch, f"{net.run_date:%A, %B %-d, %Y}  ·  reciprocal cap use and uninsured deposits")
-        canvas.setFillColor(P.MUTED)
-        canvas.setFont("Helvetica", 8.5)
-        canvas.drawString(P.MARGIN, 0.35 * inch, f"{NAME} · {net.run_date:%B %-d, %Y}")
-        canvas.drawRightString(P.PAGE_W - P.MARGIN, 0.35 * inch, f"{doc_.page} / {PAGES}")
+        canvas.setFillColor(C(S.NAVY))
+        canvas.setFont("Inter-SemiBold", 7.5)
+        canvas.drawString(ML, PH - 0.5 * inch, NAME.upper())
+        canvas.setFillColor(C(S.MUTED))
+        canvas.setFont("Inter", 7.5)
+        canvas.drawRightString(PW - ML, PH - 0.5 * inch, f"{net.run_date:%B %-d, %Y}")
+        canvas.setStrokeColor(C(S.RULE))
+        canvas.setLineWidth(0.6)
+        canvas.line(ML, PH - 0.58 * inch, PW - ML, PH - 0.58 * inch)
+        canvas.line(ML, 0.55 * inch, PW - ML, 0.55 * inch)
+        canvas.setFont("Inter", 7)
+        canvas.drawString(ML, 0.38 * inch, "Source: FFIEC Call Reports; FDIC, Federal Reserve, OCC and FinCEN enforcement records.")
+        canvas.setFont("Inter-SemiBold", 7.5)
+        canvas.setFillColor(C(S.NAVY))
+        canvas.drawRightString(PW - ML, 0.38 * inch, f"{doc_.page}  /  {PAGES}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=chrome, onLaterPages=chrome)
