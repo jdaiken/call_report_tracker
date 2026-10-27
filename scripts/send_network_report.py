@@ -53,6 +53,16 @@ def main(max_pulls: int) -> None:
             + "; ".join(f"{b.bank.name} {b.bank.assets}" for b in big)
             + "; highest risk: " + "; ".join(b.bank.name for b in net.risk(5)))
     print(info)
+    multi = net.treasury_multi()
+    tinfo = (f"treasury list {net.treasury_loaded}: not found {', '.join(net.treasury_unmatched) or 'none'}; ambiguous "
+             + ("; ".join(f"{k} -> " + ", ".join(f"{b.bank.name} ({b.bank.location}, {b.bank.assets})" for b in v)
+                          for k, v in multi.items()) or "none"))
+    print(tinfo)
+    if gha:
+        print(f"::notice title=Treasury list::{tinfo[:3900]}")
+    if os.environ.get("DRY_RUN", "").lower() == "true":
+        print("dry run: no email sent")
+        return
     if gha:
         print(f"::notice title=Network scope::{info}")
     if gha:

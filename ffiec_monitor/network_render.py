@@ -125,9 +125,10 @@ def render_html(net: Network) -> str:
 
 
 def subject(net: Network) -> str:
-    s = net.stats()
-    return (f"{NAME} · {net.run_date:%a %b %-d} · {s['near_cap'] + s['over_cap']} at {NEAR_CAP:.0f}%+ of cap · "
-            f"{s['special_all']} likely on special cap · {s['high_uninsured']:,} with {HIGH_UNINSURED:.0f}%+ uninsured")
+    fo = net.focus()
+    over = sum(1 for b in fo if b.special_cap and (b.over_special or 0) > 0)
+    return (f"{NAME} · {net.run_date:%a %b %-d} · {len(fo)} banks · {len(net.under_order())} under order · "
+            f"{over} over special cap · {_fmt_money(sum(b.reciprocal or 0 for b in fo))} reciprocal")
 
 
 # ------------------------------------------------------------------ PDF (always seven pages)

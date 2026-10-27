@@ -670,7 +670,10 @@ def facts(net: Network) -> str:
     over = [b for b in fo if b.special_cap and (b.over_special or 0) > 0]
     out.append(f"ABOVE ESTIMATED SPECIAL CAP: {len(over)} banks: " + "; ".join(
         f"{b.bank.name} {_fmt_money(b.over_special)} above" for b in sorted(over, key=lambda b: -(b.over_special or 0))[:5]))
-    out.append(f"TREASURY DESK LIST: {len(net.treasury_list())} matched of {net.treasury_loaded}.")
+    multi = net.treasury_multi()
+    out.append(f"TREASURY DESK LIST: {net.treasury_loaded} names; {net.treasury_loaded - len(net.treasury_unmatched)} found in "
+               f"the Call Reports; {len(net.treasury_unmatched)} not found (U.S. branches of foreign banks file a different "
+               "report)" + (f"; {len(multi)} generic names matched more than one bank" if multi else "") + ".")
     return "\n".join(out)
 
 
