@@ -1,6 +1,6 @@
 """Weekly Network Exposure report: reciprocal cap use and uninsured deposits for every bank
 (ffiec_monitor/network.py). Updates stored snapshots in place with the new fields (re-pulling
-Call Reports filed before those fields were captured), then emails the report with a four-page
+Call Reports filed before those fields were captured), then emails the highlights with a nine-page
 PDF and a spreadsheet.
 
   python scripts/send_network_report.py [max_pulls]
@@ -23,6 +23,10 @@ XLSX = "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 def main(max_pulls: int) -> None:
     gha = os.environ.get("GITHUB_ACTIONS") == "true"
+    today = datetime.now(timezone.utc).date()
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and not network.due(today):
+        print(f"{today}: outside the filing window and not the first Monday of the month; skipping")
+        return
     conn = db.connect(get_duckdb_path())
     client = FFIECClient(FFIECConfig.from_env())
     run_date = datetime.now(timezone.utc).date()
@@ -44,7 +48,7 @@ def main(max_pulls: int) -> None:
         EmailConfig.from_env(), os.environ.get("SUBJECT_PREFIX", "") + network_render.subject(net), net.summary, html_body=network_render.render_html(net),
         attachments=[(f"Network-Exposure-{stamp}.pdf", network_render.render_pdf(net), "pdf"),
                      (f"Network-Exposure-{stamp}.xlsx", network_render.build_workbook(net), XLSX)],
-        images={f"net_{k}": v for k, v in net.images.items()})
+        images={f"net_{k}": v for k, v in net.images.items() if k in network_render.EMAIL_IMAGES})
 
 
 if __name__ == "__main__":

@@ -52,13 +52,14 @@ def test_network_report(monkeypatch):
     assert net.near_cap()[1].prior_used == 50.0
     net = network.build(net)
     assert net.summary_by == "rules" and "4 of 5 banks" in net.summary
-    assert set(net.images) == {"usage", "map", "size", "concentration"}
+    assert {"usage", "map", "size", "top", "nearcap", "special", "cushion", "uninsured", "prospects", "movers"} <= set(net.images)
     html = network_render.render_html(net)
-    assert "Nearest or over the reciprocal cap (2)" in html and "cid:net_map" in html and "UBPR" in html
+    assert "Nearest or over the cap (2)" in html and "cid:net_map" in html and "oncentration" not in html
     pdf = network_render.render_pdf(net)
-    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 5
+    assert len(re.findall(rb"/Type /Page[^s]", pdf)) == 9
     wb = load_workbook(io.BytesIO(network_render.build_workbook(net)))
-    assert wb.sheetnames == ["Summary", "Banks", "Concentration", "Near cap", "Special cap", "Closest to special cap", "High uninsured"]
+    assert wb.sheetnames == ["Summary", "Banks", "Top 20 holders", "Near cap", "Special cap", "Closest to special cap",
+                             "High uninsured"]
     assert str(wb["Summary"]["B8"].value).startswith("=COUNTIF(Banks!")
 
 
@@ -76,5 +77,17 @@ def test_special_cap_estimate_and_closest(monkeypatch):
     assert [b.bank.name for b in close][:2] == ["Bank 2", "Bank 3"]
     assert round(close[0].cushion, 2) == -0.4 and close[0].binding == "CBLR leverage (9%)"
     assert round(close[1].cushion, 2) == 0.4 and close[1].binding.startswith("total risk-based")
-    c = net.concentration()
-    assert round(c["top10"]) == 100 and c["n50"] == 2
+    assert [b.bank.name for b in net.top_exposure(2)] == ["Bank 2", "Bank 3"] or net.top_exposure(1)[0].reciprocal == 8_000
+
+
+def test_large_banks_left_out(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    conn = db.connect(":memory:")
+    _add(conn, 1, _r(19_000))
+    _add(conn, 2, _r(4_000_000, liab=300_000_000), assets=350_000_000)            # $350B: out
+    db.upsert_institution_meta(conn, db.InstitutionMeta("3", "BANK OF AMERICA, NATIONAL ASSOCIATION", "Charlotte", "NC",
+                                                        "3510", 90_000_000, Q3))  # GSIB name: out
+    db.upsert_snapshot(conn, db.Snapshot("3", Q3, datetime.now(), _r(1_000), datetime.now()))
+    net = network.collect(conn, None, date(2026, 10, 26))
+    assert [b.bank.name for b in net.banks] == ["Bank 1"] and len(net.excluded) == 2
+    assert not network.excluded_bank("FIRST STATE BANK", 500_000)
