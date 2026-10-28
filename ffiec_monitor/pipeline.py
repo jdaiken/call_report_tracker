@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import duckdb
 
-from . import alerts, db, email_report, ratios, watch_list
+from . import alerts, db, email_report, ratios, simple_email, watch_list
 from .config import EmailConfig
 from .ffiec_client import FFIECAuthError, FFIECClient, FFIECRateLimitError
 
@@ -122,8 +121,10 @@ def run_daily(
         }
 
     failure_count = 0
+    processed: list[simple_email.Filing] = []
     for id_rssd, period_end, submission_ts in changed_to_process:
         panel_entry = panel_by_period.get(period_end, {}).get(id_rssd)
+        refiling = db.get_snapshot(conn, id_rssd, period_end) is not None
         try:
             _process_one(conn, client, id_rssd, period_end, submission_ts, run_date, panel_entry,
                           watch_list_changes, tier1_events, tier2_events, restatement_events, new_filing_events)
@@ -148,6 +149,7 @@ def run_daily(
             fully_processed_periods.discard(period_end)
             failure_count += 1
             continue
+        processed.append(simple_email.Filing(id_rssd, period_end, refiling, submission_ts))
 
     if failure_count:
         logger.warning("%d institution/period pair(s) failed and will be retried next run.", failure_count)
@@ -162,63 +164,22 @@ def run_daily(
         watch_list_changes, tier1_events, snapshot_entries, tier2_events,
         restatement_events, new_filing_events, run_date,
     )
-    if body is None:
-        heartbeat_body = _heartbeat_body(
-            run_date, len(changed_to_process), failure_count,
-            len(universe) if universe is not None else None,
-        )
-        if heartbeat and send and email_config is not None:
-            email_report.send_email(email_config, f"[FFIEC Monitor] Heartbeat -- {run_date.isoformat()}",
-                                      heartbeat_body)
-        return heartbeat_body if heartbeat else "Nothing to report today."
 
-    if send and email_config is not None:
-        from . import analytics, enforcement, performance
-        rep, html_body, pdf_bytes = email_report.compose(
-            watch_list_changes, tier1_events, snapshot_entries, tier2_events,
-            restatement_events, new_filing_events, run_date, analytics.compute(conn, run_date),
-            enforcement_sources=enforcement.fetch_all(run_date),
-            prior_lookup=performance.make_prior_lookup(conn, client),
-        )
-        from . import narrative
-        logger.info("Summary: %s", narrative.STATUS)
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            level = "notice" if rep.summary_by == "Claude" else "warning"
-            print(f"::{level} title=Daily summary::{narrative.STATUS[:500]}")
-        from .workbook import build_workbook
-        files = [(f"FFIEC-Call-Report-Monitor-{run_date.isoformat()}.pdf", pdf_bytes, "pdf")]
-        if restatement_events or new_filing_events:
-            files.append((f"FFIEC-Call-Report-Filings-{run_date.isoformat()}.xlsx",
-                          build_workbook(rep, restatement_events, new_filing_events),
-                          "vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-        email_report.send_email(email_config, rep.subject, _with_summary(rep, body), html_body=html_body,
-                                attachments=files, images=rep.images)
-
-    return body
-
-
-def _with_summary(rep, body: str) -> str:
-    """Plain-text alternative: the summary paragraph above the existing text digest."""
-    return f"WHAT'S GOING ON\n{rep.summary}\n\n{body}" if rep.summary else body
-
-
-def _heartbeat_body(
-    run_date: date, processed_count: int, failure_count: int, universe_size: Optional[int],
-) -> str:
-    lines = [
-        f"FFIEC Call Report Monitor -- Daily Run: {run_date.isoformat()}",
-        "",
-        "No alerts or Watch List activity today.",
-        f"Checked {processed_count} changed institution/period pair(s)"
-        + (f" (universe: {universe_size} tracked institutions)." if universe_size is not None
-           else " (full FDIC-insured filer universe)."),
-    ]
+    # The daily email is one plain table of every filing processed this run (with
+    # Call Report + UBPR links and which monitored lists the bank is on), sent every
+    # day -- per user request 2026-10-28. No Claude summary, charts or PDF.
+    rows = simple_email.build_rows(conn, processed)
+    label = run_date.strftime("%a %b %d, %Y")
+    text = simple_email.render_text(rows, label)
     if failure_count:
-        lines.append(f"{failure_count} institution/period pair(s) failed and will be retried next run.")
-    lines.append("")
-    lines.append("(Temporary heartbeat confirming the scheduled run actually fired -- "
-                  "safe to turn off once trusted.)")
-    return "\n".join(lines)
+        text += f"\n\n{failure_count} filing(s) could not be pulled and will be retried next run."
+    if send and email_config is not None:
+        email_report.send_email(email_config, simple_email.subject(rows, label), text,
+                                html_body=simple_email.render_html(rows, label))
+
+    if body is None:
+        return text if heartbeat else "Nothing to report today."
+    return body
 
 
 def _process_one(

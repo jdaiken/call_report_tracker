@@ -85,30 +85,34 @@ def test_clean_full_run_advances_cursor():
     assert db.get_snapshot(conn, "2", PERIOD) is not None
 
 
-def test_nothing_to_report_stays_silent_without_heartbeat():
+def test_quiet_day_still_sends_the_daily_table_email():
     conn = db.connect(":memory:")
-    client = FakeClient([])  # nothing changed -- alert body is None
+    client = FakeClient([])  # nothing changed
 
     with patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
         body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15))
 
     assert body == "Nothing to report today."
-    mock_send.assert_not_called()
-
-
-def test_heartbeat_sends_confirmation_email_when_nothing_to_report():
-    conn = db.connect(":memory:")
-    client = FakeClient([])
-
-    with patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
-        body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15), heartbeat=True)
-
-    assert body != "Nothing to report today."
-    assert "No alerts or Watch List activity today." in body
     mock_send.assert_called_once()
     _config, subject, sent_body = mock_send.call_args[0]
-    assert "Heartbeat" in subject
-    assert sent_body == body
+    assert "0 filed" in subject
+    assert "No new Call Report filings." in sent_body
+
+
+def test_daily_email_is_one_plain_table_of_the_runs_filings():
+    conn = db.connect(":memory:")
+    client = FakeClient(["1", "2"])
+
+    with patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
+        run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15))
+
+    mock_send.assert_called_once()
+    _config, subject, text = mock_send.call_args[0]
+    html = mock_send.call_args.kwargs["html_body"]
+    assert "2 filed" in subject
+    assert "Bank 1" in text and "Bank 2" in text
+    assert "UbprReport.aspx" in html and "ViewFacsimileDirect.aspx" in html
+    assert not mock_send.call_args.kwargs.get("attachments")
 
 
 class RestatementClient(FakeClient):
@@ -177,22 +181,3 @@ def test_new_period_with_no_trigger_gets_a_one_liner_not_silence():
     assert body != "Nothing to report today."
     assert "NEW QUARTERLY FILINGS" in body
     assert "Bank 1" in body
-
-
-def test_heartbeat_never_fires_when_there_is_a_real_alert():
-    """A real alert is its own confirmation the run fired -- heartbeat must not
-    also send a redundant second email."""
-    conn = db.connect(":memory:")
-    client = FakeClient(["1"])
-    # Force a real Tier 1-worthy change: first snapshot with a critical ratio,
-    # then a second period showing a qualifying capital deterioration.
-    run_daily(conn, client, None, run_date=date(2026, 7, 15), send=False)
-
-    with patch("ffiec_monitor.pipeline.email_report.build_email_body", return_value="ALERT BODY"), \
-         patch("ffiec_monitor.pipeline.email_report.send_email") as mock_send:
-        body = run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 16), heartbeat=True)
-
-    assert body == "ALERT BODY"
-    mock_send.assert_called_once()
-    _config, subject, _sent_body = mock_send.call_args[0]
-    assert "Heartbeat" not in subject
