@@ -54,6 +54,10 @@ on:
         description: 'Email the plain filings table for filings submitted in a window (Eastern): "START|END|LABEL", e.g. "2026-10-27 00:00|2026-10-29 00:00|Oct 27-28, 2026". No FFIEC API call. Blank = skip.'
         type: string
         default: ""
+      filings_workbook:
+        description: 'Email a 3-tab .xlsx (Summary, Filings with Call Report + UBPR links, Ratios) for filings submitted in a window (Eastern): "START|END|LABEL", e.g. "2026-10-28 00:00|2026-10-30 00:00|Oct 28-29, 2026". Re-pulls each facsimile for the ratios. Blank = skip.'
+        type: string
+        default: ""
       window_digest:
         description: 'Send the daily-style email for a stretch of time: "MODE|START|END|LABEL". MODE logged (UTC, when the monitor logged it) or submitted (Eastern, FFIEC submission time). e.g. "logged|2026-10-18 21:00|2026-10-26 00:00|Week ending Sun Oct 25". Blank = skip.'
         type: string
@@ -198,6 +202,19 @@ jobs:
           IFS='|' read -r START END LABEL <<< "$WINDOW"
           python scripts/send_simple_digest.py "$START" "$END" "$LABEL"
 
+      - name: Filings workbook (filings submitted in a time window)
+        if: ${{ inputs.filings_workbook != '' }}
+        shell: bash
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          WINDOW: ${{ inputs.filings_workbook }}
+        run: |
+          IFS='|' read -r START END LABEL <<< "$WINDOW"
+          python scripts/send_filings_workbook.py "$START" "$END" "$LABEL"
+
       - name: Preview full email with real data
         if: ${{ inputs.preview_full_days != '' }}
         shell: bash
@@ -228,7 +245,7 @@ jobs:
         run: python scripts/restatement_rssds.py "${{ inputs.restatement_rssds_days }}"
 
       - name: Run monitor
-        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true && inputs.preview_full_days == '' && inputs.window_digest == '' && inputs.simple_window == '' }}
+        if: ${{ inputs.diagnose_secrets != true && inputs.period_stats_days == '' && inputs.preview_refilings_days == '' && inputs.restatement_rssds_days == '' && inputs.screen_stats != true && inputs.probe_facsimile != true && inputs.preview_full_days == '' && inputs.window_digest == '' && inputs.simple_window == '' && inputs.filings_workbook == '' }}
         shell: bash
         env:
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
