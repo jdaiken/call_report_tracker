@@ -165,18 +165,17 @@ def run_daily(
         restatement_events, new_filing_events, run_date,
     )
 
-    # The daily email is one plain table of every filing processed this run (with
-    # Call Report + UBPR links and which monitored lists the bank is on), sent every
-    # day -- per user request 2026-10-28. No Claude summary, charts or PDF.
-    rows = simple_email.build_rows(conn, processed)
+    # The daily email is the Call Report workbook (Summary, Filings with Call Report + UBPR
+    # links, Ratios) for every filing processed this run, as the only attachment, sent every
+    # day -- per user request 2026-10-29. No Claude summary, charts or PDF.
+    from . import filings_workbook
     label = run_date.strftime("%a %b %d, %Y")
-    text = simple_email.render_text(rows, label)
-    if failure_count:
-        text += f"\n\n{failure_count} filing(s) could not be pulled and will be retried next run."
+    note = f"{failure_count} filing(s) could not be pulled and will be retried next run." if failure_count else ""
     if send and email_config is not None:
-        email_report.send_email(email_config, simple_email.subject(rows, label), text,
-                                html_body=simple_email.render_html(rows, label))
-
+        records, failed = filings_workbook.collect(conn, client, processed)
+        text = filings_workbook.send(email_config, records, label, failed, note)
+    else:
+        text = simple_email.render_text(simple_email.build_rows(conn, processed), label)
     if body is None:
         return text if heartbeat else "Nothing to report today."
     return body

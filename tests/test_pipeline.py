@@ -2,8 +2,11 @@
 must only advance once every changed institution/period pair found for it this
 run has actually been processed, so a capped or partially-failed run never
 silently drops coverage (see pipeline.py's run_daily docstring)."""
+import io
 from datetime import date, datetime
 from unittest.mock import patch
+
+import openpyxl
 
 from ffiec_monitor import db
 from ffiec_monitor.config import EmailConfig
@@ -85,7 +88,7 @@ def test_clean_full_run_advances_cursor():
     assert db.get_snapshot(conn, "2", PERIOD) is not None
 
 
-def test_quiet_day_still_sends_the_daily_table_email():
+def test_quiet_day_still_sends_the_daily_workbook_email():
     conn = db.connect(":memory:")
     client = FakeClient([])  # nothing changed
 
@@ -95,11 +98,12 @@ def test_quiet_day_still_sends_the_daily_table_email():
     assert body == "Nothing to report today."
     mock_send.assert_called_once()
     _config, subject, sent_body = mock_send.call_args[0]
-    assert "0 filed" in subject
+    assert "0 filings" in subject
     assert "No new Call Report filings." in sent_body
+    assert not mock_send.call_args.kwargs.get("attachments")
 
 
-def test_daily_email_is_one_plain_table_of_the_runs_filings():
+def test_daily_email_attaches_the_workbook_of_the_runs_filings():
     conn = db.connect(":memory:")
     client = FakeClient(["1", "2"])
 
@@ -107,12 +111,19 @@ def test_daily_email_is_one_plain_table_of_the_runs_filings():
         run_daily(conn, client, _EMAIL_CONFIG, run_date=date(2026, 7, 15))
 
     mock_send.assert_called_once()
-    _config, subject, text = mock_send.call_args[0]
-    html = mock_send.call_args.kwargs["html_body"]
-    assert "2 filed" in subject
-    assert "Bank 1" in text and "Bank 2" in text
-    assert "UbprReport.aspx" in html and "ViewFacsimileDirect.aspx" in html
-    assert not mock_send.call_args.kwargs.get("attachments")
+    _config, subject, _text = mock_send.call_args[0]
+    assert "2 filings" in subject
+    (name, data, subtype), = mock_send.call_args.kwargs["attachments"]
+    assert name.endswith(".xlsx") and "spreadsheetml" in subtype
+    assert not mock_send.call_args.kwargs.get("images")
+
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    assert wb.sheetnames == ["Summary", "Filings", "Ratios"]
+    filings = wb["Filings"]
+    names = {filings.cell(row=r, column=1).value for r in (2, 3)}
+    assert names == {"Bank 1", "Bank 2"}
+    assert "ViewFacsimileDirect.aspx" in filings.cell(row=2, column=12).hyperlink.target
+    assert "UbprReport.aspx" in filings.cell(row=2, column=13).hyperlink.target
 
 
 class RestatementClient(FakeClient):
