@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import duckdb
 
-from . import alerts, db, email_report, ratios, simple_email, watch_list
+from . import alerts, db, email_report, pipeline_fields, ratios, simple_email, watch_list
 from .config import EmailConfig
 from .ffiec_client import FFIECAuthError, FFIECClient, FFIECRateLimitError
 
@@ -202,6 +202,11 @@ def _process_one(
     facsimile = client.retrieve_facsimile(id_rssd, period_end)
     new_ratios = ratios.extract_ratios(facsimile, period_end)
     new_ratios["total_assets"] = ratios.extract_total_assets(facsimile)
+    # Stored so the Sunday quarter workbook (scripts/send_quarter_workbook.py) needn't re-pull.
+    from .filings_workbook import extra_ratios
+    new_ratios.update({k: v for k, v in extra_ratios(facsimile.get("concepts", facsimile), period_end).items()
+                       if k != "total_assets"})
+    new_ratios[pipeline_fields.KEY] = pipeline_fields.extract(facsimile, period_end)
 
     meta = _meta_from_panel(id_rssd, period_end, panel_entry, new_ratios["total_assets"])
     db.upsert_institution_meta(conn, meta)

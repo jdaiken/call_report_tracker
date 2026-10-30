@@ -1,0 +1,54 @@
+name: Sunday Quarter Call Report Spreadsheet
+
+# Every Sunday evening: one spreadsheet of every Call Report filed so far for the latest
+# quarter (same workbook as the daily email's attachment + the pipeline-fields sheet).
+# Saves state: Call Reports stored before the pipeline fields existed are re-pulled once and
+# written back, so the first run is long (up to ~4,500 throttled pulls) and later ones short.
+on:
+  schedule:
+    - cron: "47 23 * * 0"     # Sundays 23:47 UTC = 7:47pm EDT / 6:47pm EST
+  workflow_dispatch:
+    inputs:
+      period_end:
+        description: "Quarter end to build, e.g. 2026-09-30 (blank = latest stored)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffiec-daily          # never overlaps the daily run's reads/writes of the same state
+  cancel-in-progress: false
+
+jobs:
+  quarter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}
+          restore-keys: |
+            duckdb-
+      - name: Build and send the quarter spreadsheet
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+        run: python scripts/send_quarter_workbook.py ${{ inputs.period_end }}
+      - name: Save DuckDB state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-${{ github.run_id }}

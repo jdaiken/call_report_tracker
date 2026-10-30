@@ -98,7 +98,10 @@ def _pct(v) -> Optional[float]:
     return v / 100 if isinstance(v, (int, float)) else None
 
 
-def build(records: list[dict], label: str, failed: int) -> bytes:
+def build(records: list[dict], label: str, failed: int, pipeline_rows: Optional[list[dict]] = None,
+          pipeline_title: str = "Pipeline Fields") -> bytes:
+    """`pipeline_rows` (optional): adds the pipeline-fields sheet + its notes after Ratios
+    (ffiec_monitor/pipeline_fields.py) -- the Sunday quarter workbook."""
     wb = Workbook()
     flagged = [r for r in records if r["enforcement"] or r["treasury"]]
 
@@ -176,6 +179,10 @@ def build(records: list[dict], label: str, failed: int) -> bytes:
     for col in range(2, len(heads) + 1):
         ws.column_dimensions[ws.cell(row=2, column=col).column_letter].width = 13
     ws.auto_filter.ref = f"A2:{ws.cell(row=2, column=len(heads)).column_letter}{len(records) + 2}"
+
+    if pipeline_rows is not None:
+        from . import pipeline_fields
+        pipeline_fields.add_sheet(wb, pipeline_rows, pipeline_title, label)
 
     buf = io.BytesIO()
     wb.save(buf)
