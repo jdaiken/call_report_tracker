@@ -118,12 +118,12 @@ def test_daily_email_attaches_the_workbook_of_the_runs_filings():
     assert not mock_send.call_args.kwargs.get("images")
 
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ["Summary", "Filings", "Ratios"]
+    assert wb.sheetnames == ["Summary", "Filings", "Ratios", "Ratio Guide"]
     filings = wb["Filings"]
     names = {filings.cell(row=r, column=1).value for r in (2, 3)}
     assert names == {"Bank 1", "Bank 2"}
-    assert "ViewFacsimileDirect.aspx" in filings.cell(row=2, column=12).hyperlink.target
-    assert "UbprReport.aspx" in filings.cell(row=2, column=13).hyperlink.target
+    assert "ViewFacsimileDirect.aspx" in filings.cell(row=2, column=14).hyperlink.target
+    assert "UbprReport.aspx" in filings.cell(row=2, column=15).hyperlink.target
 
 
 class RestatementClient(FakeClient):

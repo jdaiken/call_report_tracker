@@ -47,7 +47,7 @@ def test_filings_workbook_gets_the_pipeline_sheet_with_exact_headers():
            "call_report_url": "https://x", "ubpr_url": "https://y", "ratios": {"roe": 7.0}}
     row = {**pf.extract(FAC, Q3), "FRS ID": 1, "INSTITUTION NAME": "Alpha Bank", "YEAR PERIOD": "2026Q3"}
     wb = load_workbook(io.BytesIO(build([rec], "Q3 2026", 0, [row], "Q3 Pipeline Fields")))
-    assert wb.sheetnames == ["Summary", "Filings", "Ratios", "Q3 Pipeline Fields", "Q3 Pipeline Fields notes"]
+    assert wb.sheetnames == ["Summary", "Filings", "Ratios", "Ratio Guide", "Q3 Pipeline Fields", "Q3 Pipeline Fields notes"]
     ws = wb["Q3 Pipeline Fields"]
     assert [c.value for c in ws[1]] == [h for h, _ in pf.FIELDS]
     assert ws["C2"].value == "Alpha Bank" and ws["I2"].value == 1000.0
