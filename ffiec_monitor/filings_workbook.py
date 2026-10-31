@@ -137,9 +137,10 @@ RATIO_GUIDE = [
      "Deposits most likely to run in a scare (Silicon Valley Bank was about 90%). The reason banks use IntraFi."),
     ("Liquid assets / uninsured deposits", "Liquidity", "(Cash and balances due [0081 + 0071] + fed funds sold "
      "[B987] + reverse repos [B989] + AFS securities at fair value [1773] + HTM securities at fair value [1771] + "
-     "equity securities [JA22] - pledged securities [RC-B memo 0416]) / uninsured deposits.",
+     "equity securities [JA22]) / uninsured deposits.",
      "Above 150%", "Below 100%",
-     "Whether the bank could pay out its uninsured depositors from unpledged liquid assets at market value."),
+     "Whether the bank could pay out its uninsured depositors from liquid assets at market value. Pledged "
+     "securities are included because most secure public-fund deposits that are themselves counted as uninsured."),
     ("Unrealized securities losses / Tier 1 capital", "Liquidity", "-[(AFS fair value [RC-B 1773] - AFS amortized "
      "cost [1772]) + (HTM fair value [1771] - HTM amortized cost [1754])] / Tier 1 capital [RC-R 8274]. "
      "Positive = net loss.", "Below 10%", "25% or more",
@@ -188,7 +189,7 @@ def extra_ratios(c: dict[str, Any], period_end) -> dict[str, Optional[float]]:
     tangible_plus_acl = (equity - goodwill - intangibles + (acl or 0.0)) if equity is not None else None
     out["texas_ratio"] = _ratio_pct(nonaccrual + past_due_90 + oreo, tangible_plus_acl) if tangible_plus_acl else None
 
-    # Liquidity coverage: unpledged liquid assets at market value vs. uninsured deposits.
+    # Liquidity coverage: liquid assets at market value vs. uninsured deposits.
     # 5597 is only reported by $1B+ banks; below that, estimate from accounts over $250,000.
     uninsured = _pick(c, "RCON5597")
     big_balances, big_count = _pick(c, "RCONF051"), _pick(c, "RCONF052")
@@ -200,9 +201,10 @@ def extra_ratios(c: dict[str, Any], period_end) -> dict[str, Optional[float]]:
     liquid = [_pick(c, "RCFD0081", "RCON0081"), _pick(c, "RCFD0071", "RCON0071"), _pick(c, "RCONB987"),
               _pick(c, "RCFDB989", "RCONB989"), _pick(c, "RCFD1773", "RCON1773"), _pick(c, "RCFD1771", "RCON1771"),
               _pick(c, "RCFDJA22", "RCONJA22")]
+    # Pledged securities are NOT subtracted: most back public-fund deposits, which 5597 already
+    # counts as uninsured, so subtracting them would count the same collateral against the bank twice.
     if any(v is not None for v in liquid):
-        unpledged = sum(v for v in liquid if v is not None) - (_pick(c, "RCFD0416", "RCON0416") or 0.0)
-        out["liquid_to_uninsured"] = _ratio_pct(unpledged, uninsured) if uninsured else None
+        out["liquid_to_uninsured"] = _ratio_pct(sum(v for v in liquid if v is not None), uninsured) if uninsured else None
     else:
         out["liquid_to_uninsured"] = None
 
@@ -370,7 +372,7 @@ def build(records: list[dict], label: str, failed: int, pipeline_rows: Optional[
         ("Near/over reciprocal cap", "Reciprocal deposits are 80% or more of the reciprocal cap."),
         ("Below well capitalized", "Capital category is adequately capitalized or undercapitalized."),
         ("40%+ uninsured", "Uninsured deposits are 40% or more of total deposits."),
-        ("Liquid assets < uninsured", "Unpledged liquid assets at market value cover less than 100% of uninsured deposits."),
+        ("Liquid assets < uninsured", "Liquid assets at market value cover less than 100% of uninsured deposits."),
         ("Securities losses 25%+ of Tier 1", "Net unrealized AFS + HTM securities losses are 25% or more of Tier 1 capital."),
         ("CRE concentration", "CRE is 300% or more of total capital, or construction and land loans are 100% or more."),
         ("Enforcement / Treasury Desk", "Shown in their own columns: an active FDIC / Fed / OCC order, or a bank on the "

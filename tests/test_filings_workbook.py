@@ -22,8 +22,8 @@ def test_new_ratios_from_call_report_items():
     r = extra_ratios(CONCEPTS, PERIOD)
     # uninsured = 180,000 - 250 x 200 = 130,000 -> 32.5% of 400,000 deposits
     assert round(r["uninsured_deposit_share"], 1) == 32.5
-    # liquid = 5+20+5+60+18 = 108,000 less 30,000 pledged = 78,000 vs 130,000 uninsured
-    assert round(r["liquid_to_uninsured"], 1) == 60.0
+    # liquid = 5+20+5+60+18 = 108,000 (pledged not subtracted) vs 130,000 uninsured
+    assert round(r["liquid_to_uninsured"], 1) == 83.1
     # unrealized: AFS -10,000 + HTM -2,000 = 12,000 loss / 45,000 Tier 1
     assert round(r["unrealized_loss_to_tier1"], 1) == 26.7
     # CRE 150,000 / 50,000 total capital; construction 50,000 / 50,000
