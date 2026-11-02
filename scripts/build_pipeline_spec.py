@@ -373,8 +373,11 @@ def build_rows(quarters: dict[date, tuple[dict, dict]], parents: tuple[dict, dic
         panel, concepts = quarters[q]
         prior = quarters.get(QUARTERS[QUARTERS.index(q) - 1]) if QUARTERS.index(q) else None
         qtag = f"{q.year}Q{(q.month - 1) // 3 + 1}"
-        for rssd in sorted(set(panel) | set(concepts)):
+        for rssd in sorted(concepts):               # banks with data this quarter (non-filers dropped)
             meta, c = panel.get(rssd, {}), concepts.get(rssd, {})
+            if not meta.get("form"):                 # API panel may lack the form: borrow another quarter's
+                meta = {**meta, "form": next((p[0][rssd]["form"] for p in quarters.values()
+                                              if rssd in p[0] and p[0][rssd].get("form")), "")}
             cert = _int(meta.get("cert"))
             cert = cert if cert else None
             parent = by_rssd.get(rssd)
