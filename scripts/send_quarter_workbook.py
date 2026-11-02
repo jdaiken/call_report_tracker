@@ -1,11 +1,11 @@
-"""Sunday-evening quarter spreadsheet: every Call Report filed so far for the latest quarter, in
+"""Quarterly spreadsheet (about 45 days after quarter end): every Call Report filed so far for the latest quarter, in
 the same three-tab workbook the daily email sends (Summary, Filings with Call Report + UBPR
 links, Ratios -- ffiec_monitor/filings_workbook.py), plus the pipeline-fields sheet with the IDC
 rank model's exact column headers and its notes (ffiec_monitor/pipeline_fields.py).
 
 Filings come from the daily monitor's stored snapshots. Any snapshot stored before the extra
 ratios / pipeline fields existed is re-pulled from FFIEC once and written back (ratios only; the
-submission timestamp is left alone), so the first run is long and later Sundays only pull what
+submission timestamp is left alone), so the first run is long and later runs only pull what
 is new. No Claude summary.
 
   python scripts/send_quarter_workbook.py [PERIOD_END]     e.g. 2026-09-30 (default: latest stored)
@@ -155,7 +155,7 @@ def main(period_arg: str | None = None) -> None:
     stale = sum(1 for x in pipeline_rows if x.get("_v") is None)
     if stale or failed or left:
         text += (f"\n\n{stale} rows have no pipeline fields yet ({failed} pulls failed, {left} not reached); "
-                 f"they fill in next Sunday.")
+                 f"they fill in on the next run.")
     if not parents:
         text += "\n\nParent numbers unavailable this week (FDIC BankFind did not respond)."
     print(subject)
