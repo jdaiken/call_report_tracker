@@ -1,12 +1,13 @@
-name: Sunday Quarter Call Report Spreadsheet
+name: Quarterly Call Report Spreadsheet
 
-# Every Sunday evening: one spreadsheet of every Call Report filed so far for the latest
+# Once a quarter, about 45 days after quarter end (past the 30- and 35-day filing deadlines,
+# so nearly every bank has filed): one spreadsheet of every Call Report filed for the latest
 # quarter (same workbook as the daily email's attachment + the pipeline-fields sheet).
 # Saves state: Call Reports stored before the pipeline fields existed are re-pulled once and
 # written back, so the first run is long (up to ~4,500 throttled pulls) and later ones short.
 on:
   schedule:
-    - cron: "47 23 * * 0"     # Sundays 23:47 UTC = 7:47pm EDT / 6:47pm EST
+    - cron: "47 13 15 2,5,8,11 *"   # Feb/May/Aug/Nov 15, 13:47 UTC = 8:47am EST / 9:47am EDT
   workflow_dispatch:
     inputs:
       period_end:
