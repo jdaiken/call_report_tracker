@@ -1,0 +1,35 @@
+name: Bulk download probe
+on:
+  push:
+    branches: [claude/pipeline-field-spec]
+    paths: [.github/workflows/bulk_probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: |
+          python - <<'PY'
+          import sys, traceback, requests; sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
+          from datetime import date
+          import build_pipeline_spec as b
+          s = requests.Session(); s.headers["User-Agent"] = b.UA
+          r = s.get(b.BULK_URL, timeout=60)
+          print("GET", r.status_code, r.headers.get("Content-Type"), len(r.content))
+          print(r.text[:1500])
+          import re
+          print("selects:", re.findall(r'<select[^>]*name="([^"]+)"', r.text))
+          print("submits:", re.findall(r'<input[^>]*type="submit"[^>]*>', r.text)[:10])
+          print("radios:", re.findall(r'<input[^>]*type="radio"[^>]*>', r.text)[:10])
+          try:
+              z = b.download_bulk(date(2026, 6, 30)); print("ZIP OK", len(z))
+          except Exception:
+              traceback.print_exc()
+          PY
