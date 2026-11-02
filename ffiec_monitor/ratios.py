@@ -126,6 +126,12 @@ def _pick(concepts: dict[str, Any], *codes: str) -> Optional[float]:
     return None
 
 
+def _lower(concepts: dict[str, Any], *codes: str) -> Optional[float]:
+    """The lowest of whichever of these codes are present; None if none are."""
+    values = [v for v in (_num(concepts.get(code)) for code in codes) if v is not None]
+    return min(values) if values else None
+
+
 def _sum_present(concepts: dict[str, Any], *codes: str) -> Optional[float]:
     """Sum whichever of these codes are present, treating a missing/blank code as
     0 -- appropriate for category breakdowns (e.g. a bank with no farm loans just
@@ -166,10 +172,12 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
     # approaches subset -- verified counts, not a guessed precedence. A Community
     # Bank Leverage Ratio (CBLR) bank legitimately reports ONLY the leverage ratio
     # and leaves the other three blank -- that's real data, not a parsing gap.
-    out["tier1_leverage_ratio"] = _pick(c, "RCOA7204", "RCFA7204")
-    out["tier1_rbc_ratio"] = _pick(c, "RCOA7206", "RCFA7206")
-    out["total_rbc_ratio"] = _pick(c, "RCOA7205", "RCFA7205")
-    out[CET1_KEY] = _pick(c, "RCOAP793", "RCFAP793")
+    # When a bank reports both columns, the lower ratio is the one that counts for prompt corrective
+    # action (and the one FDIC BankFind publishes -- Citibank: 14.0%, not the 14.9% in RCOA).
+    out["tier1_leverage_ratio"] = _lower(c, "RCOA7204", "RCFA7204")
+    out["tier1_rbc_ratio"] = _lower(c, "RCOA7206", "RCFA7206")
+    out["total_rbc_ratio"] = _lower(c, "RCOA7205", "RCFA7205")
+    out[CET1_KEY] = _lower(c, "RCOAP793", "RCFAP793")
 
     total_assets = extract_total_assets(facsimile)
     net_loans = _pick(c, "RCFDB529", "RCONB529")  # loans & leases, net of unearned income & ACL
@@ -180,7 +188,11 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
     out[_NET_LOANS_RAW_KEY] = net_loans
     out[_TOTAL_EQUITY_RAW_KEY] = _pick(c, "RCFD3210", "RCON3210")
 
-    out["net_loans_leases_to_deposits"] = _ratio_pct(net_loans, total_deposits)
+    # Loans held for sale (5369) count as loans here, as in FDIC/UBPR's net loans & leases to deposits;
+    # without them a bank that originates to sell (SoFi) read 37% instead of 100%.
+    held_for_sale = _pick(c, "RCFD5369", "RCON5369") or 0.0
+    out["net_loans_leases_to_deposits"] = (_ratio_pct(net_loans + held_for_sale, total_deposits)
+                                           if net_loans is not None else None)
 
     # Pledged securities / total securities (AFS + HTM). Excludes equity securities
     # at fair value, which are typically immaterial for this ratio.
@@ -226,7 +238,12 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
     out["uninsured_deposit_share"] = _ratio_pct(uninsured, total_deposits)
 
     if total_deposits is not None:
-        core_deposits = total_deposits - brokered - time_gt_250k
+        # Core = deposits - time deposits over $250,000 - fully insured brokered deposits (RC-E memo
+        # HK05). Subtracting all brokered (2365) counted brokered time deposits over $250,000 twice,
+        # which can go negative (TCM Bank: -70%).
+        insured_brokered = _pick(c, "RCONHK05")
+        core_deposits = max(total_deposits - time_gt_250k
+                            - (insured_brokered if insured_brokered is not None else brokered), 0.0)
         out["core_deposits_to_total_deposits"] = _ratio_pct(core_deposits, total_deposits)
     else:
         out["core_deposits_to_total_deposits"] = None
@@ -251,16 +268,24 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
     # Call Report has no single published "earning assets" total to read directly.
     net_interest_income = _pick(c, "RIAD4074")
     avg_loans = _sum_present(c, "RCON3360", "RCFN3360")
-    avg_earning_assets = _sum_present(
-        c, "RCON3360", "RCFN3360", "RCONB558", "RCONB559", "RCONB560", "RCON3365", "RCON3381", "RCON3401",
-    )
+    # FFIEC 031 filers report the securities, balances-due and trading averages as RCFD (consolidated),
+    # not RCON, so each line is read as either; summing RCON alone left those banks with loans as their
+    # only earning assets (Charles Schwab Premier Bank: a 650x margin).
+    avg_earning_lines = [_sum_present(c, "RCON3360", "RCFN3360")] + [
+        _pick(c, f"RCFD{code}", f"RCON{code}") for code in ("B558", "B559", "B560", "3365", "3381", "3401")]
+    present = [v for v in avg_earning_lines if v is not None]
+    avg_earning_assets = sum(present) if present else None
     out["net_interest_margin"] = _ratio_pct(net_interest_income * factor, avg_earning_assets) \
         if net_interest_income is not None else None
 
-    # Charge-off ratio: sums the charge-off/recovery category lines present in
-    # Schedule RI-B Part I. Approximation -- see module docstring.
-    charge_offs = _sum_present(c, "RIAD4638", "RIAD4655", "RIADB514", "RIADC880", "RIADC891", "RIADK205")
-    recoveries = _sum_present(c, "RIAD4608", "RIAD4665", "RIADB515", "RIADF188", "RIADC892", "RIADK206")
+    # Charge-off ratio: Schedule RI-B Part I item 9 totals (4635 charge-offs, 4605 recoveries). The
+    # category lines are only a fallback -- summing a handful of them missed most of a bank's
+    # charge-offs whenever its losses were in a category not on the list (Cross River: 0.3% vs 2.8%).
+    charge_offs = _pick(c, "RIAD4635")
+    recoveries = _pick(c, "RIAD4605")
+    if charge_offs is None and recoveries is None:
+        charge_offs = _sum_present(c, "RIAD4638", "RIAD4655", "RIADB514", "RIADC880", "RIADC891", "RIADK205")
+        recoveries = _sum_present(c, "RIAD4608", "RIAD4665", "RIADB515", "RIADF188", "RIADC892", "RIADK206")
     if charge_offs is None and recoveries is None:
         out["charge_off_ratio"] = None
     else:

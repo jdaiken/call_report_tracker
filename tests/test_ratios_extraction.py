@@ -130,3 +130,20 @@ def test_compute_growth_rates_noop_without_prior_data():
     current = {"_net_loans_raw": 103.0}
     compute_growth_rates({}, current, date(2026, 3, 31), date(2026, 6, 30))
     assert "loan_growth_rate" not in current or current.get("loan_growth_rate") is None
+
+
+def test_nim_reads_consolidated_rcfd_earning_assets():
+    """An FFIEC 031 filer reports securities / balances-due averages as RCFD, not RCON."""
+    c = {"RIAD4074": "3000", "RCON3360": "10000", "RCFDB558": "50000", "RCFDB559": "30000",
+         "RCFDB560": "5000", "RCFD3381": "5000", "RCON2170": "110000", "RCON2200": "90000"}
+    nim = extract_ratios({"concepts": c}, date(2026, 6, 30))["net_interest_margin"]
+    assert nim == pytest.approx(3000 * 2 / 100000 * 100)          # 6.0%, not 60% on loans alone
+
+
+def test_core_deposits_dont_double_count_brokered_time_deposits():
+    c = {"RCON2170": "120000", "RCON2200": "100000", "RCON2365": "60000", "RCONHK05": "20000",
+         "RCONJ474": "50000"}                                       # 40,000 brokered are over $250,000
+    r = extract_ratios({"concepts": c}, date(2026, 6, 30))
+    assert r["core_deposits_to_total_deposits"] == pytest.approx(30.0)    # 100 - 50 - 20
+    c.pop("RCONHK05")                                               # older reports: fall back, floor at 0
+    assert extract_ratios({"concepts": c}, date(2026, 6, 30))["core_deposits_to_total_deposits"] == 0

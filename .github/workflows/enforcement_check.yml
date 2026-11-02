@@ -22,7 +22,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,4 +38,6 @@ jobs:
             duckdb-
       - env:
           ENF_PENALTY_YEARS: ${{ inputs.penalty_years }}
-        run: python scripts/verify_vs_fdic.py 2026-06-30
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+        run: python scripts/verify_vs_fdic.py 2026-06-30 --repull 250
