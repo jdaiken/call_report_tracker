@@ -21,7 +21,7 @@ from typing import Any, Optional
 from .ratios import _pick, _ratio_pct, _sum_present, annualization_factor, extract_total_assets
 
 KEY = "_pipeline_fields"     # where the extracted fields live inside a snapshot's ratios JSON
-VERSION = 1                  # bump when extract() changes, so the quarter build re-pulls
+VERSION = 2                  # bump when extract() changes, so the quarter build re-pulls
 
 # (exact column header, format) in the list's order. format: "id", "int", "text", "pct", "musd", "kusd", "num"
 FIELDS: list[tuple[str, str]] = [
