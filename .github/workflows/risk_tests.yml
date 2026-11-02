@@ -1,0 +1,47 @@
+name: Quarterly Risk Tests
+
+# Once a quarter, right after the quarterly Call Report spreadsheet (same date; the shared
+# concurrency group makes it wait for that run, which re-pulls the stored reports first): screens,
+# trend tests, size-peer outliers and a composite risk ranking for every bank, emailed as one .xlsx
+# (scripts/send_risk_tests.py). Read-only: restores the monitor's saved state but never saves it.
+on:
+  schedule:
+    - cron: "17 14 15 2,5,8,11 *"   # Feb/May/Aug/Nov 15, 14:17 UTC, after the 13:47 spreadsheet
+  workflow_dispatch:
+    inputs:
+      period_end:
+        description: "Quarter end to test, e.g. 2026-09-30 (blank = latest stored)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffiec-daily
+  cancel-in-progress: false
+
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state (read-only copy)
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-none
+          restore-keys: |
+            duckdb-
+      - name: Build and send the risk-test workbook
+        env:
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+          PERIOD_END: ${{ inputs.period_end }}
+        run: python scripts/send_risk_tests.py $PERIOD_END
