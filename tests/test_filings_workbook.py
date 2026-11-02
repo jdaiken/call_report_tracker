@@ -60,3 +60,10 @@ def test_workbook_shows_flags_and_guide():
     guide = wb["Ratio Guide"]
     assert guide.cell(row=4, column=4).value == "Normal range"
     assert guide.cell(row=5, column=1).value == "Tier 1 leverage"
+
+
+def test_undefined_ratios_are_blank_not_negative():
+    r = extra_ratios({"RCON3210": -5_000, "RCON3123": 1_000, "RCON1403": 2_000, "RCON2170": 300_000,
+                      "RIAD4074": -100, "RIAD4079": 50, "RIAD4093": 500}, PERIOD)
+    assert r["texas_ratio"] is None                 # tangible equity + reserves below zero
+    assert r["efficiency_ratio"] is None            # no positive revenue

@@ -78,7 +78,8 @@ CATEGORY_NAMES = {"WC": "Well capitalized", "AC": "Adequately capitalized", "UC"
 RATIO_GUIDE = [
     ("Tier 1 leverage", "Capital", "Tier 1 capital / average total assets for leverage purposes, as reported on "
      "Schedule RC-R Part I [RCOA7204].", "8% - 12%",
-     "Below 5% (below well capitalized); CBLR banks below 9%",
+     "Below 5% (below well capitalized); CBLR banks below 9% (8% - 9% is a two-quarter grace period, still well "
+     "capitalized)",
      "Core loss-absorbing capital against all assets. The main test for reciprocal-deposit and brokered-deposit eligibility."),
     ("CET1", "Capital", "Common equity Tier 1 capital / risk-weighted assets [RC-R RCOAP793].", "10% - 15%",
      "Below 6.5% (below well capitalized)", "Highest-quality capital against risk-weighted assets. Not reported by CBLR banks."),
@@ -87,7 +88,7 @@ RATIO_GUIDE = [
     ("Total risk-based", "Capital", "Total capital (Tier 1 + Tier 2) / risk-weighted assets [RC-R RCOA7205].",
      "12% - 17%", "Below 10% (below well capitalized)", "Not reported by CBLR banks."),
     ("Capital category", "Capital", "Well capitalized: leverage 5%+, Tier 1 RBC 8%+, total RBC 10%+, CET1 6.5%+ "
-     "(CBLR banks: leverage 9%+). Adequately capitalized: 4% / 6% / 8% / 4.5%. Below that: undercapitalized. "
+     "(CBLR banks: leverage 9%+, or 8%+ during the two-quarter grace period). Adequately capitalized: 4% / 6% / 8% / 4.5%. Below that: undercapitalized. "
      "Shown on the Filings tab.", "Well capitalized",
      "Adequately capitalized or worse",
      "Below well capitalized, reciprocal deposits fall under the special cap (12 CFR 337.6(e)) and brokered "
@@ -182,12 +183,16 @@ def extra_ratios(c: dict[str, Any], period_end) -> dict[str, Optional[float]]:
     out: dict[str, Optional[float]] = {"total_assets": total_assets}
     out["roe"] = _ratio_pct(net_income * factor, equity) if net_income is not None else None
     revenue = (nii or 0.0) + (nonint_income or 0.0)
-    out["efficiency_ratio"] = _ratio_pct(nonint_expense, revenue) if nonint_expense is not None and revenue else None
+    # Undefined with no positive revenue (a de novo bank's first quarters): blank, not -5,000%.
+    out["efficiency_ratio"] = _ratio_pct(nonint_expense, revenue) if nonint_expense is not None and revenue > 0 else None
     out["acl_to_loans"] = _ratio_pct(acl, gross_loans)
     out["noncurrent_to_loans"] = _ratio_pct(nonaccrual + past_due_90, gross_loans) if gross_loans else None
     out["npa_to_assets"] = _ratio_pct(nonaccrual + past_due_90 + oreo, total_assets) if total_assets else None
     tangible_plus_acl = (equity - goodwill - intangibles + (acl or 0.0)) if equity is not None else None
-    out["texas_ratio"] = _ratio_pct(nonaccrual + past_due_90 + oreo, tangible_plus_acl) if tangible_plus_acl else None
+    # Undefined when tangible equity + reserves is zero or negative (e.g. securities losses wiped out
+    # equity): blank rather than a negative ratio that reads as "no problem loans".
+    out["texas_ratio"] = (_ratio_pct(nonaccrual + past_due_90 + oreo, tangible_plus_acl)
+                          if tangible_plus_acl is not None and tangible_plus_acl > 0 else None)
 
     # Liquidity coverage: liquid assets at market value vs. uninsured deposits.
     # 5597 is only reported by $1B+ banks; below that, estimate from accounts over $250,000.

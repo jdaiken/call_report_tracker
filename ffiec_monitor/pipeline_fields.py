@@ -21,7 +21,7 @@ from typing import Any, Optional
 from .ratios import _pick, _ratio_pct, _sum_present, annualization_factor, extract_total_assets
 
 KEY = "_pipeline_fields"     # where the extracted fields live inside a snapshot's ratios JSON
-VERSION = 1                  # bump when extract() changes, so the quarter build re-pulls
+VERSION = 2                  # bump when extract() changes, so the quarter build re-pulls
 
 # (exact column header, format) in the list's order. format: "id", "int", "text", "pct", "musd", "kusd", "num"
 FIELDS: list[tuple[str, str]] = [
@@ -129,8 +129,13 @@ def _p(c, code: str) -> Optional[float]:
 def capital_category(lev, t1, tot, cet1) -> Optional[str]:
     if lev is None:
         return None
-    if t1 is None and tot is None:          # community bank leverage ratio filer
-        return "WC" if lev >= 9 else ("AC" if lev >= 4 else "UC")
+    if t1 is None and tot is None:          # community bank leverage ratio (CBLR) filer
+        # 9%+ is well capitalized, and 8% to 9% still is during the two-quarter grace period
+        # (12 CFR 324.12(c)). Below 8% the bank leaves the framework; with only a leverage ratio
+        # reported, the general leverage lines (5% well / 4% adequately capitalized) are all there is.
+        if lev >= 8:
+            return "WC"
+        return "WC" if lev >= 5 else ("AC" if lev >= 4 else "UC")
     vals = [(lev, 5, 4), (t1, 8, 6), (tot, 10, 8), (cet1, 6.5, 4.5)]
     vals = [v for v in vals if v[0] is not None]
     if all(v >= w for v, w, _a in vals):

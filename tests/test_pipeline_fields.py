@@ -34,7 +34,11 @@ def test_extract_fills_call_report_fields_and_leaves_idc_blank():
 
 def test_capital_category_and_prior_change():
     assert pf.capital_category(4.5, 9.0, 11.0, 7.0) == "AC"
-    assert pf.capital_category(8.5, None, None, None) == "AC"            # CBLR under 9%
+    assert pf.capital_category(9.5, None, None, None) == "WC"            # CBLR
+    assert pf.capital_category(8.5, None, None, None) == "WC"            # CBLR 8-9%: grace period
+    assert pf.capital_category(6.0, None, None, None) == "WC"            # left CBLR, leverage-only lines
+    assert pf.capital_category(4.5, None, None, None) == "AC"
+    assert pf.capital_category(3.5, None, None, None) == "UC"
     assert pf.capital_category(3.0, 5.0, 7.0, 4.0) == "UC"
     cur = pf.with_prior({pf.NONCURRENT_RAW: 150.0}, {pf.NONCURRENT_RAW: 100.0})
     assert cur["% CHG NONCURRENT & RESTRUCTURED + REO"] == 50.0
