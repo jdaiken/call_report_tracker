@@ -29,7 +29,15 @@ jobs:
           print("submits:", re.findall(r'<input[^>]*type="submit"[^>]*>', r.text)[:10])
           print("radios:", re.findall(r'<input[^>]*type="radio"[^>]*>', r.text)[:10])
           try:
-              z = b.download_bulk(date(2026, 6, 30)); print("ZIP OK", len(z))
+              import zipfile, io
+              for q in (date(2026, 6, 30), date(2026, 9, 30)):
+                  z = b.download_bulk(q); print("ZIP OK", q, len(z))
+                  zf = zipfile.ZipFile(io.BytesIO(z))
+                  for i in zf.infolist()[:60]: print("  ", i.filename, i.file_size)
+                  print("  members:", len(zf.infolist()))
+                  panel, conc = b.parse_bulk(z, b.wanted_codes())
+                  print("  panel", len(panel), "banks", len(conc), list(panel.items())[:2])
+                  print("  sample", list(conc.items())[:1])
           except Exception:
               traceback.print_exc()
           PY
