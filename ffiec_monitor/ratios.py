@@ -172,12 +172,13 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
     # approaches subset -- verified counts, not a guessed precedence. A Community
     # Bank Leverage Ratio (CBLR) bank legitimately reports ONLY the leverage ratio
     # and leaves the other three blank -- that's real data, not a parsing gap.
-    # When a bank reports both columns, the lower ratio is the one that counts for prompt corrective
+    # Advanced-approaches banks also report RCFW/RCOW columns. When a bank reports more than one
+    # column, the lower ratio is the one that counts for prompt corrective
     # action (and the one FDIC BankFind publishes -- Citibank: 14.0%, not the 14.9% in RCOA).
-    out["tier1_leverage_ratio"] = _lower(c, "RCOA7204", "RCFA7204")
-    out["tier1_rbc_ratio"] = _lower(c, "RCOA7206", "RCFA7206")
-    out["total_rbc_ratio"] = _lower(c, "RCOA7205", "RCFA7205")
-    out[CET1_KEY] = _lower(c, "RCOAP793", "RCFAP793")
+    out["tier1_leverage_ratio"] = _lower(c, "RCOA7204", "RCFA7204", "RCFW7204", "RCOW7204")
+    out["tier1_rbc_ratio"] = _lower(c, "RCOA7206", "RCFA7206", "RCFW7206", "RCOW7206")
+    out["total_rbc_ratio"] = _lower(c, "RCOA7205", "RCFA7205", "RCFW7205", "RCOW7205")
+    out[CET1_KEY] = _lower(c, "RCOAP793", "RCFAP793", "RCFWP793", "RCOWP793")
 
     total_assets = extract_total_assets(facsimile)
     net_loans = _pick(c, "RCFDB529", "RCONB529")  # loans & leases, net of unearned income & ACL
@@ -241,8 +242,10 @@ def extract_ratios(facsimile: dict[str, Any], period_end: date) -> dict[str, Opt
         # Core = deposits - time deposits over $250,000 - fully insured brokered deposits (RC-E memo
         # HK05). Subtracting all brokered (2365) counted brokered time deposits over $250,000 twice,
         # which can go negative (TCM Bank: -70%).
+        # Domestic offices only, as FDIC/UBPR define it: deposits in foreign offices are never core
+        # (Northern Trust read 97% core instead of 36%).
         insured_brokered = _pick(c, "RCONHK05")
-        core_deposits = max(total_deposits - time_gt_250k
+        core_deposits = max(domestic_deposits - time_gt_250k
                             - (insured_brokered if insured_brokered is not None else brokered), 0.0)
         out["core_deposits_to_total_deposits"] = _ratio_pct(core_deposits, total_deposits)
     else:

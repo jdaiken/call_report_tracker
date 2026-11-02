@@ -147,3 +147,15 @@ def test_core_deposits_dont_double_count_brokered_time_deposits():
     assert r["core_deposits_to_total_deposits"] == pytest.approx(30.0)    # 100 - 50 - 20
     c.pop("RCONHK05")                                               # older reports: fall back, floor at 0
     assert extract_ratios({"concepts": c}, date(2026, 6, 30))["core_deposits_to_total_deposits"] == 0
+
+
+def test_core_deposits_exclude_foreign_office_deposits():
+    c = {"RCFD2170": "500000", "RCON2200": "200000", "RCFN2200": "200000", "RCONHK05": "0", "RCONJ474": "20000"}
+    r = extract_ratios({"concepts": c}, date(2026, 6, 30))
+    assert r["core_deposits_to_total_deposits"] == pytest.approx(45.0)     # (200 - 20) / 400
+
+
+def test_capital_ratio_is_the_lower_column():
+    c = {"RCOA7206": "14.89", "RCFW7206": "13.98", "RCOA7204": "8.1"}
+    r = extract_ratios({"concepts": c}, date(2026, 6, 30))
+    assert r["tier1_rbc_ratio"] == 13.98 and r["tier1_leverage_ratio"] == 8.1

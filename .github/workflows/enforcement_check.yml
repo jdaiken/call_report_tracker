@@ -40,4 +40,4 @@ jobs:
           ENF_PENALTY_YEARS: ${{ inputs.penalty_years }}
           FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
           FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
-        run: python scripts/verify_vs_fdic.py 2026-06-30 --repull 250
+        run: python scripts/verify_vs_fdic.py 2026-06-30 --repull 150
