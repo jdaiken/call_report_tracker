@@ -38,4 +38,4 @@ jobs:
             duckdb-
       - env:
           ENF_PENALTY_YEARS: ${{ inputs.penalty_years }}
-        run: python scripts/verify_vs_fdic.py
+        run: python scripts/verify_vs_fdic.py 2026-06-30
