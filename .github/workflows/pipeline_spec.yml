@@ -1,0 +1,42 @@
+name: Pipeline Field Spec (2025Q2-2026Q3)
+
+# One-off build of the "call report pipeline field spec: Q3 2026 rerun" file: all banks, six
+# quarters, Template column order, emailed to ALERT_RECIPIENT / EMAIL_ADDRESS. Uses the FFIEC
+# bulk download (no API quota); falls back to the PWS API per quarter only if that fails.
+on:
+  push:
+    branches: [claude/pipeline-field-spec]
+    paths: [scripts/build_pipeline_spec.py, .github/workflows/pipeline_spec.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests/test_pipeline_spec.py
+      - name: Build and email the pipeline file
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python scripts/build_pipeline_spec.py --out pipeline_data.xlsx --api-budget-minutes 270
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pipeline-data
+          path: |
+            pipeline_data.xlsx
+            pipeline_data.xlsx.summary.txt
+          if-no-files-found: ignore
