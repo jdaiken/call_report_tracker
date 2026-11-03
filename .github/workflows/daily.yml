@@ -6,6 +6,7 @@ on:
     # hour on purpose: GitHub starts :00 schedules hours late when it's busy (this one was
     # starting 3-6 hours late at 13:00).
     - cron: "23 12 * * *"
+    - cron: "53 14 * * *"     # backup try; skips if the 12:23 run already sent
   workflow_dispatch:
     inputs:
       universe:
@@ -81,6 +82,7 @@ on:
 
 permissions:
   contents: read
+  actions: read     # gate job: see whether today's scheduled run already sent
 
 # One run at a time: a manual run and the scheduled one never overlap, so the
 # second waits, restores the first's saved state, and doesn't re-send its items.
@@ -89,7 +91,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Only one email a day: GitHub often starts scheduled runs hours late (or skips them),
+  # so there are two scheduled tries; the first to succeed sends and later ones skip.
+  # Manual (workflow_dispatch) runs always go through.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.dedupe.outputs.skip }}
+    steps:
+      - id: dedupe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "schedule" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          gh run list -R "${{ github.repository }}" -w daily.yml -e schedule -L 20 \
+            --json databaseId,conclusion,createdAt > runs.json
+          python3 - <<'PY2' >> "$GITHUB_OUTPUT"
+          import json, os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          et = ZoneInfo("America/New_York")
+          today = datetime.now(et).date()
+          me = int(os.environ["GITHUB_RUN_ID"])
+          done = [r for r in json.load(open("runs.json")) if r["databaseId"] != me and r["conclusion"] == "success"
+                  and datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")).astimezone(et).date() == today]
+          print(f"skip={'true' if done else 'false'}")
+          PY2
+
   run:
+    needs: gate
+    if: ${{ needs.gate.outputs.skip != 'true' }}
     # NOTE: every 403 seen so far (on both hosted and self-hosted runners, with
     # both token states we've tested) was a generic Azure Application Gateway
     # HTML page, not FFIEC's documented JSON error shape -- i.e. the request was
