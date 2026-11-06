@@ -1,0 +1,37 @@
+name: Not Yet Filed Report
+
+# On demand: every bank that filed last quarter's Call Report but has not filed the latest
+# quarter yet, checked against FFIEC's own filer lists and FDIC BankFind, emailed as a table + CSV
+# (scripts/send_missing_filers.py). Read-only: restores the monitor's saved state for total
+# assets but never saves it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  missing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore DuckDB state (read-only copy)
+        uses: actions/cache/restore@v4
+        with:
+          path: call_report_monitor.duckdb
+          key: duckdb-none
+          restore-keys: |
+            duckdb-
+      - name: Build and send the not-yet-filed list
+        env:
+          FFIEC_USER_ID: ${{ secrets.FFIEC_USER_ID }}
+          FFIEC_TOKEN: ${{ secrets.FFIEC_TOKEN }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+        run: python scripts/send_missing_filers.py
