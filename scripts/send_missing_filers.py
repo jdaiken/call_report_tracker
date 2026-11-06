@@ -1,11 +1,14 @@
-"""Banks that filed a Call Report last quarter but have not filed this quarter yet, emailed as a
-table + a formatted Excel workbook. Read-only.
+"""Every bank with no Call Report filed for the latest quarter yet, emailed as a table + a formatted
+Excel workbook. Read-only.
 
-Who filed comes straight from FFIEC (RetrieveFilersSubmissionDateTime for each quarter), not from
-the monitor's stored snapshots, so a missed or capped pull can't make a bank look late. Names
-come from last quarter's FFIEC panel of reporters; total assets from the monitor's stored
-snapshot when it has one. Each bank is checked against FDIC BankFind: no longer active there
-usually means it merged or closed, rather than being late.
+Two checks, merged into one list:
+- every bank that filed last quarter but not this one (FFIEC's own filer lists for both quarters,
+  RetrieveFilersSubmissionDateTime -- not the monitor's stored snapshots), and
+- every bank FDIC BankFind lists as active and insured with no filing this quarter, matched on RSSD
+  -- which catches banks that missed last quarter too and banks that opened during the quarter.
+Each bank's FDIC status says whether a filing is actually owed: no longer active (merged or
+closed before quarter end), opened after quarter end, or an insured U.S. branch of a foreign bank
+(those file the FFIEC 002, not a Call Report) are listed but not counted as late.
 
   python scripts/send_missing_filers.py [--no-send] [--out PATH]
 """
@@ -34,8 +37,10 @@ from ffiec_monitor.filings_workbook import HEAD_FILL, LINK_FONT
 
 log = logging.getLogger("missing")
 
-LATE, GONE, UNINSURED, UNKNOWN = "Late (still active)", "No longer active", "Not FDIC-insured", "FDIC status unknown"
-GROUP_ORDER = [LATE, UNKNOWN, GONE, UNINSURED]
+LATE, UNKNOWN = "Late (still active)", "FDIC status unknown"
+GONE, NEW, BRANCH, UNINSURED = ("No longer active", "Opened after quarter end", "Foreign bank branch (files FFIEC 002)",
+                                "Not FDIC-insured")
+GROUP_ORDER = [LATE, UNKNOWN, GONE, NEW, BRANCH, UNINSURED]
 LATE_FILL = PatternFill("solid", fgColor="FDECEC")
 GROUP_FILL = PatternFill("solid", fgColor="E8EDF4")
 QUIET = Font(color="6B6B6B")
@@ -76,13 +81,33 @@ def fdic_status(certs: list[str]) -> dict[str, tuple[bool, Optional[date]]]:
     return out
 
 
+def fdic_active_banks() -> list[dict]:
+    """Every active FDIC-insured institution: cert, RSSD, name, city, state, assets ($000), established,
+    class. [] if BankFind is unreachable."""
+    out, offset = [], 0
+    try:
+        while True:
+            r = requests.get("https://api.fdic.gov/banks/institutions", timeout=180, params={
+                "filters": "ACTIVE:1", "fields": "CERT,FED_RSSD,NAME,CITY,STALP,ASSET,ESTYMD,BKCLASS",
+                "limit": 10000, "offset": offset, "format": "json"})
+            r.raise_for_status()
+            rows = [d.get("data", d) for d in r.json().get("data", [])]
+            out += rows
+            if len(rows) < 10000:
+                return out
+            offset += 10000
+    except Exception as e:
+        log.warning("FDIC BankFind active-institution list failed: %s", e)
+        return []
+
+
 def build_workbook(rows: list[dict], prev: date, cur: date, intro: str) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Not Yet Filed"
-    heads = ["Status", "Institution", "City", "State", "RSSD", "FDIC cert", f"Total assets {_quarter(prev)} ($M)",
+    heads = ["Status", "Institution", "City", "State", "RSSD", "FDIC cert", "Total assets ($M)",
              "Inactive since", f"{_quarter(prev)} filed", f"{_quarter(prev)} Call Report", "FDIC BankFind"]
-    widths = [22, 44, 18, 7, 11, 10, 16, 14, 13, 16, 14]
+    widths = [30, 44, 18, 7, 11, 10, 14, 14, 13, 16, 14]
     ws["A1"] = f"Call Reports not yet filed for {_quarter(cur)}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = intro
@@ -103,14 +128,16 @@ def build_workbook(rows: list[dict], prev: date, cur: date, intro: str) -> bytes
     row = head_row + 1
     for r in rows:
         values = [r["group"], r["name"], r["city"], r["state"], r["rssd"], r["cert"] or None,
-                  r["assets"] / 1000 if r["assets"] else None, r["inactive"], r["last"].date() if r["last"] else None]
+                  r["assets"] / 1000 if r["assets"] else None, r["inactive"],
+                  r["last"].date() if r["last"] else "Not filed"]
         for col, v in enumerate(values, 1):
             ws.cell(row=row, column=col, value=v)
         ws.cell(row=row, column=7).number_format = '#,##0.0'
         ws.cell(row=row, column=8).number_format = "mmm d, yyyy"
         ws.cell(row=row, column=9).number_format = "mmm d, yyyy"
-        link = ws.cell(row=row, column=10, value="Call Report")
-        link.hyperlink, link.font = email_report.cdr_report_url(r["rssd"], prev), LINK_FONT
+        if r["last"]:
+            link = ws.cell(row=row, column=10, value="Call Report")
+            link.hyperlink, link.font = email_report.cdr_report_url(r["rssd"], prev), LINK_FONT
         if r["cert"] and r["cert"] != "0":
             bf = ws.cell(row=row, column=11, value="BankFind")
             bf.hyperlink, bf.font = BANKFIND_URL.format(cert=r["cert"]), LINK_FONT
@@ -120,7 +147,7 @@ def build_workbook(rows: list[dict], prev: date, cur: date, intro: str) -> bytes
                 cell.fill = LATE_FILL
                 if col <= 2:
                     cell.font = Font(bold=True)
-            elif col <= 9 and r["group"] in (GONE, UNINSURED):
+            elif col <= 9 and r["group"] not in (LATE, UNKNOWN):
                 cell.font = QUIET
         row += 1
     for i, w in enumerate(widths, 1):
@@ -136,12 +163,17 @@ def build_workbook(rows: list[dict], prev: date, cur: date, intro: str) -> bytes
     for i, line in enumerate([
         "How this list is built",
         f"Filers: FFIEC's own lists of institutions that submitted a {_quarter(prev)} and a {_quarter(cur)} Call Report "
-        "(Central Data Repository web service), compared bank by bank.",
-        f"Names, city, state and FDIC cert: FFIEC panel of reporters for {_quarter(prev)}.",
-        f"Total assets: the {_quarter(prev)} Call Report as stored by the monitor (blank if it never stored one).",
-        "Status: FDIC BankFind. 'Late (still active)' = an active FDIC-insured bank with no filing past the deadline. "
-        "'No longer active' = FDIC shows it inactive, usually merged into another bank or closed, so no filing is "
-        "expected. 'Not FDIC-insured' = no FDIC cert (e.g. some trust companies).",
+        "(Central Data Repository web service).",
+        f"Who is checked: (1) every {_quarter(prev)} filer, and (2) every institution FDIC BankFind lists as active and "
+        f"insured, matched to the {_quarter(cur)} filers on RSSD or FDIC cert. The second check catches banks that "
+        f"missed {_quarter(prev)} too and banks that opened during the quarter.",
+        "Names, city, state and FDIC cert: FFIEC panel of reporters, else FDIC BankFind.",
+        f"Total assets: the {_quarter(prev)} Call Report as stored by the monitor, else FDIC BankFind's latest figure.",
+        "Status: 'Late (still active)' = active and FDIC-insured, opened before quarter end, no filing past the deadline. "
+        "'No longer active' = FDIC shows it inactive, usually merged into another bank or closed before quarter end. "
+        "'Opened after quarter end' = established after the quarter closed, so no report is owed yet. 'Foreign bank "
+        "branch' = an insured U.S. branch of a foreign bank, which files the FFIEC 002 instead. 'Not FDIC-insured' = "
+        "no FDIC cert (e.g. some trust companies).",
         "Deadlines: 30 days after quarter end; 35 days for banks with foreign offices.",
     ], 1):
         c = notes.cell(row=i, column=1, value=line)
@@ -176,34 +208,63 @@ def main(*argv: str) -> None:
             if isinstance(a, (int, float)):
                 assets[rssd] = a
 
-    rows = []
+    # Check 1: filed last quarter, not this one.
+    names = {**{str(e.get("ID_RSSD")): e for e in client.retrieve_panel_of_reporters(cur)}, **panel}
+    filed_certs = {str(names.get(r, {}).get("FDICCertNumber") or "").strip().lstrip("0") for r in filed[cur]} - {"", "0"}
+    rows: dict[str, dict] = {}
     for rssd in missing:
         p = panel.get(rssd, {})
-        rows.append({"name": str(p.get("Name") or f"RSSD {rssd}").strip(), "city": str(p.get("City") or "").strip(),
-                     "state": str(p.get("State") or "").strip(), "rssd": rssd,
-                     "cert": str(p.get("FDICCertNumber") or "").strip().lstrip("0"),
-                     "assets": assets.get(rssd), "last": filed[prev][rssd]})
-    status = fdic_status([r["cert"] for r in rows if r["cert"] and r["cert"] != "0"])
-    for r in rows:
-        r["inactive"] = None
+        rows[rssd] = {"name": str(p.get("Name") or f"RSSD {rssd}").strip(), "city": str(p.get("City") or "").strip(),
+                      "state": str(p.get("State") or "").strip(), "rssd": rssd,
+                      "cert": str(p.get("FDICCertNumber") or "").strip().lstrip("0"),
+                      "assets": assets.get(rssd), "last": filed[prev][rssd], "inactive": None, "group": None}
+
+    # Check 2: every active FDIC-insured bank with no filing this quarter (catches banks that missed last
+    # quarter too, and banks that opened during the quarter).
+    active = fdic_active_banks()
+    for a in active:
+        rssd = str(a.get("FED_RSSD") or "").strip().lstrip("0")
+        cert = str(a.get("CERT") or "").strip().lstrip("0")
+        if (rssd and rssd in filed[cur]) or (cert and cert in filed_certs):
+            continue
+        key = rssd or f"cert:{cert}"
+        est = _parse_day(str(a.get("ESTYMD") or ""))
+        group = (BRANCH if str(a.get("BKCLASS") or "").upper() == "OI" else NEW if est and est > cur else LATE)
+        r = rows.setdefault(key, {"name": str(a.get("NAME") or "").strip(), "city": str(a.get("CITY") or "").strip(),
+                                  "state": str(a.get("STALP") or "").strip(), "rssd": rssd, "cert": cert,
+                                  "assets": None, "last": filed[prev].get(rssd), "inactive": None, "group": None})
+        r["group"] = group
+        if r["assets"] is None and isinstance(a.get("ASSET"), (int, float)):
+            r["assets"] = float(a["ASSET"])
+    log.info("FDIC active insured institutions: %d", len(active))
+
+    # Last quarter's filers FDIC doesn't list as active: merged, closed or not insured.
+    rest = [r for r in rows.values() if r["group"] is None]
+    status = fdic_status([r["cert"] for r in rest if r["cert"] and r["cert"] != "0"])
+    for r in rest:
         if r["cert"] in ("", "0"):
             r["group"] = UNINSURED
         elif r["cert"] not in status:
             r["group"] = UNKNOWN
         else:
-            active, r["inactive"] = status[r["cert"]]
-            r["group"] = LATE if active else GONE
-    rows.sort(key=lambda r: (GROUP_ORDER.index(r["group"]), -(r["assets"] or 0), r["name"]))
+            is_active, r["inactive"] = status[r["cert"]]
+            r["group"] = LATE if is_active else GONE
+    rows = sorted(rows.values(), key=lambda r: (GROUP_ORDER.index(r["group"]), -(r["assets"] or 0), r["name"]))
     late = [r for r in rows if r["group"] == LATE]
 
-    subject = (f"Call Reports not yet filed for {_quarter(cur)}: {len(late)} late, "
-               f"{len(rows) - len(late)} merged/closed or other ({len(rows)} {_quarter(prev)} filers)")
-    intro = (f"{len(rows)} institutions filed a {_quarter(prev)} Call Report but have no {_quarter(cur)} filing as of "
-             f"{date.today():%b %-d, %Y} ({len(filed[cur]):,} of {len(filed[prev]):,} {_quarter(prev)} filers have filed). "
-             f"{len(late)} {'is' if len(late) == 1 else 'are'} still active per FDIC BankFind, so "
-             f"{'its filing is' if len(late) == 1 else 'their filings are'} late; the rest are no longer active "
-             f"(usually merged or closed) or are not FDIC-insured. Deadlines: 30 days after quarter end, 35 for banks "
-             f"with foreign offices.")
+    late_q2 = sum(1 for r in late if r["last"])
+    other = len(rows) - len(late)
+    subject = (f"Call Reports not yet filed for {_quarter(cur)}: {len(late)} late"
+               + (f", {other} merged/closed or not required" if other else ""))
+    coverage = (f"{len(active):,} active FDIC-insured institutions" if active else
+                "FDIC's active-institution list (unavailable this run, so only last quarter's filers were checked)")
+    intro = (f"As of {date.today():%b %-d, %Y}, {len(filed[cur]):,} institutions have filed a {_quarter(cur)} Call Report. "
+             f"Checked against everyone who filed {_quarter(prev)} ({len(filed[prev]):,}) and against {coverage}. "
+             f"{len(late)} active {'bank has' if len(late) == 1 else 'banks have'} no {_quarter(cur)} filing and "
+             f"{'is' if len(late) == 1 else 'are'} late ({late_q2} filed {_quarter(prev)}, {len(late) - late_q2} did not). "
+             f"The other {other} are listed but owe no {_quarter(cur)} report: merged or closed before quarter end, "
+             f"opened after it, U.S. branches of foreign banks (they file the FFIEC 002), or not FDIC-insured. "
+             f"Deadlines: 30 days after quarter end, 35 for banks with foreign offices.")
 
     def money(r):
         return f"${r['assets'] / 1000:,.1f}M" if r["assets"] else ""
@@ -220,7 +281,7 @@ def main(*argv: str) -> None:
             "<p>The attached workbook has the same list with Call Report and FDIC BankFind links.</p>"
             "<table style='border-collapse:collapse;font-size:12px'><tr>"
             + "".join(f"<th style='text-align:left;padding:3px 8px;background:#1F3A5F;color:#fff'>{h}</th>" for h in (
-                "Status", "Institution", "City", "State", "RSSD", f"Assets {_quarter(prev)}", "Inactive since"))
+                "Status", "Institution", "City", "State", "RSSD", "Total assets", "Inactive since"))
             + f"</tr>{cells}</table></div>")
     data = build_workbook(rows, prev, cur, intro)
     print(text)
